@@ -34,13 +34,12 @@ const section = (start, end) => {
   let clicks = 0;
   const submit = { disabled: false, click() { clicks += 1; } };
   const state = { consumptionDrafts: [draft], sessions: [{ id: "mesa-1" }] };
-  let finishFlash;
   const addedRow = { dataset: { consumptionItem: "item-new" }, classList: { add(name) { this.added = name; } } };
   let batchResult;
   let now = 1000;
   const context = vm.createContext({
     state, document, Date: { now: () => now },
-    window: { setTimeout(callback, delay) { assert.equal(delay, 2200); finishFlash = callback; } },
+    window: { setTimeout() { throw new Error('El guardado no debe introducir una espera fija.'); } },
     $$: () => [addedRow],
     renderTableConsumptionPreview: () => undefined,
     setTableConsumptionPreviewVisible: (visible) => assert.equal(visible, true, "Abre el desglose para mostrar el consumo agregado."),
@@ -67,9 +66,8 @@ globalThis.bindConsumptionConfirmShortcut = bindConsumptionConfirmShortcut;`, co
   assert.equal(await context.confirmConsumptionSelection(form), null, "Una segunda confirmación no duplica el consumo.");
   batchResult({ sessionId: "mesa-1", items: [{ id: "item-new" }] });
   await new Promise(setImmediate);
-  assert.equal(dialog.open, true, "La lista sigue abierta durante el parpadeo verde.");
+  assert.equal(dialog.open, false, "La confirmación cierra el modal sin una espera artificial.");
   assert.equal(addedRow.classList.added, "consumption-just-added");
-  finishFlash();
   assert.equal(await saved, "mesa-1");
   assert.equal(dialog.open, false, "El modal permanece cerrado tras guardar.");
   assert.equal(state.consumptionDrafts.length, 0);

@@ -58,3 +58,5 @@ body[data-service="pizzeria"] .primary{background:#111;color:#fff}
 body[data-service="pizzeria"] :focus-visible{outline:3px solid #e3b930;outline-offset:3px}
 @media(max-width:360px){body[data-service="pizzeria"] .client-app{padding-inline:12px}.mesa-hero-banner{padding:24px 18px;min-height:225px}body[data-service="pizzeria"] .hero-copy{width:68%}.mesa-hero-logo{right:0;width:32%}body[data-service="pizzeria"] .quick-actions{gap:6px}body[data-service="pizzeria"] .request-btn span{font-size:11px}body[data-service="pizzeria"] .assistant-panel{padding:16px}body[data-service="pizzeria"] .assistant-head{margin:-16px -16px 0;padding:16px}}
 @media(prefers-reduced-motion:reduce){body[data-service="pizzeria"] *,body[data-service="pizzeria"] *::before,body[data-service="pizzeria"] *::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+.bill-loading{padding:24px;border:1px solid #eadca9;border-radius:20px;background:#fffbef;color:#3b301b}
+.bill-loading p{font-size:14px;color:#75664b}

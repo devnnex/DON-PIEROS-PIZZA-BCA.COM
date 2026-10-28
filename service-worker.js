@@ -1,5 +1,5 @@
 const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v2";
-const APP_ASSET_CACHE = "don-pieros-assets-20261027-v12";
+const APP_ASSET_CACHE = "don-pieros-assets-20261027-v13";
 const DYNAMIC_PWA_ASSETS = new Set([
   "pwa-manifest.webmanifest",
   "pwa-icon-192.png",

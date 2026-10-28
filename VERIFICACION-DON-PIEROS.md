@@ -1,5 +1,7 @@
 # Verificación de Don Pieros Pizza · 27 octubre 2026
 
+Respuesta de la interfaz: las pruebas de escritorio y móvil mantuvieron la navegación y la escritura operativas con consultas detenidas, con y sin conexión; los controles medidos respondieron entre 1 y 75 ms en el entorno de prueba. Se eliminó la espera fija de 2,2 segundos tras confirmar consumos. La cuenta disponible y el chat se abren sin esperar una lectura adicional; una consulta tardía no vuelve a abrir una cuenta cerrada. La disponibilidad cambia visualmente al tocar y se restaura si el servidor rechaza el cambio. Guardar productos reutiliza el resultado confirmado y no espera otra consulta del catálogo ni la limpieza de la foto anterior. Las confirmaciones de escritura siguen dependiendo de la respuesta real del servicio.
+
 Servicio por QR: vista de pizzería revisada en móvil y escritorio; Chat enfoca el campo en el mismo clic, y se comprobaron pedidos, llamado al mesero, cuenta y carta sin mostrar canciones. Se verificaron los cuatro interruptores de Marca guardando, ocultando y volviendo a mostrar cada opción desde otro navegador. `06_OPCIONES_QR.sql` se comprobó localmente con lectura del cliente y permisos del Jefe; queda por aplicarlo en la instalación real.
 
 QR personalizados: se decodificaron seis imágenes con logo a 420, 720 y 1000 px para dos direcciones de mesa. Se conservaron la URL, la corrección de errores alta y el margen blanco. El PDF mantiene tarjetas de 90 × 90 mm, marco y nombre en rojo, y pie grande en negrita. La impresión física debe hacerse a escala 100 %.

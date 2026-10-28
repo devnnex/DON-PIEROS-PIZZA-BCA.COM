@@ -971,6 +971,7 @@ const App = (() => {
       host.style.left = "-9999px";
       host.style.top = "0";
       document.body.appendChild(host);
+      const draw = () => { try {
       const qr = new window.QRCode(host, {
         text,
         width: size,
@@ -988,6 +989,9 @@ const App = (() => {
         } catch (error) { reject(error); }
         finally { host.remove(); }
       }, 40);
+      } catch (error) { host.remove(); reject(error); } };
+      if (window.scheduler?.postTask) void window.scheduler.postTask(draw, { priority: "background" }).catch(error => { host.remove(); reject(error); });
+      else window.setTimeout(draw, 0);
     });
 
   const cachedQrDataUrl = async (text, size = 720) => {
@@ -2091,10 +2095,24 @@ const App = (() => {
       return;
     }
     const button = document.querySelector('[data-request="bill"]');
+    if (button?.classList.contains("is-pending") && state.localBillOpen) return;
+    window.clearTimeout(state.billCloseTimer);
+    $("#billChat")?.classList.remove("is-closing");
+    const tableId = state.currentTable.id;
+    const revision = state.clientBillReadRevision = Number(state.clientBillReadRevision || 0) + 1;
     button?.classList.add("is-pending");
+    state.localBillOpen = true;
+    if (sessionHasConsumption({ ...state.currentSession, session_items: state.sessionItems })) {
+      renderBillChat();
+    } else {
+      const box = $("#billChat");
+      if (box) { box.hidden = false; box.innerHTML = '<div class="bill-loading" role="status"><strong>Consultando tu cuenta…</strong><p>Enseguida verás el consumo de tu mesa.</p><button class="ghost small" type="button" data-close-bill>Cerrar</button></div>'; }
+    }
     try {
-      await hydrateSelectedTable(state.currentTable.id);
+      await hydrateSelectedTable(tableId);
+      if (state.clientBillReadRevision !== revision || state.currentTable?.id !== tableId) return;
       if (!sessionHasConsumption({ ...state.currentSession, session_items: state.sessionItems })) {
+        state.localBillOpen = false; if ($("#billChat")) $("#billChat").hidden = true;
         toast("Esta mesa está libre y no tiene consumo pendiente.");
         return;
       }
@@ -3940,7 +3958,7 @@ const App = (() => {
       setAdminChatMinimized(sessionId, false);
       chat.element?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
       chat.element?.querySelector('input[name="message"]')?.focus();
-      await loadChatMessages(sessionId, chat.table);
+      void loadChatMessages(sessionId, chat.table);
       return true;
     }
     chat = { sessionId, tableId: request.table_id, table, requestIds: new Set(ids), messages: [], channel: null, pollTimer: null, element: null, connected: false, peerTyping: false, closing: false, confirming: false, minimized: false, initialized: false, unreadCount: 0, unreadBoundaryId: "" };
@@ -3949,10 +3967,12 @@ const App = (() => {
     renderAdminChat(sessionId);
     const joinNotice = "El administrador se unió al chat.";
     subscribeAdminChat(chat, joinNotice);
-    await loadChatMessages(sessionId, table);
-    const joinAlreadyRegistered = chat.messages.some((message) => message.sender_type === "system" && normalizeText(message.body).includes("se unio al chat"));
-    if (!joinAlreadyRegistered) void persistChatMessage("system", joinNotice, { sessionId: request.session_id, table });
     chat.element?.querySelector('input[name="message"]')?.focus();
+    void loadChatMessages(sessionId, table).then(() => {
+      if (state.adminChats.get(sessionId) !== chat || chat.closing) return;
+      const joined = chat.messages.some((message) => message.sender_type === "system" && normalizeText(message.body).includes("se unio al chat"));
+      if (!joined) void persistChatMessage("system", joinNotice, { sessionId: request.session_id, table });
+    });
     return true;
   };
 
@@ -4232,9 +4252,10 @@ const App = (() => {
   const closeCurrentBill = () => {
     const box = $("#billChat");
     if (!state.localBillOpen || box?.classList.contains("is-closing")) return;
+    state.clientBillReadRevision = Number(state.clientBillReadRevision || 0) + 1;
     state.localBillOpen = false;
     box?.classList.add("is-closing");
-    window.setTimeout(() => {
+    state.billCloseTimer = window.setTimeout(() => {
       if (!box) return;
       box.hidden = true;
       box.innerHTML = "";
@@ -7888,9 +7909,9 @@ const App = (() => {
   };
   const bindSalesShift = () => {
     $("#salesShiftBase")?.addEventListener("click", () => { void syncSalesShift(); openSalesShift(); });
-    $("#registerSalesShift")?.addEventListener("click", async () => {
-      await syncSalesShift();
-      if (SalesShift.needsNewShift(state.salesShift, new Date())) openSalesShift();
+    $("#registerSalesShift")?.addEventListener("click", () => {
+      openSalesShift();
+      void syncSalesShift();
     });
     $("#salesShiftHistory")?.addEventListener("change", (event) => {
       const id = event.currentTarget.value;
@@ -10996,7 +11017,6 @@ const App = (() => {
           if (addedIds.has(row.dataset.consumptionItem)) row.classList.add("consumption-just-added");
         });
         $("#tableConsumptionPreview .consumption-just-added")?.scrollIntoView({ block: "nearest" });
-        await new Promise((resolve) => window.setTimeout(resolve, 2200));
       }
       dialog?.close();
       clearConsumptionEntry(form);

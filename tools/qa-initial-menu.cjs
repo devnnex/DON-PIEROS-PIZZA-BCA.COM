@@ -1,7 +1,10 @@
 const assert=require('node:assert/strict');const {chromium}=require('playwright-core');const {harness}=require('../tests/helpers/don-pieros-gas.cjs');
 (async()=>{
- const h=harness({seedMenu:true}),browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'}),context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
- await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();return route.fulfill({json:h.call(body.action,body.payload||body,body.authToken||'')});});
+ const h=harness({seedMenu:true}),browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'}),context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});let availabilityGate=null;
+ await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
+ await context.route('https://script.google.com/**',async route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();
+  if(body.action==='dp_save_catalog'&&availabilityGate){const gate=availabilityGate;availabilityGate=null;await gate.promise;if(gate.reject)return route.fulfill({json:{ok:false,error:'El producto cambió. Revisa su disponibilidad.'}});}
+  return route.fulfill({json:h.call(body.action,body.payload||body,body.authToken||'')});});
  await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{const rpc=new URL(route.request().url()).pathname.split('/').pop();return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP'},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_setup_status'?false:[]});});
  const client=await context.newPage();await client.goto('http://127.0.0.1:4173/');await client.locator('#welcome-close').click();
  assert.equal(await client.locator('.location-card').evaluate(node=>getComputedStyle(node).borderTopColor),'rgb(230, 192, 77)');
@@ -32,7 +35,13 @@ const assert=require('node:assert/strict');const {chromium}=require('playwright-
  await client.locator('#toast').waitFor({state:'hidden'});
  const admin=await context.newPage();await admin.addInitScript(()=>localStorage.setItem('don_pieros_admin_token','boss'));await admin.goto('http://127.0.0.1:4173/admin.html#webmenu');await admin.locator('[data-dp-edit]').first().waitFor();await admin.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
  await admin.locator('#dp-menu-category').selectOption('Pizzas sencillas');assert.equal(await admin.locator('#dp-catalog-list .dp-menu-card').count(),7);
- const card=admin.locator('.dp-menu-card').filter({hasText:'Pizza Hawaiana'});await card.locator('[data-dp-availability]').click();await card.getByText('○ Agotado',{exact:true}).waitFor();
+ const card=admin.locator('.dp-menu-card').filter({hasText:'Pizza Hawaiana'});let finishAvailability;
+ availabilityGate={promise:new Promise(resolve=>finishAvailability=resolve),reject:true};
+ await card.locator('[data-dp-availability]').click();await card.getByText('○ Agotado',{exact:true}).waitFor();
+ assert.equal(await card.locator('[data-dp-availability]').isDisabled(),true);
+ assert.equal(h.call('dp_get_catalog').products.find(p=>p.name==='Pizza Hawaiana').available,true,'La reacción visual no inventa una confirmación remota.');
+ finishAvailability();await card.getByText('● Disponible',{exact:true}).waitFor();
+ await card.locator('[data-dp-availability]').click();await card.getByText('○ Agotado',{exact:true}).waitFor();await admin.waitForFunction(()=>!document.querySelector('[data-dp-availability]:disabled'));
  await client.evaluate(()=>localStorage.removeItem('don-pieros-cart-v2'));await client.reload();await client.locator('#welcome-close').click();await client.locator('[data-category="Pizzas sencillas"]').click();const sold=client.locator('.product-card').filter({hasText:'Pizza Hawaiana'});await sold.locator('.sold-label').waitFor();assert.equal(await sold.locator('[data-add]').isDisabled(),true);
  await admin.locator('[data-catalog="toppings"]').click();await admin.screenshot({path:'artifacts/admin-tamanos-movil.png',fullPage:true});
  const sizeCard=admin.locator('.dp-menu-card').filter({hasText:'Mediana · 37 × 37 cm'}).filter({hasText:'Tamaño pizza sencilla'});

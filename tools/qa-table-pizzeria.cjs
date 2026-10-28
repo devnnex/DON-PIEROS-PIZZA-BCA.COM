@@ -8,18 +8,19 @@ const {chromium}=require('playwright-core');const root=path.resolve(__dirname,'.
   const line={id:'33333333-3333-4333-8333-333333333333',session_id:session.id,table_id:table.id,item_name:'Pizza hawaiana',quantity:1,unit_price:25000,status:'served'};
   const requests=Array.from({length:5},(_,i)=>({id:'old-song-'+i,table_id:table.id,session_id:session.id,request_type:'other',message:'Mesa 2 solicita la canción: tema '+i,status:'pending',created_at:new Date().toISOString()}));
   const business={business_name:'Don Pieros Pizza',subtitle:'Pizza para compartir',logo_url:'images/don-pieros-logo.png',currency:'COP',accent_color:'#111111',client_bill_enabled:true,client_waiter_enabled:true,client_menu_enabled:true,client_chat_enabled:true};
-  const messages=[],errors=[];
+  const messages=[],errors=[];let accountGate=null;
   const context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
   await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
   await context.route('https://script.google.com/**',route=>route.fulfill({json:{ok:true,shift:null,shifts:[],items:[],everInitialized:true}}));
   await context.route('**/app.js?*',route=>route.fulfill({contentType:'application/javascript',body:fs.readFileSync(path.join(root,'app.js'),'utf8').replace('  return { init };','  return { init,state,cachedQrDataUrl,drawQrPdfCard,qrTextForTable,renderClientQueue };')+'\nwindow.tableQa=App;'}));
-  await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{
+  await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',async route=>{
    const req=route.request(),url=new URL(req.url()),rpc=url.pathname.split('/').pop(),args=req.postData()?JSON.parse(req.postData()):{};let result=[];
    if(rpc==='get_bootstrap_data')result={business,tables:[table],categories:[],items:[]};
    if(rpc==='get_current_user')result={id:'boss-id',role:'boss',full_name:'Jefe',username:'jefe',is_active:true,permissions:[]};
    if(rpc==='get_admin_snapshot')result={requests:[],sessions:[]};
    if(rpc==='dp_setup_status')result=false;
    if(rpc==='business_settings'){if(req.method()==='PATCH')Object.assign(business,args);result=business;}
+   if(rpc==='get_client_table_state'&&accountGate)await accountGate;
    if(rpc==='get_client_table_state'||rpc==='get_client_snapshot')result={session,sessionItems:[line],requests};
    if(rpc==='table_sessions')result=url.searchParams.get('limit')?[session]:session;
    if(rpc==='session_items')result=[line];if(rpc==='service_requests')result=requests;
@@ -46,8 +47,13 @@ const {chromium}=require('playwright-core');const root=path.resolve(__dirname,'.
   await page.waitForFunction(()=>tableQa.state.chatMessages.some(m=>m.body==='Queremos una pizza hawaiana mediana'&&!m.pending));
   assert.ok(requests.some(r=>r.message.includes('pizza hawaiana mediana')),'El pedido llega a solicitudes incluso con cinco canciones antiguas.');
   await page.locator('[data-request="waiter"]').click();await page.waitForFunction(()=>tableQa.state.clientRequests.some(r=>r.request_type==='waiter'&&r.status==='pending'));
-  await page.locator('[data-request="bill"]').click();await page.locator('#billChat').waitFor({state:'visible'});assert.match(await page.locator('#billChat').innerText(),/Pizza hawaiana/);
-  await page.locator('[data-close-bill]').click();
+  let finishAccount;accountGate=new Promise(resolve=>finishAccount=resolve);
+  await page.locator('[data-request="bill"]').click();await page.locator('#billChat').waitFor({state:'visible',timeout:1000});assert.match(await page.locator('#billChat').innerText(),/Pizza hawaiana/);
+  await page.locator('[data-close-bill]').click();await page.locator('#billChat').waitFor({state:'hidden'});
+  await page.locator('[data-request="bill"]').click();await page.locator('#billChat').waitFor({state:'visible',timeout:1000});
+  await page.locator('[data-close-bill]').click();await page.locator('#billChat').waitFor({state:'hidden'});finishAccount();accountGate=null;
+  await page.waitForFunction(()=>!document.querySelector('[data-request="bill"]').classList.contains('is-pending'));
+  assert.equal(await page.locator('#billChat').isVisible(),false,'La lectura tardía no vuelve a abrir una cuenta cerrada por el cliente.');
   await page.locator('#openMenuCards').click();await page.locator('#menuCardsViewer[open]').waitFor();await page.keyboard.press('Escape');
   await page.setViewportSize({width:1440,height:1000});await page.evaluate(()=>scrollTo(0,0));await page.screenshot({path:path.join(root,'artifacts/mesa-pizzeria-desktop.png'),fullPage:true});
   await page.addScriptTag({path:path.join(process.env.TEMP,'don-pieros-qrcode.min.js')});

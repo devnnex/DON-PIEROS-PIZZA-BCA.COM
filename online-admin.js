@@ -10,6 +10,8 @@
   const labels={nueva:'Nueva',atendiendo:'En preparación',lista:'Lista',despachada:'Despachada',cancelada:'Cancelada'};
   let orders=[],dashboardOrders=[],total=0,offset=0,revision='',busy=false,firstLoad=true,connectedToken='',channel=null,catalog=null,catalogKind='products',editItem=null,removeImage=false,previewUrl='';
   const seenOrderIds=new Set();
+  const pendingAvailability=new Map();
+  let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0;
   const notify=(text,error=false)=>api()?.notify(friendly(text),error?'error':'ok');
   const canOrders=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='waiter'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('dashboard')||u.permissions.includes('service')));};
   const canMenu=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('inventory')));};
@@ -86,20 +88,25 @@
   }
 
   async function loadOrders(force=false){
-    if(busy||!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
+    if(busy){if(force)ordersReloadRequested=true;return;}
+    if(!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
     busy=true;
+    if(force)$('#dp-orders-status').textContent='Actualizando pedidos…';
     try{
       const filter=$('#dp-order-filter').value;
       if(!force&&revision){const status=await request('dp_order_status',{},15000);if(status.revision===revision)return;}
-      const result=await request('dp_get_orders',{status:filter,offset,limit:60});
-      const active=filter==='active'&&offset===0?result:await request('dp_get_orders',{status:'active',offset:0,limit:20});
+      const pageOffset=offset;
+      const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60}),
+        filter==='active'&&pageOffset===0?Promise.resolve(null):request('dp_get_orders',{status:'active',offset:0,limit:20})]);
+      if(filter!==$('#dp-order-filter').value||pageOffset!==offset){ordersReloadRequested=true;return;}
+      const active=activeResult||result;
       dashboardOrders=active.orders;
       if(!firstLoad&&dashboardOrders.some(o=>o.status==='nueva'&&!seenOrderIds.has(o.id)))api().alarm();
       dashboardOrders.forEach(o=>seenOrderIds.add(o.id));
       firstLoad=false;orders=result.orders;total=result.total;revision=result.revision;
       renderOrders();$('#dp-nav-count').textContent=result.activeCount||'';$('#dp-orders-status').textContent='Conectado · '+result.activeCount+' en cola · '+new Date().toLocaleTimeString('es-CO');
       renderDashboard(dashboardOrders,active.activeCount);
-    }catch(error){$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}finally{busy=false;}
+    }catch(error){$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}finally{busy=false;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}
   }
 
   function orderCard(order){return `<button class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" type="button"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}</strong><span>Ver comanda →</span></footer></button>`;}
@@ -112,7 +119,7 @@
   function openOrder(id){
     const order=orders.find(o=>o.id===id)||dashboardOrders.find(o=>o.id===id);if(!order)return;
     $('#dp-order-detail').innerHTML=`<span class="eyebrow">Comanda · Don Pieros Pizza</span><h2>${esc(order.id)}</h2><span class="dp-status">${labels[order.status]}</span><p>${esc(date(order.createdAt))}</p><div class="dp-order-customer"><h3>${esc(order.customerName)}</h3><a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a><p>${order.fulfillment==='delivery'?'Domicilio · '+esc(order.neighborhood)+'<br>'+esc(order.address):'Recoger en el negocio'}</p></div><div class="dp-detail-lines">${order.items.map(item=>`<article><div><strong>${item.quantity} × ${esc(item.name)}</strong>${item.selections?.length?`<p>${item.selections.map(esc).join('<br>')}</p>`:''}</div><b>${money(item.quantity*item.unitPrice)}</b></article>`).join('')}</div>${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}<div class="dp-totals"><p>Subtotal <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${money(order.deliveryFee)}</b></p><p class="dp-total">Total <b>${money(order.total)}</b></p><small>${esc(order.paymentMethod)}${order.paymentValue?' · '+esc(order.paymentValue):''} · Pago por verificar</small></div><p class="dp-muted">Turno al confirmar: ${Number(order.queuePosition)} · ${Number(order.ordersAhead)} delante.${order.handledByName?' Atendido por '+esc(order.handledByName)+'.':''}</p><div class="dp-order-actions"><label>Estado<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Recibo<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button><a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a></div><p id="dp-order-error" role="alert"></p>`;
-    $('#dp-change-status').onclick=async event=>{event.target.disabled=true;try{await request('dp_update_order',{id:order.id,status:$('#dp-new-status').value,version:order.version});$('#dp-order-dialog').close();revision='';await loadOrders(true);notify('Estado del pedido actualizado.');signal('order-updated');}catch(error){$('#dp-order-error').textContent=friendly(error);event.target.disabled=false;}};
+    $('#dp-change-status').onclick=async event=>{event.target.disabled=true;event.target.textContent='Guardando…';try{await request('dp_update_order',{id:order.id,status:$('#dp-new-status').value,version:order.version});$('#dp-order-dialog').close();revision='';void loadOrders(true);notify('Estado del pedido actualizado.');signal('order-updated');}catch(error){$('#dp-order-error').textContent=friendly(error);event.target.disabled=false;event.target.textContent='Guardar estado';}};
     $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));$('#dp-order-dialog').showModal();
   }
 
@@ -124,9 +131,16 @@
 
   async function loadCatalog(){
     if(!canMenu())return;
+    if(catalogLoading)return catalogLoading;
+    const readEpoch=catalogEpoch;
     $('#dp-menu-status').textContent='Cargando menú…';
-    try{catalog=await request('dp_admin_catalog');renderCatalog();$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}catch(error){$('#dp-menu-status').textContent=friendly(error);}
+    catalogLoading=(async()=>{
+      try{const next=await request('dp_admin_catalog');if(readEpoch!==catalogEpoch){$('#dp-menu-status').textContent='Menú actualizado con tus cambios recientes.';return;}catalog=next;catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
+      catch(error){$('#dp-menu-status').textContent=friendly(error);}finally{catalogLoading=null;}
+    })();return catalogLoading;
   }
+  function applyCatalogItem(kind,item){catalogEpoch++;catalog[kind]=[...(catalog[kind]||[]).filter(row=>row.id!==item.id),item].sort((a,b)=>a.sort_order-b.sort_order||String(a.name).localeCompare(String(b.name)));}
+  function removeCatalogPhoto(path,message){void api().db.storage.from('product-images').remove([path]).then(({error})=>{if(error)notify(message,true);}).catch(()=>notify(message,true));}
   function renderCatalog(){
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
     let rows=catalog[catalogKind]||[];
@@ -135,10 +149,16 @@
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);
     const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
     $('#dp-catalog-list').innerHTML=rows.length?(catalogKind==='products'?categories.filter(c=>rows.some(p=>p.category===c)).map(c=>`<section class="dp-category-section"><h3>${esc(c)} <small>${rows.filter(p=>p.category===c).length}</small></h3><div class="dp-menu-grid">${rows.filter(p=>p.category===c).map(card).join('')}</div></section>`).join(''):`<div class="dp-menu-grid">${rows.map(card).join('')}</div>`):'<div class="dp-empty">Sin registros. Agrega el primero para comenzar.</div>';
+    $$('[data-dp-availability]').forEach(button=>{if(!pendingAvailability.has(button.dataset.dpAvailability))return;const card=button.closest('.dp-menu-card');card.setAttribute('aria-busy','true');card.querySelectorAll('button').forEach(control=>{control.disabled=true;});});
   }
   async function toggleAvailability(button){
     const item=catalog.products.find(p=>p.id===button.dataset.dpAvailability);if(!item)return;button.disabled=true;
-    try{const result=await request('dp_save_catalog',{kind:'products',item:{...item,available:!item.available}});catalog.products=catalog.products.map(p=>p.id===item.id?result.item:p);renderCatalog();signal('catalog-changed');notify(result.item.available?'Producto disponible.':'Producto agotado: el cliente no podrá pedirlo.');}catch(error){button.disabled=false;notify(error.message,true);}
+    if(pendingAvailability.has(item.id))return;
+    const optimistic={...item,available:!item.available};pendingAvailability.set(item.id,optimistic);applyCatalogItem('products',optimistic);renderCatalog();
+    const card=$(`[data-dp-availability="${CSS.escape(item.id)}"]`)?.closest('.dp-menu-card');card?.setAttribute('aria-busy','true');card?.querySelectorAll('button').forEach(control=>{control.disabled=true;});
+    $('#dp-menu-status').textContent='Guardando disponibilidad…';
+    try{const result=await request('dp_save_catalog',{kind:'products',item:optimistic});pendingAvailability.delete(item.id);applyCatalogItem('products',result.item);renderCatalog();$('#dp-menu-status').textContent='Disponibilidad guardada.';signal('catalog-changed');notify(result.item.available?'Producto disponible.':'Producto agotado: el cliente no podrá pedirlo.');}
+    catch(error){pendingAvailability.delete(item.id);applyCatalogItem('products',item);renderCatalog();notify(error.message,true);void loadCatalog();}
   }
   const field=(name,label,value='',type='text',extra='')=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
   function openItem(item){
@@ -186,9 +206,10 @@
       if(catalogKind==='toppings'){item.kind=form.kind.value.trim();item.price=Number(form.price.value);}
       if(catalogKind==='payments'){item.account_value=form.account_value.value;item.instructions=form.instructions.value;}
       if(catalogKind==='neighborhoods')item.delivery_fee=Number(form.delivery_fee.value);
-      button.textContent='Guardando…';await request('dp_save_catalog',{kind:catalogKind,item});saved=true;
-      if(editItem?.image_path && editItem.image_path!==item.image_path){const {error}=await api().db.storage.from('product-images').remove([editItem.image_path]);if(error)notify('Producto guardado. La foto anterior quedó pendiente de retirar.',true);}
-      $('#dp-item-dialog').close();await loadCatalog();signal('catalog-changed');notify('Guardado.');
+      button.textContent='Guardando…';const result=await request('dp_save_catalog',{kind:catalogKind,item});saved=true;
+      if(editItem?.image_path && editItem.image_path!==item.image_path)removeCatalogPhoto(editItem.image_path,'Producto guardado. La foto anterior quedó pendiente de retirar.');
+      if(result.item){applyCatalogItem(catalogKind,result.item);renderCatalog();}else void loadCatalog();
+      $('#dp-item-dialog').close();signal('catalog-changed');notify('Guardado.');
     }catch(error){$('#dp-item-error').textContent=friendly(error);
       // A lost response may hide a committed save. Keep the uploaded image until reconciliation.
       if(uploaded&&!saved)$('#dp-item-error').textContent+=' Actualiza antes de reintentar para comprobar el estado del producto.';
@@ -196,7 +217,9 @@
   }
   async function deleteItem(id){
     const item=catalog[catalogKind].find(row=>row.id===id);if(!item||!confirm('¿Eliminar “'+item.name+'” del menú? Las comandas anteriores conservarán su detalle.'))return;
-    try{await request('dp_delete_catalog',{kind:catalogKind,id,version:item.version});if(item.image_path){const {error}=await api().db.storage.from('product-images').remove([item.image_path]);if(error)notify('Registro eliminado. La foto quedó pendiente de retirar.',true);}await loadCatalog();signal('catalog-changed');notify('Registro eliminado.');}catch(error){notify(error.message,true);}
+    const kind=catalogKind,button=$(`[data-dp-delete="${CSS.escape(id)}"]`);if(button?.disabled)return;if(button){button.disabled=true;button.textContent='Eliminando…';}
+    try{await request('dp_delete_catalog',{kind,id,version:item.version});catalogEpoch++;catalog[kind]=catalog[kind].filter(row=>row.id!==id);renderCatalog();if(item.image_path)removeCatalogPhoto(item.image_path,'Registro eliminado. La foto quedó pendiente de retirar.');signal('catalog-changed');notify('Registro eliminado.');}
+    catch(error){if(button?.isConnected){button.disabled=false;button.textContent='Eliminar';}notify(error.message,true);}
   }
   function signal(event){if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
   async function tick(){

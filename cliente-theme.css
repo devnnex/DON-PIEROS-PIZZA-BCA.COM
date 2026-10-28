@@ -43,3 +43,5 @@ body{background:#fff;color:#111}button,a,input,select,textarea{-webkit-tap-highl
 .store-about span{color:#9c3821}
 .store-details{color:#5b4025}
 .store-info .info-icon{stroke:#b84522}
+button,a{touch-action:manipulation}
+.sheet{animation-duration:.14s}

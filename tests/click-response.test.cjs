@@ -82,6 +82,7 @@ test('Preparar categorias no retrasa la interfaz ni devuelve al usuario a otra s
     setLoading() {}, waitForAdminLogin: async () => calls.push('validated'),
     loadBootstrap: () => { calls.push('cache'); return Promise.resolve(true); },
     loadInventoryStore() {}, loadUsers: async () => [], renderUsers() {},
+    flushRequestOutbox: async () => {},
     renderAdminShell: () => calls.push('shell'), renderBusinessForm() {},
     showAdminSection: section => calls.push(section), updateAlarmButton() {}, bindAdmin() {},
     startSalesShift() {}, armAlarmOnFirstGesture() {}, subscribeAdmin() {}, startAdminPolling() {}, startAlarmLoop() {},

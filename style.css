@@ -5493,3 +5493,4 @@ body[data-page="client"] .client-queue-badge { gap: .65rem; margin-inline: 1rem;
 .client-action-setting small{margin-top:4px;color:#69707d;font-size:12px;line-height:1.45}
 .client-actions-settings .tip-setting-status{display:block;margin-top:10px}
 @media(max-width:620px){.client-actions-settings{padding:16px}.client-actions-settings-grid{grid-template-columns:1fr}}
+button,a,[role="button"]{touch-action:manipulation}
