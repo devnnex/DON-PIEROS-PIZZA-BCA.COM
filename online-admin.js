@@ -181,15 +181,16 @@
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     const d=frame.contentDocument;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
       @page{size:${width}mm auto;margin:3mm}*{box-sizing:border-box}
-      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;width:${width-6}mm}
-      h1{font-size:18px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
+      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding-top:5mm;width:${width-6}mm}
+      .kitchen-ticket{border:1px solid #000;padding:${width===58?'3mm 2mm':'4mm 3mm'}}
+      h1{font-size:${width===58?'16':'18'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
       .center{text-align:center}.rule{border-top:1px dashed #000;margin:11px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
       .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
       .kitchen-item{border-bottom:1px dashed #000;padding:11px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
       .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'15':'17'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
       .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
       .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:10px;text-align:center;margin-top:12px}
-      </style></head><body><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
+      </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${order.fulfillment==='delivery'?'DOMICILIO':'RECOGER EN TIENDA'}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
@@ -198,7 +199,7 @@
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
       <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
-      <footer>Comanda de cocina · No es factura fiscal</footer></body></html>`);d.close();
+      <footer>Comanda de cocina · No es factura fiscal</footer></main></body></html>`);d.close();
     frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
