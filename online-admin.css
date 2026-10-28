@@ -24,3 +24,43 @@
 .dp-paper-control{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:#655f55}
 .dp-paper-control select{min-width:0!important;width:auto;padding:7px 9px;border:1px solid #dedbd4;border-radius:9px;background:#fff;color:#111;font:inherit}
 @media(max-width:640px){.dp-card-actions{margin-left:0;width:100%}.dp-card-actions button{flex:1}.dp-dashboard-controls{justify-content:space-between;width:100%}.dp-order-card footer>strong{width:100%}}
+#dp-order-dialog{max-width:1080px;width:calc(100% - 36px);max-height:94dvh;border:1px solid #eee8dc;background:#fffefa}
+#dp-order-dialog>.dp-dialog-card{padding:26px 30px;max-height:93dvh}
+#dp-order-dialog .dp-close{background:#fff0be;color:#493717;width:36px;height:36px;z-index:1}
+.dp-order-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;padding-right:45px;margin-bottom:20px}
+.dp-order-heading h2{font-size:30px;margin:6px 0!important}.dp-order-heading p{margin:0;line-height:1.6;font-size:12px;color:#746b5d}.dp-order-heading time{color:#514838}
+.dp-detail-status{margin-top:8px;padding:8px 14px;background:#fff0bc;color:#67440b;font-size:12px;white-space:nowrap}
+.dp-order-layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:26px;align-items:start}
+.dp-products-heading{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:8px}.dp-products-heading h3{font-size:16px;margin:0}.dp-products-heading>span{font-size:12px;white-space:nowrap;color:#746b5d}
+#dp-order-dialog .dp-detail-lines article{display:flex;justify-content:flex-start;align-items:flex-start;gap:12px;padding:13px 0}
+.dp-item-quantity{flex-shrink:0;min-width:43px;padding:5px 7px;border-radius:9px;background:#fff0bc;text-align:center;font-size:17px;font-weight:800}
+#dp-order-dialog .dp-detail-lines article>div{min-width:0}#dp-order-dialog .dp-detail-lines strong{font-size:17px;line-height:1.4}
+.dp-detail-lines ul{margin:6px 0 0;padding-left:17px;color:#675e51;font-size:13px;line-height:1.6}
+#dp-order-dialog .dp-order-customer{margin:0;padding:18px;border:1px solid #efd07e;background:linear-gradient(135deg,#fff7d9,#ffefb4);border-radius:17px}
+.dp-order-customer>small{font-size:10px;font-weight:800;letter-spacing:.09em;color:#80601f}
+#dp-order-dialog .dp-order-customer h3{font-size:21px;margin:8px 0 5px}.dp-order-customer a{font-size:14px;color:#754509;font-weight:700}
+.dp-fulfillment-label{font-size:12px;font-weight:700;color:#6c4810;border-top:1px solid #e5c870;margin-top:13px;padding-top:12px}
+#dp-order-dialog .dp-order-customer p{font-size:13px;margin:8px 0 0;overflow-wrap:anywhere}
+#dp-order-dialog .dp-totals{padding:14px 4px 0}#dp-order-dialog .dp-totals>p{font-size:13px;gap:10px}
+#dp-order-dialog .dp-totals .dp-total{display:grid;gap:5px;padding-top:12px;font-size:12px}#dp-order-dialog .dp-total b{font-size:27px;color:#241c10}#dp-order-dialog .dp-total b small{font-size:12px}
+#dp-order-dialog .dp-payment-method{align-items:center;margin-top:13px;padding-top:12px;border-top:1px solid #eee4ca}
+#dp-order-dialog .dp-notes{margin-top:17px;background:#fff8e1;border-color:#ead08b;font-size:13px;line-height:1.6}
+#dp-order-dialog .dp-order-actions{grid-template-columns:minmax(140px,1.25fr) auto 100px auto auto;gap:12px;border-top:1px solid #e9dfc8;padding-top:18px;margin-top:23px}
+#dp-order-dialog .dp-order-actions label{margin:0;font-size:11px}#dp-order-dialog .dp-order-actions select{padding:10px;font-size:13px}
+#dp-order-dialog .dp-order-actions button,#dp-order-dialog .dp-order-actions a{margin:0;min-height:41px;padding:10px 14px;font-size:12px;white-space:nowrap;grid-column:auto}
+#dp-order-dialog .dp-order-actions #dp-print-order{background:#ffeb9e;border:1px solid #e6c664;font-weight:700}
+#dp-order-error:empty{display:none}
+@media(max-width:760px){#dp-order-dialog{width:calc(100% - 18px)}#dp-order-dialog>.dp-dialog-card{padding:23px 18px}.dp-order-layout{grid-template-columns:1fr;gap:20px}.dp-order-heading{gap:8px;padding-right:28px}.dp-order-heading h2{font-size:25px}.dp-order-heading .dp-detail-status{font-size:10px;padding:6px 9px}#dp-order-dialog .dp-order-actions{grid-template-columns:1fr 1fr;gap:10px}#dp-order-dialog .dp-order-actions a{grid-column:1/-1}.dp-products-heading h3{font-size:15px}}
+.dp-reception-filters{display:grid;grid-template-columns:minmax(180px,1fr) minmax(145px,190px);gap:12px;align-items:end;min-width:0;flex:1}
+.dp-reception-filters label{display:grid;gap:6px;font-size:12px;font-weight:700;color:#65512c;min-width:0}
+.dp-reception-filters input,.dp-reception-filters select{width:100%;min-width:0;max-width:100%;min-height:44px;border:1px solid #e5d6af;border-radius:12px;background:#fffdf6;color:#211c10;padding:11px 12px;font:inherit;font-size:13px;font-weight:400;box-sizing:border-box}
+.dp-reception-filters input:focus,.dp-reception-filters select:focus{outline:2px solid #e8c344;outline-offset:2px}
+.dp-dashboard-orders>.dp-reception-filters{margin:18px 0 12px;padding:14px;border:1px solid #f0e2be;border-radius:16px;background:#fff9e9}
+#dp-dashboard-order-list>.dp-order-card{margin-top:12px}.dp-pagination[hidden]{display:none}
+.dp-order-card.dp-state-nueva{border-left:5px solid #191919;background:#fff}.dp-state-nueva .dp-status{background:#191919;color:#fff}.dp-order-heading.dp-state-nueva{border:0}
+.dp-order-card.dp-state-atendiendo{border-left:5px solid #e9bc32;background:#fffdf2}.dp-state-atendiendo .dp-status{background:#ffe58a;color:#604100}
+.dp-order-card.dp-state-lista{border-left:5px solid #24935a;background:#f3fcf6}.dp-state-lista .dp-status{background:#d4f3df;color:#166539}
+.dp-order-card.dp-state-cancelada{border-left:5px solid #d71920;background:#fff6f5}.dp-state-cancelada .dp-status{background:#ffe0dd;color:#ae1c23}
+.dp-order-card.dp-state-despachada{border-left:5px solid #24935a}.dp-state-despachada .dp-status{background:#d4f3df;color:#166539}
+#dp-dashboard-orders,#alertsPanel{scroll-margin-top:24px}
+@media(max-width:640px){.dp-reception-filters{flex-basis:100%;grid-template-columns:1fr}.dp-dashboard-orders>.dp-reception-filters{padding:12px}.dp-dashboard-orders .dp-order-card{padding:15px}.dp-order-card>div{align-items:flex-start}.dp-order-card small{line-height:1.5}.dp-order-card>div>small{text-align:right;max-width:55%}}

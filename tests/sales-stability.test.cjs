@@ -9,7 +9,7 @@ const report=(records=[sale()],range=filters)=>({ok:true,intervalApplied:true,fi
 function harness(initialCache=null){
  const state={page:'admin',currentUser:{id:'staff'},invoiceHistory:[],inventoryMeta:{},incomeRequestId:0,incomeVisibleCount:60,activeAdminSection:'income',syncFresh:{}},jobs=[],responses=[],calls=[],renders=[];let cached=initialCache,current={...filters};
  const nodes=new Map();for(const id of ['#income','#incomeKpis','#incomePaymentBreakdown','#incomeRecords','#incomeFilterSummary','#moreIncomeRecords'])nodes.set(id,{markup:'',writes:0,querySelectorAll:()=>[],set innerHTML(value){this.markup=value;this.writes++;},get innerHTML(){return this.markup;}});
- const context=vm.createContext({state,SalesShift,Date:Clock,Map,Set,Number,Object,JSON,clearTimeout,navigator:{onLine:true},window:{setTimeout:()=>1},
+ const context=vm.createContext({state,SalesShift,Date:Clock,Map,Set,Number,Object,JSON,clearTimeout,navigator:{onLine:true},window:{DonPierosDates:require('../date-format.js'),setTimeout:()=>1},
   normalizeText:value=>String(value||'').toLowerCase(),incomeRecordSaleType:()=> 'table',incomeFiltersFromForm:()=>({...current}),$:id=>nodes.get(id),canAccessAdminSection:()=>true,
   readAppsScriptOutbox:()=>jobs,INCOME_REPORT_CACHE_KEY:'cache',readLocalJson:()=>cached,mergeConfirmedIncomeReport:value=>value,
   isAppsScriptConfigured:()=>true,APPS_SCRIPT_TIMEOUT_MS:1000,toast(){},updateGlobalSyncStatus(){},renderSalesShift(){},setIncomeReportStatus(){},isBoss:()=>false,incomePaymentLabel:String,incomeSaleTypeLabel:String,formatIncomeDate:String,
@@ -72,7 +72,7 @@ test('sin turno vigente, al pasar medianoche se desplazan Hoy y los periodos rel
  for(const preset of ['today','yesterday','7days','month','year','custom']){
   time=Date.parse('2026-12-31T23:59:59-05:00');const state={incomeRangePreset:preset,activeAdminSection:'income'},nodes=new Map();let loads=0;
   for(const id of ['#incomeDateFrom','#incomeDateTo','#incomePaymentMethod','#incomeSaleType','#incomeSearch'])nodes.set(id,{value:id.includes('Date')?'2026-12-25':id.includes('Search')?'':'all'});
-  const context=vm.createContext({state,SalesShift,Date:MutableClock,$:id=>nodes.get(id),$$:()=>[],window:{setTimeout:()=>1,clearTimeout(){}},renderSalesShift(){},loadIncomeReport(){loads++;},dateInputValue:()=> '2026-12-25'});
+  const context=vm.createContext({state,SalesShift,Date:MutableClock,$:id=>nodes.get(id),$$:()=>[],window:{DonPierosDates:require('../date-format.js'),setTimeout:()=>1,clearTimeout(){}},renderSalesShift(){},loadIncomeReport(){loads++;},dateInputValue:()=> '2026-12-25'});
   vm.runInContext(part('incomeRangeDates','incomeSaleTypeLabel')+part('refreshSalesShiftRange','syncSalesShift')+';globalThis.api={set:setIncomeRange,refresh:refreshSalesShiftRange,filters:incomeFiltersFromForm};',context);
   if(preset!=='custom')context.api.set(preset,false);const before=context.api.filters();context.api.refresh();assert.equal(loads,0);
   time=Date.parse('2027-01-01T00:00:00-05:00');context.api.refresh();const after=context.api.filters();

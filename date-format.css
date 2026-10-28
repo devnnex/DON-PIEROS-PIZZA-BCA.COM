@@ -1,0 +1,6 @@
+.dp-date-control{display:block!important;position:relative;min-width:0;max-width:100%}
+.dp-date-control>input{width:100%;min-width:0}
+.dp-date-control:not(:focus-within)>input{color:transparent!important}
+.dp-date-control:not(:focus-within)>input::-webkit-datetime-edit{opacity:0}
+.dp-date-control>.dp-date-label{position:absolute;left:12px;right:35px;top:50%;transform:translateY(-50%);display:block!important;pointer-events:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#362e23;font-family:inherit;font-size:12px;font-weight:500;line-height:1.4}
+.dp-date-control:focus-within>.dp-date-label{visibility:hidden}

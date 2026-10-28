@@ -17,6 +17,7 @@ test('turno, secciones y escritura responden durante consultas remotas pendiente
    const context=await browser.newContext({viewport:{width,height:900}}),page=await context.newPage();
    page.on('pageerror',error=>errors.push(error.message));
    await page.goto(`http://127.0.0.1:${server.address().port}/admin.html`);
+   await page.addScriptTag({path:path.join(root,'date-format.js')});
    await page.addScriptTag({path:path.join(root,'sales-shift.js')});
    const lucide=[path.join(root,'vendor/lucide.min.js'),path.resolve(root,'../TIENDA-NAPOLES-OFF-LINE.COM-main/vendor/lucide.min.js')].find(file=>fs.existsSync(file));
    if(lucide)await page.addScriptTag({path:lucide});

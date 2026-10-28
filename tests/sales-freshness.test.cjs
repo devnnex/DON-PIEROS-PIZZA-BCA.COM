@@ -11,7 +11,7 @@ function fixture({cached=null,initial=null,online=true}={}) {
  for(const id of ['#income','#incomeKpis','#incomePaymentBreakdown','#incomeRecords','#incomeFilterSummary','#moreIncomeRecords']) {
   nodes.set(id,{markup:'',querySelectorAll:()=>[],set innerHTML(value){this.markup=value;histories.push([id,value]);},get innerHTML(){return this.markup;}});
  }
- const context=vm.createContext({state,navigator:{onLine:online},Date,clearTimeout,window:{setTimeout},
+ const context=vm.createContext({state,navigator:{onLine:online},Date,clearTimeout,window:{DonPierosDates:require('../date-format.js'),setTimeout},
   $:id=>nodes.get(id),canAccessAdminSection:()=>true,incomeFiltersFromForm:()=>({...filters}),
   readAppsScriptOutbox:()=>[],INCOME_REPORT_CACHE_KEY:'cache',readLocalJson:()=>cached,
   mergeIncomeReport:(value,current)=>({...value,filters:current}),localIncomeReport:()=>({...report(111,'local'),localOnly:true}),

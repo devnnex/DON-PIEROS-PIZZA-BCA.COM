@@ -26,8 +26,19 @@ const root=path.resolve(__dirname,'..');
   await page.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
   await dashboardCard.locator('h3').click();
   assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true,`La tarjeta debe abrir incluso con teléfono numérico. Errores: ${errors.join('; ')}`);
+  assert.ok(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.getBoundingClientRect().width)>=1000,'El modal aprovecha el ancho de escritorio.');
+  assert.equal(await page.locator('#dp-order-dialog>.dp-dialog-card').evaluate(card=>card.scrollHeight<=card.clientHeight+1),true,'Un pedido normal cabe completo en escritorio.');
+  assert.match(await page.locator('.dp-order-customer').evaluate(card=>getComputedStyle(card).backgroundImage),/rgb\(255, 247, 217\)/);
+  assert.match(await page.locator('.dp-order-heading time').innerText(),/^[A-ZÁÉÍÓÚ][a-záéíóú]{2} \d{1,2} [a-z]{3,4} \d{4} - \d{1,2}:\d{2} (AM|PM)$/);
+  await page.locator('#dp-order-dialog').screenshot({path:path.join(root,'artifacts/comanda-modal-amplio.png')});
   assert.match(await page.locator('#dp-order-detail').innerText(),/3102241444/);
   await page.keyboard.press('Escape');
+  const dateField=page.locator('#incomeDateFrom');
+  await dateField.evaluate(input=>{input.value='2026-10-28';});
+  assert.equal(await dateField.inputValue(),'2026-10-28','El formato visible no altera el valor del filtro.');
+  assert.equal(await dateField.locator('..').locator('.dp-date-label').innerText(),'Mié 28 oct 2026');
+  await dateField.evaluate(input=>{input.value='2026-10-29';input.dispatchEvent(new Event('change',{bubbles:true}));});
+  assert.equal(await dateField.locator('..').locator('.dp-date-label').innerText(),'Jue 29 oct 2026');
   await dashboardCard.locator('[data-dp-view]').click();assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);await page.keyboard.press('Escape');
   for(const width of [58,80]){
    await page.locator('#dp-dashboard-orders [data-dp-paper]').selectOption(String(width));
@@ -56,6 +67,7 @@ const root=path.resolve(__dirname,'..');
   await page.evaluate(()=>location.hash='onlineorders');const list=page.locator('#dp-orders-list [data-dp-order]').first();await list.waitFor();
   for(const viewport of [390,1440]){
    await page.setViewportSize({width:viewport,height:1000});await list.locator('[data-dp-view]').click();
+   if(viewport===390)await page.locator('#dp-order-dialog').screenshot({path:path.join(root,'artifacts/comanda-modal-movil.png')});
    assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);await page.keyboard.press('Escape');
    await list.focus();await page.keyboard.press('Enter');assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);await page.keyboard.press('Escape');
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);

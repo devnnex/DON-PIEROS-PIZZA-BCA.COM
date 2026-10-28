@@ -57,7 +57,7 @@ const SupabaseDb = (() => {
       if (clientTableAccess.table_id) headers.set("x-table-id", clientTableAccess.table_id);
       if (clientTableAccess.code) headers.set("x-table-code", clientTableAccess.code);
       const requestPath = new URL(typeof input === "string" ? input : input?.url || String(input), SUPABASE_CONFIG.url).pathname;
-      const urgent = /\/(service_requests|rpc\/(create_service_requests?(?:_batch)?|dp_notify_waiter_order|list_chat_messages|send_chat_message))$/.test(requestPath);
+      const urgent = /\/(service_requests|rpc\/(create_service_requests?(?:_batch)?|dp_notify_waiter_order|dp_save_waiter_comanda|dp_accept_waiter_comanda|list_chat_messages|send_chat_message))$/.test(requestPath);
       const reporting = /\/rpc\/(get_report_changes|publish_report_change)$/.test(requestPath);
       return fetch(input, { ...options, headers, cache: "no-store", priority: urgent ? "high" : reporting ? "low" : "auto" }).then(async (response) => {
         try {
@@ -66,7 +66,7 @@ const SupabaseDb = (() => {
           const entity = url.pathname.replace(/^.*\/rest\/v1\//, "");
           const core = ["business_settings", "restaurant_tables", "menu_categories", "menu_items"].includes(entity);
           const operational = ["table_sessions", "session_items", "service_requests"].includes(entity)
-            || /^rpc\/(save_table_zones|record_session_payment|replay_table_session_change|acknowledge_service_requests|resolve_bill|create_service_requests?(?:_batch)?|dp_notify_waiter_order)$/.test(entity);
+            || /^rpc\/(save_table_zones|record_session_payment|replay_table_session_change|acknowledge_service_requests|resolve_bill|create_service_requests?(?:_batch)?|dp_notify_waiter_order|dp_save_waiter_comanda|dp_accept_waiter_comanda)$/.test(entity);
           const users = entity === "app_users" || /^rpc\/(save_user|delete_user)$/.test(entity);
           if (response.ok && !response.headers.get("X-Offline-Queued") && ["POST","PATCH","DELETE"].includes(method)
             && (core || operational || users) && typeof window.dispatchEvent === "function") {
@@ -147,7 +147,7 @@ const App = (() => {
   const TIP_SPLIT_STORAGE_KEY = "don_pieros_tip_split_people_v1";
   const USER_LIST_CACHE_KEY = "don_pieros_users_v1";
   const USER_CREDENTIALS_CACHE_KEY = "don_pieros_user_credentials_v1";
-  const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v2";
+  const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v3";
   const ADMIN_SECTION_KEYS = ["dashboard", "service", "accounts", "tips", "inventory", "movements", "income", "menu", "brand"];
   const CATEGORY_PRESETS = ["Snack", "Bebidas", "Medicina", "Otros"];
   const REQUEST_IMAGES = {
@@ -1430,7 +1430,7 @@ const App = (() => {
     image.src = url;
   });
 
-  const pwaIconBlob = async (logoUrl, size) => {
+  const pwaIconBlob = async (logoUrl, size, admin = false) => {
     const image = await loadPwaLogo(logoUrl);
     const canvas = document.createElement("canvas");
     canvas.width = size;
@@ -1439,11 +1439,20 @@ const App = (() => {
     if (!context) throw new Error("El navegador no puede generar el icono de instalación.");
     context.fillStyle = "#000000";
     context.fillRect(0, 0, size, size);
-    const safeArea = size * .76;
+    const safeArea = size * (admin ? .68 : .76);
     const scale = Math.min(safeArea / image.naturalWidth, safeArea / image.naturalHeight);
     const width = image.naturalWidth * scale;
     const height = image.naturalHeight * scale;
-    context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+    context.drawImage(image, (size - width) / 2, (size - height) / 2 - (admin ? size*.055 : 0), width, height);
+    if (admin) {
+      context.strokeStyle = "#ed2535"; context.lineWidth = size * .055;
+      context.beginPath();context.arc(size*.5,size*.5,size*.43,0,Math.PI*2);context.stroke();
+      context.fillStyle = "#ffda59";
+      context.fillRect(size*.22,size*.715,size*.56,size*.145);
+      context.fillStyle = "#17130c"; context.textAlign = "center"; context.textBaseline = "middle";
+      context.font = `900 ${size*.095}px Arial,sans-serif`;
+      context.fillText("ADMIN",size*.5,size*.79);
+    }
     return new Promise((resolve, reject) => canvas.toBlob(
       (blob) => blob ? resolve(blob) : reject(new Error("No se pudo convertir el logo en icono.")),
       "image/png"
@@ -1457,11 +1466,11 @@ const App = (() => {
   };
 
   const syncPwaBranding = async () => {
-    if (!state.business) return;
+    if (!state.business || state.page !== "admin") return;
     const name = String(state.business.business_name || "Don Pieros Pizza").trim() || "Don Pieros Pizza";
     const logoUrl = String(state.business.logo_url || "images/don-pieros-logo.png").trim();
     const themeColor = String(state.business.accent_color || "#f05a28");
-    const signature = `${name}|${logoUrl}|${themeColor}|black-icon-v2`;
+    const signature = `${name}|${logoUrl}|${themeColor}|admin-icon-v3`;
     if (signature === state.pwaBrandSignature) return;
     state.pwaBrandSignature = signature;
     const syncToken = ++state.pwaBrandSyncToken;
@@ -1475,7 +1484,7 @@ const App = (() => {
     let icon512 = null;
     if (logoUrl) {
       try {
-        [icon192, icon512] = await Promise.all([pwaIconBlob(logoUrl, 192), pwaIconBlob(logoUrl, 512)]);
+        [icon192, icon512] = await Promise.all([pwaIconBlob(logoUrl, 192, true), pwaIconBlob(logoUrl, 512, true)]);
       } catch (error) {
         icon192 = null;
         icon512 = null;
@@ -1484,8 +1493,8 @@ const App = (() => {
     if (syncToken !== state.pwaBrandSyncToken) return;
 
     let iconEntries = [
-      { src: "./images/icon-192.png?v=black-logo-v2", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "./images/icon-512.png?v=black-logo-v2", sizes: "512x512", type: "image/png", purpose: "any" }
+      { src: "./images/admin-icon-192.png?v=admin-v1", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+      { src: "./images/admin-icon-512.png?v=admin-v1", sizes: "512x512", type: "image/png", purpose: "any maskable" }
     ];
     if (icon192 && icon512) {
       const faviconUrl = URL.createObjectURL(icon192);
@@ -1495,27 +1504,27 @@ const App = (() => {
         $("#appFavicon").href = faviconUrl;
         $("#appFavicon").type = "image/png";
       }
-      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = faviconUrl;
+      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = largeIconUrl;
       if ("caches" in window) {
         const cache = await caches.open(PWA_BRAND_CACHE);
         await Promise.all([
-          cache.put(pwaAssetUrl("pwa-icon-192.png"), new Response(icon192, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } })),
-          cache.put(pwaAssetUrl("pwa-icon-512.png"), new Response(icon512, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } }))
+          cache.put(pwaAssetUrl("pwa-admin-icon-192.png"), new Response(icon192, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } })),
+          cache.put(pwaAssetUrl("pwa-admin-icon-512.png"), new Response(icon512, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } }))
         ]);
       }
       iconEntries = [
-        { src: `./pwa-icon-192.png?v=${version}`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
-        { src: `./pwa-icon-512.png?v=${version}`, sizes: "512x512", type: "image/png", purpose: "any maskable" }
+        { src: `./pwa-admin-icon-192.png?v=${version}`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
+        { src: `./pwa-admin-icon-512.png?v=${version}`, sizes: "512x512", type: "image/png", purpose: "any maskable" }
       ];
     } else {
-      if ($("#appFavicon")) { $("#appFavicon").href = "./images/icon-192.png?v=black-logo-v2"; $("#appFavicon").type = "image/png"; }
-      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = "./images/icon-512.png?v=black-logo-v2";
+      if ($("#appFavicon")) { $("#appFavicon").href = "./images/admin-icon-192.png?v=admin-v1"; $("#appFavicon").type = "image/png"; }
+      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = "./images/admin-icon-512.png?v=admin-v1";
     }
 
     const manifest = {
       id: "./admin.html",
-      name,
-      short_name: Array.from(name).slice(0, 15).join(""),
+      name: name + " · Administración",
+      short_name: "Pieros Admin",
       description: "Administración y servicio a la mesa",
       lang: "es-CO",
       start_url: "./admin.html",
@@ -1529,7 +1538,7 @@ const App = (() => {
     const manifestText = JSON.stringify(manifest);
     if ("caches" in window) {
       const cache = await caches.open(PWA_BRAND_CACHE);
-      await cache.put(pwaAssetUrl("pwa-manifest.webmanifest"), new Response(manifestText, {
+      await cache.put(pwaAssetUrl("pwa-admin-manifest.webmanifest"), new Response(manifestText, {
         headers: { "Content-Type": "application/manifest+json", "Cache-Control": "no-store" }
       }));
     }
@@ -1538,7 +1547,7 @@ const App = (() => {
     const controlled = await waitForPwaController();
     if (syncToken !== state.pwaBrandSyncToken) return;
     if (controlled) {
-      replacePwaManifestLink(`${pwaAssetUrl("pwa-manifest.webmanifest")}?v=${version}`);
+      replacePwaManifestLink(`${pwaAssetUrl("pwa-admin-manifest.webmanifest")}?v=${version}`);
       return;
     }
     if (state.pwaManifestObjectUrl) URL.revokeObjectURL(state.pwaManifestObjectUrl);
@@ -1887,8 +1896,8 @@ const App = (() => {
   const billDateParts = (value) => {
     const date = new Date(value || Date.now());
     return {
-      date: date.toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" }).replace(".", ""),
-      time: date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      date: window.DonPierosDates.date(date),
+      time: window.DonPierosDates.time(date)
     };
   };
 
@@ -2031,7 +2040,7 @@ const App = (() => {
             </div>
             <div>
               <span>Fecha y hora</span>
-              <strong>${sent.date} | ${sent.time}</strong>
+              <strong>${sent.date} - ${sent.time}</strong>
             </div>
             <div>
               <span>Mesa</span>
@@ -3443,14 +3452,7 @@ const App = (() => {
     window.requestAnimationFrame(() => $("#assistantInput")?.focus({ preventScroll: true }));
   };
 
-  const prettyDateTime = (value) => (prettyDateTime.formatter ||= new Intl.DateTimeFormat("es-CO", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  })).format(new Date(value || Date.now())).replace(".", "");
+  const prettyDateTime = (value) => window.DonPierosDates.dateTime(value || Date.now());
 
   const REQUEST_OUTBOX_KEY = "don_pieros_request_outbox_v2";
 
@@ -5299,7 +5301,7 @@ const App = (() => {
   };
   const abonoRowsHtml = (session) => (Array.isArray(session?.session_items) && sessionTotal(session) === 0 ? [] : sessionPayments(session)).sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)))
     .map((row) => '<div class="account-abono-line"><div><strong>Abono · ' + escapeHTML(paymentMethodLabel(row.payment_method)) + '</strong><small>'
-      + escapeHTML(new Date(row.created_at).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "medium" }))
+      + escapeHTML(prettyDateTime(row.created_at))
       + (row.reference ? ' · ' + escapeHTML(row.reference) : '') + (row._offline_pending ? ' · Pendiente de sincronizar' : '')
       + '</small></div><strong>−' + money(row.amount) + '</strong></div>').join('');
 
@@ -5537,6 +5539,15 @@ const App = (() => {
   const renderAlerts = () => {
     const box = $("#alertsPanel");
     if (!box) return;
+    const receptionRequests = activeRequests().filter(request => state.currentUser?.role !== "waiter"
+      || request.request_source !== "waiter" || request.requested_by_user_id !== state.currentUser?.id);
+    window.DonPierosReception?.syncRequests(receptionRequests, {
+      label: request => `${REQUEST_LABELS[request.request_type] || "Nueva solicitud"} · ${tableLabel(request.restaurant_tables)}`,
+      body: request => requestOrigin(request).kind === "waiter"
+        ? `Pedido tomado por ${requestOrigin(request).name}\n${requestBody(request) || "Revisa el pedido de la mesa."}`
+        : requestBody(request) || "El cliente está esperando atención.",
+      accept: id => acceptRequest(id)
+    });
     const alerts = groupedActiveRequests();
     const visibleAlerts = state.alertFilter === "all"
       ? alerts
@@ -5591,7 +5602,7 @@ const App = (() => {
     const signature = requestSignature();
     if (signature && signature !== state.lastAlertSignature) {
       state.lastAlertSignature = signature;
-      playAlarm(activeRequests());
+      playAlarm(receptionRequests);
     }
     refreshIcons();
   };
@@ -5625,6 +5636,7 @@ const App = (() => {
     box.innerHTML = compactTableTiles() || emptyState("Sin mesas", "Crea una mesa activa para atenderla.", "armchair");
     renderServicePoints();
     refreshIcons();
+    window.DonPierosWaiter?.sync();
   };
 
   const renderServicePoints = () => {
@@ -6887,7 +6899,7 @@ const App = (() => {
       doc.text("Compras de inventario",margin,12);
       doc.setFont("helvetica","normal");doc.setFontSize(10);
       doc.text(doc.splitTextToSize(clean(state.business?.business_name || "Don Pieros Pizza"),tableWidth).slice(0,1),margin,20);
-      doc.text(`${filters.from || "Todo el historial"} a ${filters.to || "hoy"}`,margin,27);
+      doc.text(`${filters.from ? window.DonPierosDates.date(filters.from) : "Todo el historial"} a ${filters.to ? window.DonPierosDates.date(filters.to) : "hoy"}`,margin,27);
       doc.setTextColor(35,48,58);y=40;
     };
     const newPage=()=>{doc.addPage();heading();};
@@ -8340,13 +8352,7 @@ const App = (() => {
   };
 
   const formatIncomeDate = (value) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value || "Sin fecha");
-    if (formatIncomeDate.zone !== state.businessTimeZone || !formatIncomeDate.formatter) {
-      formatIncomeDate.zone = state.businessTimeZone;
-      formatIncomeDate.formatter = new Intl.DateTimeFormat("es-CO", { dateStyle: "medium", timeStyle: "short", timeZone: state.businessTimeZone });
-    }
-    return formatIncomeDate.formatter.format(date);
+    return window.DonPierosDates.dateTime(value,state.businessTimeZone);
   };
 
   const renderIncomeReport = (appendFrom = 0) => {
@@ -8410,7 +8416,7 @@ const App = (() => {
     if (summaryTarget) {
       const methodText = filters.paymentMethod === "all" ? "todos los medios" : incomePaymentLabel(filters.paymentMethod);
       const typeText = incomeSaleTypeLabel(filters.saleType);
-      summaryTarget.innerHTML = `${icon("calendar-range", 15)} <strong>${escapeHTML(filters.dateFrom)}</strong> a <strong>${escapeHTML(filters.dateTo)}</strong> · ${escapeHTML(methodText)} · ${escapeHTML(typeText)}${filters.query ? ` · Búsqueda: “${escapeHTML(filters.query)}”` : ""}${filters.startAt ? ` · ${escapeHTML(formatIncomeDate(filters.startAt))} — ${escapeHTML(formatIncomeDate(filters.endAt))}` : ""}`;
+      summaryTarget.innerHTML = `${icon("calendar-range", 15)} <strong>${escapeHTML(window.DonPierosDates.date(filters.dateFrom))}</strong> a <strong>${escapeHTML(window.DonPierosDates.date(filters.dateTo))}</strong> · ${escapeHTML(methodText)} · ${escapeHTML(typeText)}${filters.query ? ` · Búsqueda: “${escapeHTML(filters.query)}”` : ""}${filters.startAt ? ` · ${escapeHTML(formatIncomeDate(filters.startAt))} — ${escapeHTML(formatIncomeDate(filters.endAt))}` : ""}`;
     }
     const appendOnly = appendFrom > 0 && recordsTarget.querySelectorAll(".income-record").length === appendFrom;
     const visibleRecords = appendOnly ? report.records.slice(appendFrom) : report.records;
@@ -9197,8 +9203,8 @@ const App = (() => {
         const id = String(line.menuItemId || line.name), row = grouped.get(id) || { name: line.name, quantity: 0, total: 0 };
         row.quantity += Number(line.quantity || 0); row.total += Number(line.total || 0); grouped.set(id, row);
       }));
-      const from = filters.startAt ? prettyDateTime(filters.startAt) : filters.dateFrom;
-      const to = filters.endAt ? prettyDateTime(new Date(new Date(filters.endAt).getTime()-1)) : filters.dateTo;
+      const from = filters.startAt ? prettyDateTime(filters.startAt) : window.DonPierosDates.date(filters.dateFrom);
+      const to = filters.endAt ? prettyDateTime(new Date(new Date(filters.endAt).getTime()-1)) : window.DonPierosDates.date(filters.dateTo);
       const partial = records.length < Number(report.totalRecords || 0);
       buildBusinessReportPdf({title: state.incomeRangePreset === "shift" ? "Ventas del turno" : "Reporte de ventas", subtitle:`${from} a ${to}`,
         metrics:[["Total vendido",money(totals.income)],["Ventas",records.length],["Ganancia estimada",money(totals.profit)]],
@@ -9241,8 +9247,8 @@ const App = (() => {
   const accountDateParts = (session) => {
     const opened = new Date(session.opened_at || session.created_at);
     return {
-      date: opened.toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" }),
-      time: opened.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      date: window.DonPierosDates.date(opened),
+      time: window.DonPierosDates.time(opened)
     };
   };
 
@@ -9264,7 +9270,7 @@ const App = (() => {
     const billRequest = state.requests.find((request) => request.session_id === session.id && request.request_type === "bill");
     target.innerHTML = `
       <div class="section-head account-detail-head">
-        <div><span class="eyebrow">Cuenta abierta</span><h2>Desglose de ${escapeHTML(sessionLabel(session))}</h2><p>#${sessionReference(session)} · ${opened.date}, ${opened.time}</p></div>
+        <div><span class="eyebrow">Cuenta abierta</span><h2>Desglose de ${escapeHTML(sessionLabel(session))}</h2><p>#${sessionReference(session)} · ${opened.date} - ${opened.time}</p></div>
         <button class="icon-btn" type="button" data-close-dialog aria-label="Cerrar desglose">${icon("x", 18)}</button>
       </div>
       <div class="account-detail-overview">
@@ -9279,7 +9285,7 @@ const App = (() => {
         <div class="account-detail-lines">
           ${items.map((item) => `
             <div class="account-detail-line">
-              <div><strong>${escapeHTML(item.item_name)}</strong><span>${Number(item.quantity || 0)} × ${money(item.unit_price)}</span><small>${escapeHTML(item.created_by_user?.full_name || "Cliente")}${item.created_at ? ` · ${new Date(item.created_at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}${item.notes ? ` · ${escapeHTML(item.notes)}` : ""}</small></div>
+              <div><strong>${escapeHTML(item.item_name)}</strong><span>${Number(item.quantity || 0)} × ${money(item.unit_price)}</span><small>${escapeHTML(item.created_by_user?.full_name || "Cliente")}${item.created_at ? ` · ${prettyDateTime(item.created_at)}` : ""}${item.notes ? ` · ${escapeHTML(item.notes)}` : ""}</small></div>
               <strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong>
               <button class="icon-btn" type="button" data-edit-consumption="${item.id}" data-session-id="${session.id}" aria-label="Editar consumo">${icon("pencil", 15)}</button>
               <button class="icon-btn danger" type="button" data-delete-consumption="${item.id}" data-session-id="${session.id}" data-boss-only aria-label="Eliminar consumo">${icon("trash-2", 15)}</button>
@@ -9365,7 +9371,7 @@ const App = (() => {
                 <div class="account-summary-total"><small>Saldo pendiente</small><strong>${money(total)}</strong></div>
                 ${sessionTotal(session) > 0 && sessionPaid(session) ? `<div class="account-abono-summary">Abonado: −${money(sessionPaid(session))} · Consumo: ${money(sessionTotal(session))}</div>` : ""}
                 ${suggestedTip ? `<div class="account-summary-tip"><span>Propina voluntaria (${state.tipSettings.percentage}%)</span><strong>${money(suggestedTip)}</strong><small>Total sugerido: ${money(total + suggestedTip)}</small></div>` : ""}
-                <div class="account-summary-meta"><span>${icon("user-round", 15)} ${escapeHTML(session.payer_name || "Por definir")}</span><span>${icon("contact", 15)} ${escapeHTML(session.assigned_waiter?.full_name || "Sin asignar")}</span><span>${icon("clock-3", 15)} ${opened.date} · ${opened.time}</span></div>
+                <div class="account-summary-meta"><span>${icon("user-round", 15)} ${escapeHTML(session.payer_name || "Por definir")}</span><span>${icon("contact", 15)} ${escapeHTML(session.assigned_waiter?.full_name || "Sin asignar")}</span><span>${icon("clock-3", 15)} ${opened.date} - ${opened.time}</span></div>
                 <div class="account-summary-actions">
                   ${items.length ? `<button class="ghost abono-button" type="button" data-abono-session="${session.id}">${icon("hand-coins",16)} Abonar</button>` : ""}
                   <button class="ghost" type="button" data-view-account="${session.id}">${icon("list-collapse", 16)} Ver desglose</button>
@@ -9410,7 +9416,7 @@ const App = (() => {
           const baseTotal = Number(invoice.baseTotal ?? invoice.totals?.baseTotal ?? chargedTotal - tip);
           return `<article class="tip-record">
             <span class="tip-record-icon">${icon("receipt-text", 18)}</span>
-            <div><strong>${escapeHTML(invoice.table || "Venta")}</strong><span>${escapeHTML(invoice.number || "Factura")}</span><small>${date.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · ${date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</small><small>${escapeHTML(invoice.waiterName || "Equipo")} · Consumo ${money(baseTotal)} · Cobrado ${money(chargedTotal)}</small></div>
+            <div><strong>${escapeHTML(invoice.table || "Venta")}</strong><span>${escapeHTML(invoice.number || "Factura")}</span><small>${prettyDateTime(date)}</small><small>${escapeHTML(invoice.waiterName || "Equipo")} · Consumo ${money(baseTotal)} · Cobrado ${money(chargedTotal)}</small></div>
             <strong>+${money(tip)}</strong>
           </article>`;
         }).join("")
@@ -9442,6 +9448,7 @@ const App = (() => {
     if (state.activeAdminSection === "service") renderServiceTables();
     if (state.activeAdminSection === "accounts") renderAccounts();
     if (state.activeAdminSection === "tips") renderTips();
+    window.DonPierosWaiter?.sync();
   };
 
   const updateTipSettingsFromForm = (form, { toggleChanged = false, renderForm = true } = {}) => {
@@ -9723,6 +9730,7 @@ const App = (() => {
       persistPendingAdminRequests([...readPendingAdminRequests().filter((request) => !confirmedIds.has(request.id)), ...state.requests.filter((request) => request.status === "pending")]);
       if (confirmedIds.size !== originals.length) toast(failureMessage, "error", `request-write-failed:${ids.join(":")}`);
       renderAdminLive();
+      if (originals.some(request=>request.request_source==="waiter") && typeof refreshAdminNow === "function") void refreshAdminNow();
     })();
   };
 
@@ -9970,8 +9978,8 @@ const App = (() => {
         <div class="meta">
           <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
           <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
-          <span>Fecha:</span><strong>${issuedAt.toLocaleDateString("es-CO")}</strong>
-          <span>Hora:</span><strong>${issuedAt.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</strong>
+          <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
+          <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
           <span>Mesero:</span><strong>${escapeHTML(session.assigned_waiter?.full_name || state.currentUser?.full_name || "Equipo")}</strong>
         </div>
@@ -9991,7 +9999,7 @@ const App = (() => {
           <span class="total">${suggestedTip ? "TOTAL SUGERIDO" : "TOTAL"}</span><strong class="total">${money(receiptTotal)}</strong>
         </div>
         ${suggestedTip ? `<p class="center"><strong>La propina es voluntaria.</strong><br>El cliente puede pagar el consumo sin propina: ${money(baseTotal)}.</p>` : ""}
-        ${isPaid && invoice.prepayments?.length ? `<div class="rule"></div><div class="center">ABONOS REGISTRADOS</div>${invoice.prepayments.map((row) => `<div class="meta"><span>${escapeHTML(new Date(row.created_at).toLocaleString("es-CO"))} · ${escapeHTML(paymentMethodLabel(row.payment_method))}</span><strong>${money(row.amount)}</strong></div>`).join("")}` : ""}
+        ${isPaid && invoice.prepayments?.length ? `<div class="rule"></div><div class="center">ABONOS REGISTRADOS</div>${invoice.prepayments.map((row) => `<div class="meta"><span>${escapeHTML(prettyDateTime(row.created_at))} · ${escapeHTML(paymentMethodLabel(row.payment_method))}</span><strong>${money(row.amount)}</strong></div>`).join("")}` : ""}
         ${isPaid ? `<div class="rule"></div><div class="paid">PAGADO</div><div class="meta" style="margin-top:2mm">${payments.map((payment) => `<span>${escapeHTML(paymentMethodLabel(payment.method))}</span><strong>${money(payment.amount)}</strong>`).join("")}${Number(invoice.cashReceived || 0) ? `<span>Recibido</span><strong>${money(invoice.cashReceived)}</strong><span>Cambio</span><strong>${money(invoice.changeDue)}</strong>` : ""}${invoice.reference ? `<span>Referencia</span><strong>${escapeHTML(invoice.reference)}</strong>` : ""}</div>` : ""}
         <div class="rule"></div>
         <div class="footer">Gracias por su compra<br><strong>${escapeHTML(businessName)}</strong></div>
@@ -10742,22 +10750,7 @@ const App = (() => {
   };
 
   const formatConsumptionTimestamp = (value) => {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    const dateParts = new Intl.DateTimeFormat("es-CO", {
-      timeZone: "America/Bogota",
-      day: "numeric",
-      month: "short",
-      year: "numeric"
-    }).formatToParts(date).reduce((parts, part) => ({ ...parts, [part.type]: part.value }), {});
-    const dateText = `${dateParts.day} ${String(dateParts.month || "").replace(/\./g, "")} ${dateParts.year}`;
-    const timeText = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Bogota",
-      hour: "numeric",
-      minute: "2-digit",
-      hour12: true
-    }).format(date).toLowerCase();
-    return `${dateText} · ${timeText}`;
+    return Number.isNaN(new Date(value).getTime()) ? "" : window.DonPierosDates.dateTime(value);
   };
 
   const renderLastConsumptionTime = (session) => {
@@ -11166,6 +11159,9 @@ const App = (() => {
       toast("Confirma o elimina la seleccion pendiente antes de editar un consumo.", "error", "pending-items-before-edit");
       return;
     }
+    if (item.waiter_comanda_id && window.DonPierosWaiter?.editComanda) {
+      dialog.close();void window.DonPierosWaiter.editComanda(item.waiter_comanda_id);return;
+    }
     form.reset();
     form.session_id.value = session.id;
     form.session_item_id.value = item.id;
@@ -11210,6 +11206,9 @@ const App = (() => {
     const session = state.sessions.find((entry) => entry.id === sessionId);
     const item = session?.session_items?.find((entry) => entry.id === itemId && entry.status !== "cancelled");
     if (!session || !item) return;
+    if (item.waiter_comanda_id && window.DonPierosWaiter?.editComanda) {
+      $("#consumptionDialog")?.close();void window.DonPierosWaiter.editComanda(item.waiter_comanda_id,item.id);return;
+    }
     if (!await askForConfirmation({
       eyebrow: "Cuenta abierta",
       title: `¿Quitar ${item.item_name}?`,
@@ -11633,7 +11632,7 @@ const App = (() => {
         pdf.setFont("helvetica", "normal");
         pdf.setTextColor(92, 99, 112);
         pdf.setFontSize(8);
-        pdf.text(`Generado: ${pdfSafeText(new Date().toLocaleString("es-CO"))}`, pageWidth - margin, 12, { align: "right" });
+        pdf.text(`Generado: ${pdfSafeText(prettyDateTime(Date.now()))}`, pageWidth - margin, 12, { align: "right" });
         if (includeSummary) {
           pdf.text(
             `${products.length} productos  |  ${summary.units.toLocaleString("es-CO", { maximumFractionDigits: 2 })} unidades  |  Inversion ${pdfSafeText(money(summary.costValue))}  |  Venta potencial ${pdfSafeText(money(summary.saleValue))}`,
@@ -12786,6 +12785,7 @@ const App = (() => {
       toast("No se encontro la mesa seleccionada. Actualiza la pagina e intenta de nuevo.", "error", "unknown-service-table");
       return;
     }
+    if (isWaiter() && window.DonPierosWaiter?.isReady?.()) { window.DonPierosWaiter.openTable(table.id); return; }
     let session = state.sessions.find((entry) => entry.table_id === table.id && entry.status === "open");
     if (session) {
       session = {
@@ -13611,7 +13611,26 @@ const App = (() => {
     refreshIcons();
   };
 
-  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb, notify: toast, announceWebOrders, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
+  const revealReception = (kind) => {
+    if (!canAccessAdminSection("dashboard")) return;
+    showAdminSection("dashboard");
+    if (location.hash !== "#dashboard") history.replaceState(null, "", "#dashboard");
+    window.requestAnimationFrame(() => {
+      const target = $(kind === "order" ? "#dp-dashboard-orders" : "#alertsPanel");
+      target?.scrollIntoView({block:"start", behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth"});
+    });
+  };
+  const applyWaiterResult = (result) => {
+    if (!result?.session || result.closed) return;
+    const session = {...result.session, restaurant_tables:state.tables.find(table=>table.id===result.session.table_id)};
+    state.sessions = [session,...state.sessions.filter(entry=>entry.id!==session.id)];
+    state.optimisticSessionStates.set(session.id,{mode:"upsert",session,expectedItems:session.session_items});
+    if (result.request) receiveAdminRequests([result.request]);
+    renderAdminLive();notifyAdminPeers({operational:true});void refreshAdminNow();
+  };
+  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+    getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,
+    notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   return { init };
 })();
 

@@ -19,14 +19,14 @@ const form={session_id:{value:'s8'},tip_choice:{value:'with'},tip_amount:{value:
 const nodes=new Map([['#paymentForm',form],['#paymentTotal',{textContent:''}],['#paymentAbonoSummary',{textContent:''}]]);
 const context=vm.createContext({state, Date:fakeDate, Set,Map,console,
   integerMoney:value=>Math.max(0,Math.round(Number(value||0))),
-  money:value=>'$'+Number(value),escapeHTML:value=>String(value||''),
+  money:value=>'$'+Number(value),escapeHTML:value=>String(value||''),prettyDateTime:require('../date-format.js').dateTime,
   normalizeText:value=>String(value||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''),
   sessionLabel:session=>session.restaurant_tables?.table_name || 'Venta individual',
   sessionReference:session=>session.id,paymentMethodLabel:method=>method,
   currencyInputNumber:field=>Number(field?.value||0),setCurrencyInputValue:(field,value)=>{field.value=value;},
   tipsEnabled:()=>state.tipSettings.enabled,tipAmountFor:base=>Math.round(base*state.tipSettings.percentage/100),
   $:selector=>nodes.get(selector),$$:()=>[],updateMixedPayment:()=>{},updateCashChange:()=>{},
-  window:{},openCashDrawer:()=>{calls++;},
+  window:{DonPierosDates:require('../date-format.js'),},openCashDrawer:()=>{calls++;},
   document:{querySelector:()=>modal?{}:null,activeElement:{closest:()=>input?{}:null},addEventListener:(name,fn)=>{handlers[name]=fn;}}
 });
 vm.runInContext(section('sessionTotals','newestSessionItems')

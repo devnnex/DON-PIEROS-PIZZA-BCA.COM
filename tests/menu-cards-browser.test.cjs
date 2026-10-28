@@ -8,7 +8,7 @@ test('Carta: carga múltiple, confirmación, persistencia entre dispositivos, re
   const url=new URL(req.url,'http://localhost');
   if(url.pathname.startsWith('/image/')){const buffer=objects.get(decodeURIComponent(url.pathname.slice(7)));res.writeHead(buffer?200:404,{'Content-Type':'image/png'});res.end(buffer);return;}
   if(url.pathname==='/admin'){const form=fs.readFileSync(path.join(root,'admin.html'),'utf8').match(/<form class="form-grid" id="businessForm">[\s\S]*?<\/form>/)?.[0];assert.ok(form);res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/menu-cards.css"><main><section id="brand">'+form+'</section></main><script src="/menu-cards.js"></script>');return;}
-  if(url.pathname==='/client'){res.setHeader('Content-Type','text/html');res.end(fs.readFileSync(path.join(root,'index.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,''));return;}
+  if(url.pathname==='/client'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fs.readFileSync(path.join(root,'mesa.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'').replace('</head>','<link rel="stylesheet" href="/style.css"></head>'));return;}
   const file=url.pathname.slice(1);if(!['style.css','menu-cards.css','menu-cards.js'].includes(file)){res.writeHead(404);res.end();return;}
   res.setHeader('Content-Type',file.endsWith('.js')?'text/javascript':'text/css');res.end(fs.readFileSync(path.join(root,file)));
  });
@@ -126,6 +126,7 @@ test('PDF: descarga real desde botón de Compras y contraste del cobro sin cambi
   await page.setContent(`${match[0]}<p id="purchaseFilterFeedback"></p><div class="cash-change is-sufficient" id="cashChange"><span>Vueltas / cambio</span><strong>$ 500</strong><small>Recibido $ 3.000</small></div>`);
   await page.addStyleTag({content:fs.readFileSync(path.join(root,'style.css'),'utf8')});
   await page.addScriptTag({path:path.join(root,'vendor/jspdf.umd.min.js')});
+  await page.addScriptTag({path:path.join(root,'date-format.js')});
   const start=source.indexOf('  const buildPurchasesReportPdf ='),end=source.indexOf('  const renderConsumptionProductOptions =',start);
   const click=source.split('\n').find(line=>line.includes('$("#exportPurchasesPdf")?.addEventListener'));assert.ok(click);
   await page.addScriptTag({content:`const $=s=>document.querySelector(s),money=n=>'$ '+Number(n).toLocaleString('es-CO'),reportNumber=n=>Number(n).toLocaleString('es-CO');const state={business:{business_name:'Tienda Nápoles'},purchaseDateFrom:'2026-10-01',purchaseDateTo:'2026-10-19',purchaseSearch:'',movementHasMore:true};const purchaseDateKey=v=>new Date(v).toISOString().slice(0,10),prettyDateTime=v=>new Date(v).toLocaleString('es-CO'),purchaseUnitCost=r=>r.unitCost,toast=message=>{window.pdfError=message};const purchaseMovements=()=>Array.from({length:135},(_,i)=>({productId:'p'+i,product:'Producto '+i,date:'2026-10-18T18:30:00Z',user:'Ana',reference:'Compra '+i,delta:3,unitCost:12500}));`+source.slice(start,end)+click});

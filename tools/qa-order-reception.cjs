@@ -113,7 +113,7 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   assert.equal(await client.evaluate(()=>window.qaWhatsApp),undefined,'La confirmación queda visible antes de abrir WhatsApp.');
   assert.match(await client.locator('.success-celebration').innerText(),/En 4 segundos/);
   assert.equal(await client.evaluate(()=>window.qaKeepAlive),true);
-  await admin.locator('#dp-orders-list [data-dp-order]').first().waitFor({timeout:2000});
+  await admin.locator('#dp-dashboard-orders [data-dp-order]').first().waitFor({timeout:2000});
   const receivedAt=Date.now();assert.ok(receivedAt-orderCommitted<2000,'El aviso debe interrumpir la lectura anterior.');
   assert.equal(await admin.evaluate(()=>window.qaAlarms),1,'Un pedido genera una alarma aun recibiendo dos avisos.');
   await admin.waitForFunction(()=>window.qaSpoken.includes('Una nueva orden ha llegado a Don Pieros Pizza.'),{},{timeout:6000});
@@ -133,6 +133,7 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   assert.equal(h.sheets.get('Ordenes_Web').getLastRow(),2);
   assert.equal(await client.evaluate(()=>localStorage.getItem('don_pieros_pending_order_v1')),null);
   oldReadGate.resolve();oldReadGate=null;
+  await admin.evaluate(()=>location.hash='onlineorders');await admin.locator('#onlineorders.section-active').waitFor();
   // Clicking the actual label opens the modal in the same event, without reads.
   const readCount=reads.length;
   await admin.locator('#dp-orders-list [data-dp-order] footer span').first().click();
@@ -158,11 +159,12 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   // With live notices absent, one conditional request on the 3s fallback picks up a saved order.
   const fallback=h.call('createOrder',{order:h.order(product,{customerName:'Recepción de respaldo'})});
   const fallbackStarted=Date.now();
-  await admin.locator(`#dp-orders-list [data-dp-order="${fallback.orderId}"]`).waitFor({timeout:4500});
+  await admin.locator(`#dp-dashboard-orders [data-dp-order="${fallback.orderId}"]`).waitFor({timeout:4500});
   assert.ok(Date.now()-fallbackStarted<4000);
   assert.ok(reads.some(read=>read.payload.revision),'El respaldo usa revisiones en la misma consulta.');
+  await admin.evaluate(()=>location.hash='onlineorders');await admin.locator('#onlineorders.section-active').waitFor();
   await admin.locator('#dp-order-filter').selectOption('all');
-  await admin.locator('#dp-page').filter({hasText:'de 2'}).waitFor();
+  await admin.waitForFunction(()=>document.querySelectorAll('#dp-orders-list [data-dp-order]').length===2);
   assert.equal(await admin.locator('#dp-orders-list [data-dp-order]').count(),2);
   await admin.locator('#dp-order-filter').selectOption('lista');await admin.locator('#dp-orders-list .dp-empty').waitFor();
   await admin.locator('#dp-order-filter').selectOption('active');await admin.locator('#dp-orders-list [data-dp-order]').first().waitFor();

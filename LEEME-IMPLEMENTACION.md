@@ -38,8 +38,9 @@ En el SQL Editor del proyecto **bxyvxbutjlvoconfsjub**, que confirmaste como exc
 4. `supabase/install/04_PIN_4_A_12.sql`: compatibilidad del primer Jefe con PIN de 4 a 12 números.
 5. `supabase/install/05_PEDIDOS_MESERO.sql`: origen y nombre verificado en los avisos de pedidos tomados por meseros.
 6. `supabase/install/06_OPCIONES_QR.sql`: interruptores de Mesero, Carta y Chat para la vista por QR; Ver cuenta conserva el control existente.
+7. `supabase/install/07_COMANDAS_MESERO.sql`: carta visual del mesero, comandas pendientes, aceptación que agrega el consumo y edición por administración/mesero sobre la misma comanda. Se puede repetir; conserva datos y evita aplicar dos veces los productos. Requiere haber ejecutado 05 y 06.
 
-Si los pasos 1 a 3 ya están instalados, aplica únicamente las actualizaciones 04, 05 y 06 que falten. `supabase/schema.sql` ya está incluido en el paso 2. No importes los respaldos de datos ni los roles de Nápoles. El esquema inicia sin productos, mesas, pedidos ni ventas. Marca y Efectivo son configuración inicial.
+Si los pasos 1 a 3 ya están instalados, aplica únicamente las actualizaciones 04 a 07 que falten. Para esta última mejora, si ya ejecutaste 06, basta con 07. `supabase/schema.sql` ya está incluido en el paso 2. No importes los respaldos de datos ni los roles de Nápoles. El esquema inicia sin productos, mesas, pedidos ni ventas. Marca y Efectivo son configuración inicial.
 
 ## 2. Google Sheets y Apps Script
 

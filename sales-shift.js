@@ -1,6 +1,7 @@
 /* Calendario de ventas de Colombia. Los intervalos incluyen el inicio y excluyen el cierre. */
 const SalesShift = (() => {
   const zone = "America/Bogota";
+  const dates = typeof module==='object'&&module.exports ? require('./date-format.js') : window.DonPierosDates;
   const dayMs = 86400000;
   const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit"
@@ -11,13 +12,7 @@ const SalesShift = (() => {
   };
   const midnight = (date) => Date.parse(`${date}T00:00:00-05:00`);
   const dateLabel = (date, short = false) => {
-    const formatter = new Intl.DateTimeFormat("es-CO", {
-      timeZone: zone, day: "numeric", month: short ? "short" : "long", year: "numeric"
-    });
-    const value = new Date(midnight(date) + 12 * 60 * 60000);
-    if (!short) return formatter.format(value);
-    const parts = Object.fromEntries(formatter.formatToParts(value).map(({ type, value }) => [type, value]));
-    return `${parts.day} ${parts.month.replace(/\.$/, "")} ${parts.year}`;
+    return dates.date(date);
   };
   const addDays = (date, days) => dateKey(new Date(midnight(date) + days * dayMs));
   const parseTime = (text, period) => {

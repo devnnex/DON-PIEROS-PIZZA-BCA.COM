@@ -14,7 +14,7 @@ function harness(overrides={}){
   prettyDateTime:value=>new Date(value).toISOString(),purchaseUnitCost:row=>Number(row.unitCost||0),
   APPS_SCRIPT_TIMEOUT_MS:1000,ensureCompleteMovementHistory:async()=>true,mergeIncomeReport:report=>report,
   toast:message=>messages.push(message),$:selector=>buttons[selector.slice(1)]||null,
-  window:{jspdf:{jsPDF:function(options){const doc=new PDF(options);doc.save=name=>documents.push({name,doc,text:doc.output()});return doc;}}},
+  window:{DonPierosDates:require('../date-format.js'),jspdf:{jsPDF:function(options){const doc=new PDF(options);doc.save=name=>documents.push({name,doc,text:doc.output()});return doc;}}},
   ...overrides});
  vm.runInContext(block('incomeTotalsFromRecords','localIncomeRecords')
   +block('completeIncomeSaleTypeReport','incomeSaleTypeFiltersKey')
@@ -83,7 +83,7 @@ test('Compras pagina referencias extensas y conserva los registros, cantidades e
 test('Compras informa registros vacíos, fechas inválidas y fallos de generación, liberando el botón',async()=>{
  const h=harness({purchaseMovements:()=>[]});await h.api.exportPurchasesPdf();assert.equal(h.documents.length,0);assert.match(h.messages[0],/No hay compras/);
  h.state.purchaseDateFrom='2026-11-01';await h.api.exportPurchasesPdf();assert.equal(h.documents.length,0);assert.match(h.messages[1],/fecha inicial/);
- const failed=harness({purchaseMovements:()=>[{product:'Agua',delta:1,unitCost:2}],window:{}});await failed.api.exportPurchasesPdf();
+ const failed=harness({purchaseMovements:()=>[{product:'Agua',delta:1,unitCost:2}],window:{DonPierosDates:require('../date-format.js'),}});await failed.api.exportPurchasesPdf();
  assert.equal(failed.documents.length,0);assert.match(failed.messages[0],/generador PDF/);assert.equal(failed.buttons.exportPurchasesPdf.disabled,false);
 });
 test('un PDF sin conexión indica que contiene una copia parcial de los registros',async()=>{

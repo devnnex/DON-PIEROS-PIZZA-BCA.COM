@@ -1,9 +1,12 @@
-const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v2";
-const APP_ASSET_CACHE = "don-pieros-assets-20261028-v19";
+const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v3";
+const APP_ASSET_CACHE = "don-pieros-assets-20261028-v22";
 const DYNAMIC_PWA_ASSETS = new Set([
   "pwa-manifest.webmanifest",
   "pwa-icon-192.png",
-  "pwa-icon-512.png"
+  "pwa-icon-512.png",
+  "pwa-admin-manifest.webmanifest",
+  "pwa-admin-icon-192.png",
+  "pwa-admin-icon-512.png"
 ]);
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -51,6 +54,7 @@ self.addEventListener("fetch", (event) => {
     const cache = await caches.open(PWA_BRAND_CACHE);
     const cached = await cache.match(event.request, { ignoreSearch: true });
     if (cached) return cached;
+    if(assetName.startsWith('pwa-admin-'))return fetch(assetName.endsWith('.webmanifest')?'./manifest.webmanifest':assetName.includes('192')?'./images/admin-icon-192.png':'./images/admin-icon-512.png');
     return fetch(assetName === "pwa-manifest.webmanifest" ? "./manifest.webmanifest" : assetName==='pwa-icon-192.png'?'./images/icon-192.png':'./images/icon-512.png');
   })());
 });
