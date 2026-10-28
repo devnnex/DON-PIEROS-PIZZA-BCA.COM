@@ -13,6 +13,13 @@
   const pendingAvailability=new Map();
   let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0,ordersController=null,dashboardRevision='',ordersView='';
   const receivedOrderSignals=new Map();
+  let paperWidth=80;
+  try{if(localStorage.getItem('don_pieros_order_paper')==='58')paperWidth=58;}catch(_){}
+  function paperControl(){return `<label class="dp-paper-control">Papel<select data-dp-paper aria-label="Ancho del papel de la comanda"><option value="80" ${paperWidth===80?'selected':''}>80 mm</option><option value="58" ${paperWidth===58?'selected':''}>58 mm</option></select></label>`;}
+  function findOrder(id){
+    const saved=orders.find(order=>String(order.id)===String(id))||dashboardOrders.find(order=>String(order.id)===String(id));
+    return saved?{...saved,phone:String(saved.phone??''),items:(Array.isArray(saved.items)?saved.items:[]).map(item=>({...item,selections:Array.isArray(item.selections)?item.selections:[]}))}:null;
+  }
   const notify=(text,error=false)=>api()?.notify(friendly(text),error?'error':'ok');
   const canOrders=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='waiter'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('dashboard')||u.permissions.includes('service')));};
   const canMenu=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('inventory')));};
@@ -35,7 +42,7 @@
     main.insertAdjacentHTML('beforeend',`
       <section class="panel dp-panel" id="onlineorders" data-admin-section="onlineorders">
         <div class="section-head"><div><span class="eyebrow">Recepción de pedidos</span><h2>Pedidos web</h2><p id="dp-orders-status" role="status">Esperando conexión…</p></div><button class="ghost" id="dp-orders-refresh" type="button">↻ Actualizar</button></div>
-        <div class="dp-toolbar"><label>Mostrar<select id="dp-order-filter"><option value="active">En cola</option><option value="all">Todos</option>${Object.entries(labels).map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label><a class="ghost" href="index.html" target="_blank" rel="noopener">Abrir carta ↗</a></div>
+        <div class="dp-toolbar"><label>Mostrar<select id="dp-order-filter"><option value="active">En cola</option><option value="all">Todos</option>${Object.entries(labels).map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label>${paperControl()}<a class="ghost" href="index.html" target="_blank" rel="noopener">Abrir carta ↗</a></div>
         <div class="dp-orders" id="dp-orders-list"></div><div class="dp-pagination"><button class="ghost" id="dp-prev">← Anteriores</button><span id="dp-page"></span><button class="ghost" id="dp-next">Siguientes →</button></div>
       </section>
       <section class="panel dp-panel" id="webmenu" data-admin-section="webmenu">
@@ -48,9 +55,23 @@
     document.body.insertAdjacentHTML('beforeend',`<dialog id="dp-order-dialog" class="dp-dialog" aria-labelledby="dp-order-title"><div class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><div id="dp-order-detail"></div></div></dialog><dialog id="dp-item-dialog" class="dp-dialog"><form id="dp-item-form" class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><span class="eyebrow">Menú online</span><h2 id="dp-item-title"></h2><div id="dp-item-fields"></div><p id="dp-item-error" role="alert"></p><div class="dp-form-actions"><button class="ghost" type="button" data-dp-close>Cancelar</button><button class="primary" id="dp-item-save" type="submit">Guardar</button></div></form></dialog>`);
     // Bind reception cards directly: opening a comanda is entirely local and is
     // independent of the rest of the page's delegated click handlers.
-    for(const root of [$('#dp-orders-list'),$('#dp-dashboard-orders')])root.addEventListener('click',event=>{
-      const card=event.target.closest('[data-dp-order]');if(!card)return;
-      event.preventDefault();event.stopPropagation();openOrder(card.dataset.dpOrder);
+    for(const root of [$('#dp-orders-list'),$('#dp-dashboard-orders')]){
+      root.addEventListener('click',event=>{
+        const card=event.target.closest('[data-dp-order]');if(!card)return;
+        event.preventDefault();event.stopPropagation();
+        if(event.target.closest('[data-dp-print]')){const order=findOrder(card.dataset.dpOrder);if(order&&canOrders())printOrder(order,paperWidth);}
+        else openOrder(card.dataset.dpOrder);
+      });
+      root.addEventListener('keydown',event=>{
+        if(!event.target.matches('[data-dp-order]')||!['Enter',' '].includes(event.key))return;
+        event.preventDefault();openOrder(event.target.dataset.dpOrder);
+      });
+    }
+    document.addEventListener('change',event=>{
+      if(!event.target.matches('[data-dp-paper]'))return;
+      paperWidth=event.target.value==='58'?58:80;
+      try{localStorage.setItem('don_pieros_order_paper',String(paperWidth));}catch(_){}
+      $$('[data-dp-paper]').forEach(select=>{select.value=String(paperWidth);});
     });
     $('#dp-orders-refresh').onclick=()=>void loadOrders(true);
     $('#dp-order-filter').onchange=()=>{offset=0;revision='';void loadOrders(true);};
@@ -127,19 +148,20 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){return `<button class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" type="button"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><span>Ver comanda →</span></footer></button>`;}
+  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button></div></footer></article>`;}
   function renderOrders(){
     $('#dp-orders-list').innerHTML=orders.map(orderCard).join('')||'<div class="dp-empty">No hay pedidos en este estado.</div>';
     $('#dp-page').textContent=total?`${offset+1}–${Math.min(offset+60,total)} de ${total}`:'Sin pedidos';$('#dp-prev').disabled=offset===0;$('#dp-next').disabled=offset+60>=total;
   }
-  function renderDashboard(rows,count){$('#dp-dashboard-orders').innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count">${count}</span></h3><a href="#onlineorders">Ver todos →</a></div>${rows.slice().reverse().slice(0,6).map(orderCard).join('')||'<p class="dp-muted">Los pedidos de clientes aparecerán aquí.</p>'}`;}
+  function renderDashboard(rows,count){$('#dp-dashboard-orders').innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count">${count}</span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${rows.slice().reverse().slice(0,6).map(orderCard).join('')||'<p class="dp-muted">Los pedidos de clientes aparecerán aquí.</p>'}`;}
 
   function openOrder(id){
     if(!canOrders())return;
-    const order=orders.find(o=>o.id===id)||dashboardOrders.find(o=>o.id===id);if(!order)return;
+    const order=findOrder(id);if(!order)return;
     $('#dp-order-detail').innerHTML=`<span class="eyebrow">Comanda · Don Pieros Pizza</span><h2>${esc(order.id)}</h2><span class="dp-status">${labels[order.status]}</span><p>${esc(date(order.createdAt))}</p><div class="dp-order-customer"><h3>${esc(order.customerName)}</h3><a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a><p>${order.fulfillment==='delivery'?'Domicilio · '+esc(order.neighborhood)+'<br>'+esc(order.address):'Recoger en el negocio'}</p></div><div class="dp-detail-lines">${order.items.map(item=>`<article><div><strong>${item.quantity} × ${esc(item.name)}</strong>${item.selections?.length?`<p>${item.selections.map(esc).join('<br>')}</p>`:''}</div><b>${money(item.quantity*item.unitPrice)}</b></article>`).join('')}</div>${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}<div class="dp-totals"><p>Subtotal <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p><p class="dp-total">${order.deliveryFeePending?'Total de productos':'Total'} <b>${money(order.total)}</b></p><small>${esc(order.paymentMethod)}${order.paymentValue?' · '+esc(order.paymentValue):''} · Pago por verificar</small></div><p class="dp-muted">Turno al confirmar: ${Number(order.queuePosition)} · ${Number(order.ordersAhead)} delante.${order.handledByName?' Atendido por '+esc(order.handledByName)+'.':''}</p><div class="dp-order-actions"><label>Estado<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Recibo<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button><a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a></div><p id="dp-order-error" role="alert"></p>`;
     $('#dp-change-status').onclick=async event=>{event.target.disabled=true;event.target.textContent='Guardando…';try{await request('dp_update_order',{id:order.id,status:$('#dp-new-status').value,version:order.version});$('#dp-order-dialog').close();revision='';void loadOrders(true);notify('Estado del pedido actualizado.');signal('order-updated');}catch(error){$('#dp-order-error').textContent=friendly(error);event.target.disabled=false;event.target.textContent='Guardar estado';}};
     $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
+    $('#dp-print-width').setAttribute('data-dp-paper','');$('#dp-print-width').value=String(paperWidth);
     const dialog=$('#dp-order-dialog');
     $('#dp-order-detail h2').id='dp-order-title';
     dialog.querySelector('.dp-dialog-card').scrollTop=0;
@@ -147,9 +169,41 @@
   }
 
   function printOrder(order,width){
-    const frame=document.createElement('iframe');frame.style.cssText='position:fixed;width:1px;height:1px;bottom:0;right:0;border:0';document.body.append(frame);
-    const d=frame.contentDocument;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>@page{size:${width}mm auto;margin:3mm}*{box-sizing:border-box}body{font:12px/1.4 monospace;color:#000;background:white;margin:0;width:${width-6}mm}h1{font-size:19px;text-align:center;margin:6px 0}h2{font-size:16px}p{margin:5px 0;overflow-wrap:anywhere}.center{text-align:center}.line{border-top:1px dashed #000;margin:10px 0}.item{margin:10px 0}.item strong{font-size:15px}.item small{display:block}footer{font-size:10px;text-align:center}</style></head><body><h1>DON PIEROS PIZZA</h1><p class="center">COMANDA DE COCINA</p><h2>${esc(order.id)}</h2><p>${esc(date(order.createdAt))}</p><div class="line"></div><strong>${esc(order.customerName)}</strong><p>${esc(order.phone)}</p><p>${order.fulfillment==='delivery'?'DOMICILIO':'RECOGER EN TIENDA'}</p>${order.address?`<p>${esc(order.neighborhood)}<br>${esc(order.address)}</p>`:''}<div class="line"></div>${order.items.map(item=>`<div class="item"><strong>${item.quantity} × ${esc(item.name)}</strong>${(item.selections||[]).map(s=>`<small>+ ${esc(s)}</small>`).join('')}<p>${money(item.unitPrice*item.quantity)}</p></div>`).join('')}${order.notes?`<div class="line"></div><strong>INDICACIONES</strong><p>${esc(order.notes)}</p>`:''}<div class="line"></div><p>Subtotal: ${money(order.subtotal)}</p><p>Domicilio: ${order.deliveryFeePending?'POR CONFIRMAR':money(order.deliveryFee)}</p><h2>${order.deliveryFeePending?'PRODUCTOS':'TOTAL'} ${money(order.total)}</h2><p>Pago: ${esc(order.paymentMethod)} · POR VERIFICAR</p><p>Turno al confirmar: ${order.queuePosition}</p><div class="line"></div><footer>Comanda interna · No es factura fiscal<br>WhatsApp +57 310 224 1444</footer></body></html>`);d.close();
-    frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});setTimeout(()=>{const height=Math.max(40,Math.ceil(d.body.scrollHeight*25.4/96)+6);const paper=d.createElement('style');paper.textContent=`@page{size:${width}mm ${height}mm;margin:3mm}`;d.head.append(paper);frame.contentWindow.focus();frame.contentWindow.print();},150);setTimeout(()=>frame.remove(),120000);
+    width=width===58?58:80;
+    const frame=document.createElement('iframe');frame.dataset.dpReceipt='';frame.title='Comanda de cocina';
+    frame.style.cssText=`position:fixed;left:-10000px;top:0;width:${width}mm;height:1px;border:0`;
+    document.body.append(frame);
+    const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
+    const d=frame.contentDocument;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
+      @page{size:${width}mm auto;margin:3mm}*{box-sizing:border-box}
+      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;width:${width-6}mm}
+      h1{font-size:18px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
+      .center{text-align:center}.rule{border-top:1px dashed #000;margin:11px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
+      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
+      .kitchen-item{border-bottom:1px dashed #000;padding:11px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'14':'16'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}.line-value{font-size:11px;margin-top:8px}
+      .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
+      .total{font-size:18px;font-weight:900}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:10px;text-align:center;margin-top:12px}
+      </style></head><body><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
+      <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
+      <div class="fulfillment">${order.fulfillment==='delivery'?'DOMICILIO':'RECOGER EN TIENDA'}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
+      ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
+      <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
+      ${order.items.map((item,index)=>`<section class="kitchen-item"><h3>${index+1}. ${Number(item.quantity)||0} × ${esc(item.name)}</h3>${item.selections.length?`<ul class="options">${item.selections.map(selection=>`<li>${esc(selection)}</li>`).join('')}</ul>`:''}<p class="line-value">Valor de esta línea: ${money(item.unitPrice*item.quantity)}</p></section>`).join('')}
+      ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
+      <div class="rule"></div><p>Subtotal: ${money(order.subtotal)}</p>${order.fulfillment==='delivery'?`<p>Domicilio: ${order.deliveryFeePending?'POR CONFIRMAR':money(order.deliveryFee)}</p>`:''}
+      <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'} ${money(order.total)}</p><p class="payment">Pago: ${esc(order.paymentMethod)}<br>POR VERIFICAR</p>
+      <footer>Comanda interna · No es factura fiscal<br>Revisa las opciones e indicaciones de cada producto.</footer></body></html>`);d.close();
+    frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});
+    // Measure the complete receipt before printing; paper height grows with all
+    // products and notes instead of clipping to a fixed page or a tiny viewport.
+    void (d.fonts?.ready||Promise.resolve()).then(()=>requestAnimationFrame(()=>{
+      if(!frame.isConnected)return;
+      const height=Math.max(60,Math.ceil(d.body.getBoundingClientRect().height*25.4/96)+8);
+      const paper=d.createElement('style');paper.dataset.paperSize='';paper.textContent=`@page{size:${width}mm ${height}mm;margin:3mm}`;d.head.append(paper);
+      frame.contentWindow.focus();frame.contentWindow.print();
+    }));
+    setTimeout(()=>frame.remove(),120000);
   }
 
   async function loadCatalog(){

@@ -65,7 +65,7 @@ const root=path.resolve(__dirname,'..');
  assert.match(await admin.locator('#dp-order-detail').innerText(),/Pizza prueba/);
  await admin.locator('#dp-print-width').selectOption('58');await admin.locator('#dp-print-order').click();
  const receiptFrame=await admin.locator('iframe').last().contentFrame();assert.match(await receiptFrame.locator('body').innerText(),/COMANDA DE COCINA/);
- assert.match(await receiptFrame.locator('style').innerText(),/size:58mm auto/);
+ assert.match(await receiptFrame.locator('style').first().innerText(),/size:58mm auto/);
  await admin.screenshot({path:path.join(root,'artifacts/comanda-movil.png'),fullPage:true});
  await admin.locator('#dp-new-status').selectOption('atendiendo');await admin.locator('#dp-change-status').click();await admin.locator('#dp-order-dialog').waitFor({state:'hidden'});
  await admin.evaluate(()=>{location.hash='webmenu';});await admin.locator('#dp-catalog-list [data-dp-edit]').first().waitFor();
