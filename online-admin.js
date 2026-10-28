@@ -11,20 +11,23 @@
   let orders=[],dashboardOrders=[],total=0,offset=0,revision='',busy=false,firstLoad=true,connectedToken='',channel=null,catalog=null,catalogKind='products',editItem=null,removeImage=false,previewUrl='';
   const seenOrderIds=new Set();
   const pendingAvailability=new Map();
-  let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0;
+  let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0,ordersController=null,dashboardRevision='',ordersView='';
+  const receivedOrderSignals=new Map();
   const notify=(text,error=false)=>api()?.notify(friendly(text),error?'error':'ok');
   const canOrders=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='waiter'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('dashboard')||u.permissions.includes('service')));};
   const canMenu=()=>{const u=api()?.getUser();return u && (u.role==='boss'||u.role==='admin'&&(!Array.isArray(u.permissions)||u.permissions.includes('inventory')));};
 
-  async function request(action,payload={},timeoutMs=45000){
+  async function request(action,payload={},timeoutMs=45000,signal){
     const url=window.DON_PIEROS_CONFIG.appsScriptUrl;
     if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(url))throw new Error('La conexión del negocio necesita revisión. Contacta al responsable.');
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);
+    const cancel=()=>controller.abort();
+    if(signal?.aborted)cancel();else signal?.addEventListener('abort',cancel,{once:true});
     try{
       const response=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,payload,authToken:api()?.getToken()||'',origin:location.origin}),signal:controller.signal,cache:'no-store'});
       if(!response.ok)throw new Error('No pudimos completar la solicitud. Intenta de nuevo en unos segundos.');
       const result=await response.json();if(!result.ok)throw new Error(result.error||'No se pudo completar la operación.');return result;
-    }catch(error){if(error.name==='AbortError')throw new Error('La respuesta está tardando. Actualiza para comprobar si se guardó.');throw error;}finally{clearTimeout(timer);}
+    }catch(error){if(error.name==='AbortError'&&!signal?.aborted)throw new Error('La respuesta está tardando. Actualiza para comprobar si se guardó.');throw error;}finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
   }
 
   function mount(){
@@ -42,7 +45,13 @@
         <label class="dp-category-filter" id="dp-category-filter">Categoría<select id="dp-menu-category"><option value="">Todas las categorías</option></select></label><p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
       </section>`);
     $('#alertsPanel').insertAdjacentHTML('afterend','<div id="dp-dashboard-orders" class="dp-dashboard-orders"></div>');
-    document.body.insertAdjacentHTML('beforeend',`<dialog id="dp-order-dialog" class="dp-dialog"><div class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><div id="dp-order-detail"></div></div></dialog><dialog id="dp-item-dialog" class="dp-dialog"><form id="dp-item-form" class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><span class="eyebrow">Menú online</span><h2 id="dp-item-title"></h2><div id="dp-item-fields"></div><p id="dp-item-error" role="alert"></p><div class="dp-form-actions"><button class="ghost" type="button" data-dp-close>Cancelar</button><button class="primary" id="dp-item-save" type="submit">Guardar</button></div></form></dialog>`);
+    document.body.insertAdjacentHTML('beforeend',`<dialog id="dp-order-dialog" class="dp-dialog" aria-labelledby="dp-order-title"><div class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><div id="dp-order-detail"></div></div></dialog><dialog id="dp-item-dialog" class="dp-dialog"><form id="dp-item-form" class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><span class="eyebrow">Menú online</span><h2 id="dp-item-title"></h2><div id="dp-item-fields"></div><p id="dp-item-error" role="alert"></p><div class="dp-form-actions"><button class="ghost" type="button" data-dp-close>Cancelar</button><button class="primary" id="dp-item-save" type="submit">Guardar</button></div></form></dialog>`);
+    // Bind reception cards directly: opening a comanda is entirely local and is
+    // independent of the rest of the page's delegated click handlers.
+    for(const root of [$('#dp-orders-list'),$('#dp-dashboard-orders')])root.addEventListener('click',event=>{
+      const card=event.target.closest('[data-dp-order]');if(!card)return;
+      event.preventDefault();event.stopPropagation();openOrder(card.dataset.dpOrder);
+    });
     $('#dp-orders-refresh').onclick=()=>void loadOrders(true);
     $('#dp-order-filter').onchange=()=>{offset=0;revision='';void loadOrders(true);};
     $('#dp-prev').onclick=()=>{offset=Math.max(0,offset-60);void loadOrders(true);};$('#dp-next').onclick=()=>{offset+=60;void loadOrders(true);};
@@ -59,7 +68,6 @@
     $('#dp-item-form').onsubmit=saveItem;
     document.addEventListener('click',e=>{
       if(e.target.closest('[data-dp-close]'))e.target.closest('dialog')?.close();
-      const order=e.target.closest('[data-dp-order]');if(order)openOrder(order.dataset.dpOrder);
       const edit=e.target.closest('[data-dp-edit]');if(edit)openItem(catalog[catalogKind].find(item=>item.id===edit.dataset.dpEdit));
       const del=e.target.closest('[data-dp-delete]');if(del)void deleteItem(del.dataset.dpDelete);
       const availability=e.target.closest('[data-dp-availability]');if(availability)void toggleAvailability(availability);
@@ -87,26 +95,35 @@
     }catch(_){}
   }
 
-  async function loadOrders(force=false){
-    if(busy){if(force)ordersReloadRequested=true;return;}
+  async function loadOrders(force=false,urgent=false){
     if(!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
+    if(busy){if(!urgent){if(force)ordersReloadRequested=true;return;}ordersController?.abort();}
+    const controller=new AbortController(),token=api().getToken();ordersController=controller;
+    ordersReloadRequested=false;
     busy=true;
     if(force)$('#dp-orders-status').textContent='Actualizando pedidos…';
     try{
       const filter=$('#dp-order-filter').value;
-      if(!force&&revision){const status=await request('dp_order_status',{},15000);if(status.revision===revision)return;}
       const pageOffset=offset;
-      const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60}),
-        filter==='active'&&pageOffset===0?Promise.resolve(null):request('dp_get_orders',{status:'active',offset:0,limit:20})]);
+      const view=filter+':'+pageOffset;
+      // The same request checks the revision and returns changed orders. Avoid
+      // paying for a separate status round trip before every changed list.
+      const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60,...(!force&&revision&&ordersView===view?{revision}:{})},15000,controller.signal),
+        filter==='active'&&pageOffset===0?Promise.resolve(null):request('dp_get_orders',{status:'active',offset:0,limit:20,...(!force&&dashboardRevision?{revision:dashboardRevision}:{})},15000,controller.signal)]);
+      if(controller!==ordersController||controller.signal.aborted||token!==api().getToken())return;
       if(filter!==$('#dp-order-filter').value||pageOffset!==offset){ordersReloadRequested=true;return;}
       const active=activeResult||result;
-      dashboardOrders=active.orders;
+      const listChanged=result.changed!==false&&(firstLoad||result.revision!==revision||ordersView!==view);
+      const activeChanged=active.changed!==false&&(firstLoad||active.revision!==dashboardRevision);
+      if(activeChanged){dashboardOrders=active.orders;dashboardRevision=active.revision;}
       if(!firstLoad&&dashboardOrders.some(o=>o.status==='nueva'&&!seenOrderIds.has(o.id)))api().alarm();
       dashboardOrders.forEach(o=>seenOrderIds.add(o.id));
-      firstLoad=false;orders=result.orders;total=result.total;revision=result.revision;
-      renderOrders();$('#dp-nav-count').textContent=result.activeCount||'';$('#dp-orders-status').textContent='Conectado · '+result.activeCount+' en cola · '+new Date().toLocaleTimeString('es-CO');
-      renderDashboard(dashboardOrders,active.activeCount);
-    }catch(error){$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}finally{busy=false;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}
+      firstLoad=false;
+      if(listChanged){orders=result.orders;total=result.total;revision=result.revision;ordersView=view;renderOrders();}
+      if(activeChanged){$('#dp-nav-count').textContent=active.activeCount||'';renderDashboard(dashboardOrders,active.activeCount);}
+      $('#dp-orders-status').textContent='Conectado · Recepción automática activa · '+new Date().toLocaleTimeString('es-CO');
+    }catch(error){if(controller.signal.aborted||controller!==ordersController)return;$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}
+    finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
   function orderCard(order){return `<button class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" type="button"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}</strong><span>Ver comanda →</span></footer></button>`;}
@@ -117,10 +134,15 @@
   function renderDashboard(rows,count){$('#dp-dashboard-orders').innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count">${count}</span></h3><a href="#onlineorders">Ver todos →</a></div>${rows.slice().reverse().slice(0,6).map(orderCard).join('')||'<p class="dp-muted">Los pedidos de clientes aparecerán aquí.</p>'}`;}
 
   function openOrder(id){
+    if(!canOrders())return;
     const order=orders.find(o=>o.id===id)||dashboardOrders.find(o=>o.id===id);if(!order)return;
     $('#dp-order-detail').innerHTML=`<span class="eyebrow">Comanda · Don Pieros Pizza</span><h2>${esc(order.id)}</h2><span class="dp-status">${labels[order.status]}</span><p>${esc(date(order.createdAt))}</p><div class="dp-order-customer"><h3>${esc(order.customerName)}</h3><a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a><p>${order.fulfillment==='delivery'?'Domicilio · '+esc(order.neighborhood)+'<br>'+esc(order.address):'Recoger en el negocio'}</p></div><div class="dp-detail-lines">${order.items.map(item=>`<article><div><strong>${item.quantity} × ${esc(item.name)}</strong>${item.selections?.length?`<p>${item.selections.map(esc).join('<br>')}</p>`:''}</div><b>${money(item.quantity*item.unitPrice)}</b></article>`).join('')}</div>${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}<div class="dp-totals"><p>Subtotal <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${money(order.deliveryFee)}</b></p><p class="dp-total">Total <b>${money(order.total)}</b></p><small>${esc(order.paymentMethod)}${order.paymentValue?' · '+esc(order.paymentValue):''} · Pago por verificar</small></div><p class="dp-muted">Turno al confirmar: ${Number(order.queuePosition)} · ${Number(order.ordersAhead)} delante.${order.handledByName?' Atendido por '+esc(order.handledByName)+'.':''}</p><div class="dp-order-actions"><label>Estado<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Recibo<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button><a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a></div><p id="dp-order-error" role="alert"></p>`;
     $('#dp-change-status').onclick=async event=>{event.target.disabled=true;event.target.textContent='Guardando…';try{await request('dp_update_order',{id:order.id,status:$('#dp-new-status').value,version:order.version});$('#dp-order-dialog').close();revision='';void loadOrders(true);notify('Estado del pedido actualizado.');signal('order-updated');}catch(error){$('#dp-order-error').textContent=friendly(error);event.target.disabled=false;event.target.textContent='Guardar estado';}};
-    $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));$('#dp-order-dialog').showModal();
+    $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
+    const dialog=$('#dp-order-dialog');
+    $('#dp-order-detail h2').id='dp-order-title';
+    dialog.querySelector('.dp-dialog-card').scrollTop=0;
+    if(!dialog.open)dialog.showModal();
   }
 
   function printOrder(order,width){
@@ -222,15 +244,29 @@
     catch(error){if(button?.isConnected){button.disabled=false;button.textContent='Eliminar';}notify(error.message,true);}
   }
   function signal(event){if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
+  function receiveOrderSignal(message){
+    if(!canOrders())return;
+    const id=message?.payload?.orderId||message?.orderId;
+    if(typeof id!=='string'||!/^DP-[a-zA-Z0-9-]{1,80}$/.test(id))return;
+    const now=Date.now();
+    if(now-(receivedOrderSignals.get(id)||0)<2500)return;
+    receivedOrderSignals.set(id,now);
+    if(receivedOrderSignals.size>100)receivedOrderSignals.delete(receivedOrderSignals.keys().next().value);
+    // Cancel an older read instead of queuing the new receipt behind it.
+    // Never render order contents supplied by a public notification.
+    void loadOrders(true,true);
+  }
   async function tick(){
     const token=api()?.getToken();if(!token||!api()?.getUser()||document.hidden)return;
-    if(connectedToken!==token){connectedToken=token;revision='';firstLoad=true;
+    if(connectedToken!==token){connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;seenOrderIds.clear();receivedOrderSignals.clear();
       if(channel)void api().db.removeChannel(channel);
-      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},()=>void loadOrders(true)).on('broadcast',{event:'order-updated'},()=>void loadOrders(true)).subscribe();
+      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},()=>void loadOrders(true,true)).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
       if(canMenu())void loadCatalog();
     }
     if(canOrders())void loadOrders();
   }
-  mount();setInterval(tick,6000);setTimeout(tick,1000);
+  mount();setInterval(tick,3000);void tick();
+  window.addEventListener('donpieros-session-change',()=>void tick());
+  window.addEventListener('storage',event=>{if(event.key!=='don_pieros_order_signal_v1'||!event.newValue)return;try{const notice=JSON.parse(event.newValue);if(Math.abs(Date.now()-notice.at)<15000)receiveOrderSignal(notice);}catch(_){}});
   window.addEventListener('focus',()=>void tick());window.addEventListener('online',()=>void tick());document.addEventListener('visibilitychange',()=>{if(!document.hidden)void tick();});
 })();

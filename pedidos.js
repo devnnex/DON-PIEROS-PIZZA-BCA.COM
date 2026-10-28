@@ -5,7 +5,7 @@
 
   const CONFIG = window.DON_PIEROS_CONFIG;
   const fast = window.DonPierosPerformance;
-  const WHATSAPP_NUMBER = '573102241444';
+  const WHATSAPP_NUMBER = String(CONFIG.whatsappNumber || '573102241444').replace(/\D/g, '');
   const isSupabaseConfigured = /^https:\/\/.+\.supabase\.co$/i.test(CONFIG.supabaseUrl)
     && !CONFIG.supabaseAnonKey.includes('PEGA_');
   const isOrdersConfigured = /^https:\/\/script\.google\.com\//i.test(CONFIG.appsScriptUrl)
@@ -42,10 +42,10 @@
   delivery.configure(() => { const wrapper = $('#checkout-location'); if (wrapper) wrapper.innerHTML = delivery.markup(); }, toast);
 
   function orderWhatsAppUrl(order, orderId, confirmedTotal, queuePosition, ordersAhead) {
-    const productLines = order.items.flatMap((item, index) => {
-      const lines = [`${index + 1}. *${item.quantity} × ${item.name}*`];
-      if (item.selections.length) lines.push(`   ↳ ${item.selections.join(' · ')}`);
-      lines.push(`   💰 ${money(item.unitPrice * item.quantity)}`);
+    const productLines = order.items.flatMap(item => {
+      const lines = [`${item.quantity}x ${item.name} — *${money(item.unitPrice * item.quantity)}*`];
+      (item.selections || []).forEach(selection => lines.push(`   ➕ ${selection}`));
+      lines.push('');
       return lines;
     });
     const deliveryLines = order.fulfillment === 'delivery'
@@ -53,31 +53,48 @@
       : ['🏪 *Entrega:* Recoger en Don Pieros Pizza'];
     const totalValue = confirmedTotal ?? (Number(order.subtotal) + Number(order.deliveryFee));
     const lines = [
-      '🍕 *DON PIEROS PIZZA · NUEVO PEDIDO*',
-      '',
-      'Hola, equipo de Don Pieros Pizza 👋',
-      'Acabo de realizar este pedido desde la página web:',
-      '',
+      '🧾 *Nuevo pedido · DON PIEROS PIZZA 🍕✅*',
       `🧾 *Pedido:* ${orderId}`,
-      `🎟️ *Turno al confirmar:* ${queuePosition || 1} · ${ordersAhead || 0} pedido(s) delante`,
       `👤 *Cliente:* ${order.customerName}`,
-      `📱 *Teléfono:* ${order.phone}`,
+      `📞 *Teléfono:* ${order.phone}`,
       ...deliveryLines,
+      `💳 *Pago:* ${order.paymentMethod}`,
       '',
-      '🛍️ *PRODUCTOS*',
+      '🍕 *Detalle del pedido:*',
       ...productLines,
-      '',
       `🧮 *Subtotal:* ${money(order.subtotal)}`,
-      ...(order.fulfillment === 'delivery' ? [`🛵 *Domicilio:* ${money(order.deliveryFee)}`] : []),
-      `💵 *TOTAL:* ${money(totalValue)}`,
-      `💳 *Método de pago:* ${order.paymentMethod}`,
+      order.fulfillment === 'delivery' ? `🛵 *Domicilio:* ${money(order.deliveryFee)}` : '🏪 *Envío:* Sin costo (recoge en el negocio)',
+      `💰 *TOTAL: ${money(totalValue)}*`,
       ...(order.receipt ? ['📎 Comprobante adjunto a la orden.'] : []),
       ...(order.liveLocation ? ['📍 *Ubicación del cliente:* ' + window.DonPierosServices.locationUrl(orderId, order.liveLocation.viewerToken)] : []),
       ...(order.notes ? ['', `📝 *Indicaciones:* ${order.notes}`] : []),
       '',
+      `🎟️ *Turno al confirmar:* ${queuePosition || 1} · ${ordersAhead || 0} pedido(s) delante`,
       '✅ Quedo atento(a) a la confirmación. ¡Gracias!'
     ];
-    return `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(lines.join('\n'))}`;
+    return `https://api.whatsapp.com/send?phone=${WHATSAPP_NUMBER}&text=${encodeURIComponent(lines.join('\n'))}`;
+  }
+
+  function notifyOrderCreated(orderId) {
+    // Only a receipt identifier travels over the public signal. The administrator
+    // retrieves the saved order through its authenticated connection.
+    const payload = { orderId };
+    try { localStorage.setItem('don_pieros_order_signal_v1', JSON.stringify({ ...payload, at:Date.now() })); } catch (_) {}
+    if (!isSupabaseConfigured) return;
+    // Keep the notice alive when the next instruction opens WhatsApp. A joined
+    // socket offers a parallel fast path; the administrator deduplicates both.
+    if (state.orderSignal?.state === 'joined') void state.orderSignal.send({ type:'broadcast', event:'order-created', payload }).catch(() => {});
+    void fetch(`${CONFIG.supabaseUrl}/realtime/v1/api/broadcast`, {
+      method:'POST', keepalive:true,
+      headers:{ apikey:CONFIG.supabaseAnonKey, 'Content-Type':'application/json' },
+      body:JSON.stringify({ messages:[{ topic:'don-pieros-orders-live', event:'order-created', payload }] })
+    }).catch(() => {});
+  }
+
+  function openOrderWhatsApp(url) {
+    // Navigation failures must never put an already saved order back in recovery.
+    try { window.location.assign(url); }
+    catch (_) { toast('Tu pedido ya está recibido', 'Toca Continuar a WhatsApp para abrir el chat.'); }
   }
 
   try { state.cart = JSON.parse(localStorage.getItem('don-pieros-cart-v2') || '[]'); } catch { state.cart = []; }
@@ -433,14 +450,14 @@
     try {
       const response = await fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},signal:controller.signal,body:JSON.stringify({action:'createOrder',order}) });
       const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
-      if (state.orderSignal) void state.orderSignal.send({ type:'broadcast', event:'order-created', payload:{ orderId:result.orderId } });
+      notifyOrderCreated(result.orderId);
       order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;
       const whatsappUrl = orderWhatsAppUrl(order, result.orderId, result.total,result.queuePosition,result.ordersAhead);
       localStorage.removeItem('don_pieros_pending_order_v1');localStorage.removeItem('don_pieros_pending_order_id');
       state.customer.name=order.customerName;state.queuePosition = result.queuePosition; state.ordersAhead = result.ordersAhead; state.lastWhatsappUrl = whatsappUrl; state.lastOrderId = result.orderId; state.orderTotal = result.total; state.cartStep = 'success';
       if(cartFingerprint()===fingerprint)state.cart=[];
       state.receipt=null;saveCart();renderCart();
-      state.redirectTimer=setTimeout(()=>{if(state.cartStep==='success')window.location.assign(whatsappUrl);},6500);
+      openOrderWhatsApp(whatsappUrl);
     } catch (error) {
       if(error.confirmedRejected){localStorage.removeItem('don_pieros_pending_order_v1');localStorage.removeItem('don_pieros_pending_order_id');state.cartStep='checkout';void loadStoreData(true);}
       else state.cartStep='recovery';

@@ -5,6 +5,7 @@ const root=path.resolve(__dirname,'..');
  const h=harness();h.product();const errors=[];let loseNextOrder=false;
  const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  const context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'});
+ await context.addInitScript(()=>window.navigation?.addEventListener('navigate',event=>{if(event.destination.url.startsWith('https://api.whatsapp.com/send?')){event.preventDefault();window.qaWhatsAppUrl=event.destination.url;}}));
  const script='https://script.google.com/macros/s/DONPIEROS_TEST/exec';
  await context.addInitScript(url=>localStorage.setItem('don_pieros_apps_script_url',url),script);
  await context.route('https://script.google.com/**',async route=>{
@@ -39,7 +40,8 @@ const root=path.resolve(__dirname,'..');
  await page.locator('[name=name]').fill('Cliente prueba');await page.locator('[name=phone]').fill('3102241444');
  await page.locator('#confirm-order').click();await page.locator('.sending-experience').waitFor();
  await page.locator('.queue-confirmation').waitFor();assert.match(await page.locator('.queue-confirmation').innerText(),/Tu turno: 1/);
- assert.match(await page.locator('.dp-whatsapp').getAttribute('href'),/^https:\/\/wa.me\/573102241444\?text=/);
+ assert.match(await page.locator('.dp-whatsapp').getAttribute('href'),/^https:\/\/api\.whatsapp\.com\/send\?phone=573102241444&text=/);
+ assert.equal(await page.evaluate(()=>window.qaWhatsAppUrl),await page.locator('.dp-whatsapp').getAttribute('href'));
  await page.screenshot({path:path.join(root,'artifacts/pedido-confirmado.png'),fullPage:true});
  await page.locator('#finish-order').click();await page.locator('[data-product]').first().click();await page.locator('#add-product').click();await page.locator('#header-cart').click();await page.locator('#go-checkout').click();
  await page.locator('[name=name]').fill('Cliente recuperado');await page.locator('[name=phone]').fill('3102241444');loseNextOrder=true;await page.locator('#confirm-order').click();await page.locator('#retry-pending').waitFor();

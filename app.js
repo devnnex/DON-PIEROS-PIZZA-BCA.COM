@@ -13053,6 +13053,7 @@ const App = (() => {
       : "DP");
     document.body.classList.toggle("admin-authenticated", Boolean(state.currentUser));
     syncAdminSectionAccess();
+    window.dispatchEvent(new Event("donpieros-session-change"));
   };
 
   const ADMIN_USER_CACHE_KEY = "don_pieros_admin_user_v1";
