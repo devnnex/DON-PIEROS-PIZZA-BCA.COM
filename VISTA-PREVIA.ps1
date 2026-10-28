@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $previewRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,5500)
-$mime = @{ '.html'='text/html; charset=utf-8';'.js'='application/javascript; charset=utf-8';'.css'='text/css; charset=utf-8';'.webmanifest'='application/manifest+json';'.svg'='image/svg+xml';'.png'='image/png';'.jpg'='image/jpeg';'.jpeg'='image/jpeg';'.webp'='image/webp';'.mp3'='audio/mpeg';'.ico'='image/x-icon';'.woff2'='font/woff2' }
+$mime = @{ '.html'='text/html; charset=utf-8';'.js'='application/javascript; charset=utf-8';'.css'='text/css; charset=utf-8';'.webmanifest'='application/manifest+json';'.svg'='image/svg+xml';'.png'='image/png';'.jpg'='image/jpeg';'.jpeg'='image/jpeg';'.webp'='image/webp';'.mp3'='audio/mpeg';'.wav'='audio/wav';'.ico'='image/x-icon';'.woff2'='font/woff2' }
 $listener.Start()
 Write-Output 'Carta: http://127.0.0.1:5500/index.html'
 Write-Output 'Admin: http://127.0.0.1:5500/admin.html'

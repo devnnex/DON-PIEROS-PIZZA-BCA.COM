@@ -2,6 +2,8 @@
 
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.
 
+Los domicilios admiten barrio escrito o seleccionado; si no existe una tarifa, queda por confirmar. Pedidos web y solicitudes de mesa tienen sonidos distintos y anuncios por voz. Para habilitar el barrio libre en una instalación existente, publica `appscript/Code.gs` versión **3.3.0** conservando la URL. No se añade SQL para esta actualización.
+
 - `index.html`: carta, selección de tamaños y adicionales, carrito y confirmación del pedido.
 - `mesa.html`: atención mediante QR, chat con el equipo, carta y consulta de la cuenta.
 - `admin.html`: caja, inventario, ventas, pedidos, usuarios y personalización de la marca.

@@ -27,6 +27,28 @@ test('los adicionales requieren disponibilidad y se recalculan en el servidor',(
  const result=h.call('createOrder',{order});assert.equal(result.ok,true);assert.equal(result.total,23000);
  h.save('toppings',{...extra,available:false});assert.equal(h.call('createOrder',{order:h.order(p)}).ok,false);
 });
+
+test('domicilio admite barrio escrito sin tarifa, lo conserva como pendiente y no altera el precio de productos',()=>{
+ const h=harness(),p=h.product();
+ const order=h.order(p,{fulfillment:'delivery',address:'Calle 10 # 2-30',neighborhood:'Barrio Nuevo',deliveryFee:0,deliveryFeePending:false});
+ const result=h.call('createOrder',{order});assert.equal(result.ok,true);assert.equal(result.neighborhood,'Barrio Nuevo');assert.equal(result.deliveryFeePending,true);assert.equal(result.total,25000);
+ const saved=h.call('dp_get_orders').orders[0];assert.equal(saved.neighborhood,'Barrio Nuevo');assert.equal(saved.deliveryFeePending,true);
+ assert.equal(h.call('createOrder',{order}).deliveryFeePending,true);assert.equal(h.sheets.get('Ordenes_Web').getLastRow(),2);
+ assert.equal(h.call('createOrder',{order:h.order(p,{...order,requestId:require('node:crypto').randomUUID(),neighborhood:' '})}).ok,false);
+ const known=h.save('neighborhoods',{name:'El Jardín',delivery_fee:4000,available:true});
+ const typedKnown=h.order(p,{fulfillment:'delivery',address:'Calle 2 # 3-40',neighborhood:'el jardin',deliveryFee:0,deliveryFeePending:true});
+ assert.equal(h.call('createOrder',{order:typedKnown}).ok,false,'Escribir un barrio con tarifa no permite eludir su valor.');
+ typedKnown.deliveryFee=4000;const priced=h.call('createOrder',{order:typedKnown});assert.equal(priced.ok,true);assert.equal(priced.total,29000);assert.equal(priced.deliveryFeePending,false);assert.equal(priced.neighborhood,known.name);
+ h.save('neighborhoods',{...known,available:false});assert.equal(h.call('createOrder',{order:{...typedKnown,requestId:require('node:crypto').randomUUID()}}).ok,false);
+});
+
+test('la actualización de órdenes agrega el indicador sin cambiar pedidos anteriores',()=>{
+ const h=harness(),p=h.product();h.call('createOrder',{order:h.order(p)});
+ const sheet=h.sheets.get('Ordenes_Web');sheet.rows[0].pop();sheet.rows[1].pop();
+ const original=JSON.stringify(sheet.rows[1]);h.props.set('DP_SCHEMA_VERSION','3.2.0-donpieros');h.context.ensureSystemReady_();
+ assert.equal(sheet.rows[0].at(-1),'deliveryFeePending');assert.equal(JSON.stringify(sheet.rows[1]),original);
+ assert.equal(h.call('dp_get_orders').orders[0].deliveryFeePending,false);
+});
 test('pedidos privados, roles, conflictos de versión y revisiones',()=>{
  const h=harness(),p=h.product();assert.equal(h.call('dp_get_orders',{},'').ok,false);assert.equal(h.call('dp_get_orders',{},'limited').ok,false);assert.equal(h.call('dp_admin_catalog',{},'waiter').ok,false);
  h.call('createOrder',{order:h.order(p)});const list=h.call('dp_get_orders',{},'waiter'),row=list.orders[0];assert.equal(list.ok,true);

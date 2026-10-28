@@ -1,5 +1,9 @@
 # Don Pieros Pizza · activación
 
+Actualización 3.3.0: Barrio permite escribir libremente o elegir una sugerencia. Los barrios configurados mantienen su tarifa; un barrio nuevo queda con domicilio **por confirmar**, tanto en la comanda como en WhatsApp. Para habilitarlo, reemplaza `appscript/Code.gs` y publica una nueva versión desde **Administrar implementaciones**, editando la implementación actual para conservar la misma URL. La actualización agrega `deliveryFeePending` al final de `Ordenes_Web` automáticamente y conserva los pedidos anteriores. No requiere SQL adicional.
+
+Los pedidos web tienen un tono original suave y el anuncio «Una nueva orden ha llegado a Don Pieros Pizza». Las solicitudes de mesas conservan su tono diferente y la voz que identifica la mesa y lo solicitado, como en Nápoles. Comparten una cola para evitar que las voces se superpongan. Se respeta el control de alarma y se prepara el audio con los gestos del usuario; si estaba desactivado, debe volver a activarse desde el administrador.
+
 Servicio por QR: `mesa.html` usa la identidad de la carta, con chat de pizzería y sin canciones. En Marca se controlan Mesero, Ver cuenta, Carta y Chat mediante cuatro interruptores. Aplica `supabase/install/06_OPCIONES_QR.sql` para activar los tres controles nuevos; el control Ver cuenta conserva su ajuste existente. Los cambios se guardan en el negocio y se comparten con los dispositivos de los clientes.
 
 Los nuevos QR incorporan el logo del negocio con margen blanco y corrección de errores alta. El PDF conserva tarjetas de **90 × 90 mm**, con borde y nombre del negocio rojos y un pie grande en negrita. La URL y el código de cada mesa se conservan. Para obtener el nuevo diseño, vuelve a descargar el PDF; no necesitas regenerar el identificador ni cambiar los QR guardados.
@@ -14,7 +18,7 @@ Las fotos de ejemplo se incluyen en `images/ejemplos/` y se seleccionan por tipo
 
 ## Actualización final: carta y tamaños (3.2.0)
 
-Los tres SQL ya fueron ejecutados. **No hay SQL adicionales.** Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.2.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
+Para una instalación con los pasos 01 a 06 aplicados, esta actualización no añade SQL. Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.3.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
 
 La inicialización carga en Sheets los **51 productos de las cartas entregadas**, con precios, ingredientes indicados, seis categorías y 15 opciones. No crea ventas ni pedidos. La carga es única y no sobrescribe precios, disponibilidad ni nombres que posteriormente edites. `menu-inicial.json` permite revisar el listado completo.
 
@@ -45,7 +49,7 @@ Hoja: **1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E**.
 2. Reemplaza todo el contenido de `Code.gs` con **`appscript/Code.gs`**. No pegues otro `.gs` ni necesitas HTML.
 3. **Implementar → Nueva implementación → Aplicación web**.
 4. **Ejecutar como: Yo** y **Acceso: Cualquier persona**. Autoriza la cuenta propietaria de la hoja.
-5. Copia la nueva URL **`/exec`** y ábrela una vez. Debe responder `ok: true`, `version: "3.2.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
+5. En instalaciones nuevas copia la URL **`/exec`**; en instalaciones existentes conserva la URL editando la implementación actual. Ábrela una vez. Debe responder `ok: true`, `version: "3.3.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
 
 Google no ejecuta todas las funciones al pulsar Implementar. La inicialización está conectada a `doGet` y `doPost`: **abrir `/exec` después de implementar, o recibir la primera petición del sitio, crea automáticamente todas las pestañas y encabezados**. No crea ventas ni productos. Ese es el [funcionamiento de las aplicaciones web de Apps Script](https://developers.google.com/apps-script/guides/web).
 

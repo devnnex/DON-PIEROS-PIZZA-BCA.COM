@@ -4612,11 +4612,14 @@ const App = (() => {
     return audio;
   };
 
+  const getWebOrderAudio = () => $("#webOrderAudio");
+
   const requestTableName = (request) => tableLabel(
     request.restaurant_tables || state.tables.find((table) => String(table.id) === String(request.table_id))
   );
 
   const requestVoiceText = (request) => {
+    if(request.request_type === "web_order") return "Una nueva orden ha llegado a Don Pieros Pizza.";
     const table = requestTableName(request);
     const message = String(request.message || "").replace(/\s+/g, " ").trim().slice(0, 320);
     const origin = requestOrigin(request);
@@ -4667,8 +4670,8 @@ const App = (() => {
     window.setTimeout(finish, Math.min(22000, Math.max(6000, speech.length * 85)));
   });
 
-  const playAlarmToneOnce = () => new Promise((resolve) => {
-    const audio = getAlarmAudio();
+  const playAlarmToneOnce = (webOrder = false) => new Promise((resolve) => {
+    const audio = webOrder ? getWebOrderAudio() : getAlarmAudio();
     if (!audio) {
       resolve(true);
       return;
@@ -4676,6 +4679,7 @@ const App = (() => {
     window.clearTimeout(state.alarmStopTimer);
     window.clearTimeout(state.alarmUnlockTimer);
     audio.pause();
+    audio.volume = 1;
     audio.loop = false;
     audio.currentTime = 0;
     let settled = false;
@@ -4690,9 +4694,10 @@ const App = (() => {
     };
     state.alarmToneFinish = finish;
     audio.addEventListener("ended", finish, { once: true });
-    state.alarmStopTimer = window.setTimeout(finish, 5500);
+    state.alarmStopTimer = window.setTimeout(finish, webOrder ? 2200 : 5500);
     audio.play().catch(() => {
       state.soundPrimed = false;
+      if(webOrder)state.webOrderSoundPrimed=false;
       updateAlarmButton();
       finish(false);
     });
@@ -4704,13 +4709,18 @@ const App = (() => {
     try {
       while (state.alertAnnouncementQueue.length && state.soundEnabled && state.soundPrimed) {
         const activeIds = new Set(activeRequests().map((request) => request.id));
-        const batch = state.alertAnnouncementQueue.splice(0).filter((request) => activeIds.has(request.id));
-        if (!batch.length) continue;
-        if (!await playAlarmToneOnce()) {
+        const pending = state.alertAnnouncementQueue.splice(0).filter((request) => request.request_type === "web_order" || activeIds.has(request.id));
+        if (!pending.length) continue;
+        const webOrder = pending[0].request_type === "web_order";
+        let count=1;
+        while(count<pending.length && (pending[count].request_type === "web_order")===webOrder)count++;
+        const batch=pending.slice(0,count);
+        state.alertAnnouncementQueue.unshift(...pending.slice(count));
+        if (!await playAlarmToneOnce(webOrder)) {
           state.alertAnnouncementQueue.unshift(...batch);
           break;
         }
-        const voiceBatch = batch.filter((request) => !hasOpenAdminChatForRequest(request));
+        const voiceBatch = batch.filter((request) => request.request_type === "web_order" || !hasOpenAdminChatForRequest(request));
         if (state.soundEnabled && voiceBatch.length) await speakAlertRequests(voiceBatch);
       }
     } finally {
@@ -4727,6 +4737,12 @@ const App = (() => {
     void drainAlertAnnouncements();
   };
 
+  const announceWebOrders = (orders) => {
+    playAlarm(orders.filter((order) => order && order.status === "nueva" && order.id).map((order) => ({
+      id: `web-order:${order.id}`, request_type: "web_order"
+    })));
+  };
+
   const stopAlarm = () => {
     window.clearTimeout(state.alarmStopTimer);
     window.clearTimeout(state.alarmUnlockTimer);
@@ -4734,6 +4750,8 @@ const App = (() => {
     state.alarmToneFinish?.();
     state.speechFinish?.();
     window.speechSynthesis?.cancel();
+    const webOrderAudio = getWebOrderAudio();
+    if(webOrderAudio){webOrderAudio.pause();webOrderAudio.currentTime=0;}
     const audio = getAlarmAudio();
     if (!audio) return;
     audio.pause();
@@ -4786,6 +4804,13 @@ const App = (() => {
     } catch (_) { state.speechPrimed = false; }
   };
 
+  const primeWebOrderAudio = () => {
+    const audio=getWebOrderAudio();
+    if(!audio || state.webOrderSoundPrimed || state.alertAnnouncementBusy)return;
+    audio.volume=0;
+    void audio.play().then(()=>{audio.pause();audio.currentTime=0;audio.volume=1;state.webOrderSoundPrimed=true;}).catch(()=>{audio.volume=1;state.webOrderSoundPrimed=false;});
+  };
+
   const unlockAlarm = async ({ silent = false } = {}) => {
     const audio = getAlarmAudio();
     if (!audio) {
@@ -4796,6 +4821,7 @@ const App = (() => {
     try {
       primeAlertVoice();
       primeReceiptAudio();
+      primeWebOrderAudio();
       state.soundEnabled = true;
       localStorage.setItem("waiter_alarm_enabled", "1");
       updateAlarmButton();
@@ -4811,6 +4837,7 @@ const App = (() => {
         audio.pause();
         audio.currentTime = 0;
         if (activeRequests().length) playAlarm(activeRequests());
+        void drainAlertAnnouncements();
       }, activeRequests().length ? 450 : 1100);
     } catch (error) {
       state.soundPrimed = false;
@@ -4821,7 +4848,7 @@ const App = (() => {
 
   const armAlarmOnFirstGesture = () => {
     const prime = async (fromMouseMove = false) => {
-      if (!fromMouseMove && state.soundEnabled) { primeAlertVoice(); primeReceiptAudio(); }
+      if (!fromMouseMove && state.soundEnabled) { primeAlertVoice(); primeReceiptAudio(); primeWebOrderAudio(); }
       if (!state.soundEnabled || state.soundPrimed || state.soundPriming) return;
       if (fromMouseMove) {
         if (Date.now() - Number(state.mousePrimeAttempted || 0) < 1500) return;
@@ -4847,7 +4874,7 @@ const App = (() => {
   const startAlarmLoop = () => {
     clearInterval(state.alarmTimer);
     state.alarmTimer = setInterval(() => {
-      if (!activeRequests().length) {
+      if (!activeRequests().length && !state.alertAnnouncementBusy) {
         const audio = getAlarmAudio();
         if (audio) {
           audio.pause();
@@ -13584,7 +13611,7 @@ const App = (() => {
     refreshIcons();
   };
 
-  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb, notify: toast, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
+  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb, notify: toast, announceWebOrders, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   return { init };
 })();
 

@@ -20,23 +20,26 @@ function harness() {
   }
   class Utterance { constructor(text) { this.text = text; } }
   const alarm = new Audio();
+  const webOrderAudio = new Audio();
   const window = { SpeechSynthesisUtterance: Utterance,
     speechSynthesis: { resume() {}, getVoices: () => [{ lang: 'es-CO' }], speak: u => voices.push(u), cancel() {} },
     setTimeout: (fn, ms) => { timers.set(++timerId, { fn, ms }); return timerId; }, clearTimeout: id => timers.delete(id) };
   const context = vm.createContext({ state, Audio, RECEIPT_SOUND: 'receipt.mp3', window, SpeechSynthesisUtterance: Utterance,
     document: { addEventListener(name, fn, options) { events.set(name, { fn, options }); } },
     localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
-    getAlarmAudio: () => alarm, updateAlarmButton() {}, toast() {}, hasOpenAdminChatForRequest: () => false,
-    activeRequests: () => state.requests.filter(r => r.status === 'pending'), requestVoiceText: r => 'Mesa ' + r.table_id + ' solicita al mesero.',
+    getAlarmAudio: () => alarm, getWebOrderAudio: () => webOrderAudio, updateAlarmButton() {}, toast() {}, hasOpenAdminChatForRequest: () => false,
+    activeRequests: () => state.requests.filter(r => r.status === 'pending'), requestTableName: r => 'Mesa ' + r.table_id,
+    requestOrigin: () => ({kind:'client'}), isSongRequest: () => false, normalizeText: value=>String(value).toLowerCase(),
     Date, Map, Set });
-  vm.runInContext(slice('getReceiptAudio', 'latestClientBill') + slice('speakAlertRequests', 'disableAlarm')
+  vm.runInContext(slice('getReceiptAudio', 'latestClientBill') + slice('requestVoiceText', 'disableAlarm')
     + slice('primeAlertVoice', 'startAlarmLoop')
-    + ';globalThis.api={playReceiptSound,playClientChatReceipt,playAdminChatReceipt,armClientSoundsOnFirstGesture,armAlarmOnFirstGesture,playAlarm};', context);
-  return { state, calls, voices, storage, api: context.api, alarm,
+    + ';globalThis.api={playReceiptSound,playClientChatReceipt,playAdminChatReceipt,armClientSoundsOnFirstGesture,armAlarmOnFirstGesture,playAlarm,announceWebOrders};', context);
+  return { state, calls, voices, storage, api: context.api, alarm,webOrderAudio,
     unblock() { blocked = false; }, block() { blocked = true; },
     async gesture(name) { const event = events.get(name); assert.ok(event); assert.equal(event.options.capture, true); event.fn({ target: { closest: () => null } }); await settle(); },
     async finishUnlock() { for (const [id, timer] of [...timers]) if (timer.ms === 450 || timer.ms === 1100) { timers.delete(id); timer.fn(); } await settle(); },
-    async finishTone() { alarm.handlers.get('ended')?.(); await settle(); }
+    async finishTone(web=false) { (web?webOrderAudio:alarm).handlers.get('ended')?.(); await settle(); },
+    async finishVoice() { voices.at(-1)?.onend?.(); await settle(); }
   };
 }
 
@@ -51,6 +54,38 @@ test('Admin conserva solicitudes anteriores al gesto y anuncia tono y voz al ter
   assert.ok(h.voices.some(u => u.volume === 0), 'Prepara la voz dentro del gesto.');
   assert.equal(h.voices.filter(u => u.volume === 1).length, 1);
   h.api.playAlarm(); await settle(); assert.equal(h.voices.filter(u => u.volume === 1).length, 1);
+});
+
+test('Pedidos web usan su tono y frase de marca; mesa y web se escuchan en orden y sin repetir',async()=>{
+ const h=harness();h.unblock();h.api.armAlarmOnFirstGesture();await h.gesture('pointerup');await h.finishUnlock();
+ h.state.requests=[{id:'mesa',table_id:'7',request_type:'waiter',status:'pending'}];
+ h.api.playAlarm();await settle();
+ assert.equal(h.calls.at(-1).audio,h.alarm);await h.finishTone();
+ assert.equal(h.voices.at(-1).text,'Mesa 7 solicita al mesero.');
+ const order={id:'DP-1',status:'nueva'};h.api.announceWebOrders([order]);h.api.announceWebOrders([order]);
+ await settle();assert.equal(h.state.alertAnnouncementQueue.length,1);
+ assert.equal(h.calls.at(-1).audio,h.alarm,'No superpone el pedido a la voz de la mesa.');
+ await h.finishVoice();assert.equal(h.calls.at(-1).audio,h.webOrderAudio);await h.finishTone(true);
+ assert.equal(h.voices.at(-1).text,'Una nueva orden ha llegado a Don Pieros Pizza.');
+ await h.finishVoice();assert.equal(h.state.alertAnnouncementQueue.length,0);
+ const count=h.calls.length;h.api.announceWebOrders([order]);await settle();assert.equal(h.calls.length,count);
+ h.state.requests.push({id:'bill',table_id:'9',request_type:'bill',status:'pending'});h.api.playAlarm();await settle();await h.finishTone();
+ assert.equal(h.voices.at(-1).text,'Mesa 9 solicita la cuenta.');
+});
+
+test('Pedido web anterior al gesto se anuncia al habilitar sonido, pero apagado no habla',async()=>{
+ const h=harness();h.api.armAlarmOnFirstGesture();h.api.announceWebOrders([{id:'DP-2',status:'nueva'}]);
+ assert.equal(h.state.alertAnnouncementQueue.length,1);h.unblock();await h.gesture('touchend');await h.finishUnlock();await h.finishTone(true);
+ assert.equal(h.voices.at(-1).text,'Una nueva orden ha llegado a Don Pieros Pizza.');await h.finishVoice();
+ h.state.soundEnabled=false;const calls=h.calls.length;h.api.announceWebOrders([{id:'DP-3',status:'nueva'}]);await settle();assert.equal(h.calls.length,calls);
+});
+
+test('Si se bloquea el tono web, el siguiente gesto recupera tono y voz una sola vez',async()=>{
+ const h=harness();h.unblock();h.api.armAlarmOnFirstGesture();await h.gesture('pointerup');await h.finishUnlock();
+ h.block();h.api.announceWebOrders([{id:'DP-4',status:'nueva'}]);await settle();
+ assert.equal(h.state.soundPrimed,false);assert.equal(h.state.webOrderSoundPrimed,false);assert.equal(h.state.alertAnnouncementQueue.length,1);
+ h.unblock();await h.gesture('touchend');await h.finishUnlock();await h.finishTone(true);
+ assert.equal(h.voices.filter(voice=>voice.volume===1).length,1);assert.equal(h.voices.at(-1).text,'Una nueva orden ha llegado a Don Pieros Pizza.');
 });
 
 test('Un bloqueo posterior del tono conserva la solicitud para el siguiente toque sin anunciarla dos veces', async () => {

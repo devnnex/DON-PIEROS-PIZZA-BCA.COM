@@ -6,6 +6,7 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
 
 (async()=>{
  const h=harness(),product=h.product(),errors=[],sockets=new Set(),notices=[],reads=[];
+ const knownNeighborhood=h.save('neighborhoods',{name:'Centro',delivery_fee:4000,available:true});
  let orderCommitted=0,oldReadGate=null,oldReadStarted=false;
  const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  try{
@@ -67,7 +68,13 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
     await route.fulfill({json:data});
    });
   }
-  await adminContext.addInitScript(()=>localStorage.setItem('don_pieros_admin_token','boss'));
+  await adminContext.addInitScript(()=>{
+   localStorage.setItem('don_pieros_admin_token','boss');window.qaSpoken=[];window.qaOrderChimes=0;
+   window.SpeechSynthesisUtterance=class{constructor(text){this.text=text;this.volume=1;}};
+   Object.defineProperty(window,'speechSynthesis',{value:{resume(){},cancel(){},getVoices(){return[{lang:'es-CO'}];},speak(utterance){if(utterance.volume)window.qaSpoken.push(utterance.text);queueMicrotask(()=>utterance.onend?.());}}});
+   const play=HTMLMediaElement.prototype.play;
+   HTMLMediaElement.prototype.play=function(){if(this.id==='webOrderAudio'&&this.volume>0)window.qaOrderChimes++;return play.apply(this,arguments);};
+  });
   await clientContext.addInitScript(()=>{
    window.navigation.addEventListener('navigate',event=>{
     if(!event.destination.url.startsWith('https://api.whatsapp.com/send?'))return;
@@ -80,11 +87,21 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   for(const page of [admin,client])page.on('pageerror',error=>errors.push(error.message));
   await admin.goto('http://127.0.0.1:4173/admin.html#onlineorders');
   await admin.locator('#dp-orders-status').filter({hasText:'Recepción automática activa'}).waitFor();
-  await admin.evaluate(()=>{document.querySelector('#salesShiftDialog')?.close();window.qaAlarms=0;DonPierosAdmin.alarm=()=>window.qaAlarms++;});
+  await admin.evaluate(()=>{document.querySelector('#salesShiftDialog')?.close();window.qaAlarms=0;const announce=DonPierosAdmin.announceWebOrders;DonPierosAdmin.announceWebOrders=orders=>{window.qaAlarms+=orders.length;announce(orders);};});
   assert.ok([...sockets].some(peer=>peer.topics.has('realtime:don-pieros-orders-live')));
   await client.goto('http://127.0.0.1:4173/index.html');await client.locator('#welcome-close').click();
   await client.locator('[data-product]').first().click();await client.locator('#add-product').click();
   await client.locator('#header-cart').click();await client.locator('#go-checkout').click();
+  await client.locator('[name=fulfillment][value=delivery]').locator('..').click();
+  await client.locator('[name=address]').fill('Calle 10 # 20-30');
+  assert.equal(await client.locator('#neighborhood-list option').count(),1);
+  await client.locator('[name=neighborhood]').fill('Centro');
+  assert.match(await client.locator('#checkout-delivery-fee').innerText(),/4.000/);
+  assert.match(await client.locator('#checkout-total').innerText(),/29.000/);
+  assert.equal(await client.locator('[name=neighborhood]').evaluate(node=>document.activeElement===node),true);
+  await client.locator('[name=neighborhood]').fill('Barrio Nuevo');
+  assert.equal(await client.locator('#checkout-delivery-fee').innerText(),'Por confirmar');
+  assert.match(await client.locator('#confirm-order').innerText(),/domicilio por confirmar/);
   await client.locator('[name=name]').fill('Cliente veloz');await client.locator('[name=phone]').fill('3102241444');
   await client.locator('[name=notes]').fill('Sin cebolla, por favor.');
   // Leave an old read pending. The arrival must supersede it, not wait for it.
@@ -92,19 +109,24 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   await admin.waitForTimeout(100);assert.equal(oldReadStarted,true);
   await client.locator('#confirm-order').click();
   await client.waitForFunction(()=>window.qaWhatsApp);
+  const firstCommittedAt=orderCommitted;
   const navigation=await client.evaluate(()=>window.qaWhatsApp);
   assert.ok(navigation.at-orderCommitted<700,'WhatsApp abre al confirmar, sin una pausa de celebración.');
   assert.equal(await client.evaluate(()=>window.qaKeepAlive),true);
   await admin.locator('#dp-orders-list [data-dp-order]').first().waitFor({timeout:2000});
   const receivedAt=Date.now();assert.ok(receivedAt-orderCommitted<2000,'El aviso debe interrumpir la lectura anterior.');
   assert.equal(await admin.evaluate(()=>window.qaAlarms),1,'Un pedido genera una alarma aun recibiendo dos avisos.');
+  await admin.waitForFunction(()=>window.qaSpoken.includes('Una nueva orden ha llegado a Don Pieros Pizza.'),{},{timeout:6000});
+  assert.equal(await admin.evaluate(()=>window.qaOrderChimes),1);
+  assert.equal(await admin.locator('#webOrderAudio').evaluate(audio=>audio.duration>1&&audio.duration<2),true);
   const createdNotices=notices.filter(notice=>notice.event==='order-created');
   assert.equal(createdNotices.length,1);assert.deepEqual(Object.keys(createdNotices[0].payload),['orderId']);
   const url=new URL(navigation.url),text=url.searchParams.get('text');
   assert.equal(url.searchParams.get('phone'),'573102241444');
   assert.match(text,/Nuevo pedido.*DON PIEROS PIZZA/);assert.match(text,/Cliente.*Cliente veloz/);
   assert.match(text,/Detalle del pedido:/);assert.match(text,/1x Pizza prueba — \*\$\s*25[.,]000\*/);
-  assert.match(text,/TOTAL: \$\s*25[.,]000/);assert.match(text,/Indicaciones.*Sin cebolla/);
+  assert.match(text,/Total de productos: \$\s*25[.,]000/);assert.match(text,/Indicaciones.*Sin cebolla/);
+  assert.match(text,/Barrio.*Barrio Nuevo/);assert.match(text,/Domicilio.*Por confirmar/);
   assert.equal(h.sheets.get('Ordenes_Web').getLastRow(),2);
   assert.equal(await client.evaluate(()=>localStorage.getItem('don_pieros_pending_order_v1')),null);
   oldReadGate.resolve();oldReadGate=null;
@@ -113,6 +135,8 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   await admin.locator('#dp-orders-list [data-dp-order] footer span').first().click();
   assert.equal(await admin.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);
   assert.match(await admin.locator('#dp-order-detail').innerText(),/Cliente veloz/);
+  assert.match(await admin.locator('#dp-order-detail').innerText(),/Barrio Nuevo/);
+  assert.match(await admin.locator('#dp-order-detail').innerText(),/Domicilio\s+Por confirmar/);
   assert.equal(reads.length,readCount);
   await admin.keyboard.press('Escape');
   for(const width of [390,1440]){
@@ -141,8 +165,18 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   await admin.locator('#dp-order-filter').selectOption('active');await admin.locator('#dp-orders-list [data-dp-order]').first().waitFor();
   await admin.evaluate(()=>location.hash='dashboard');await admin.locator('#dp-dashboard-orders [data-dp-order] footer span').first().click();
   assert.equal(await admin.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);
+  // An empty catalog of neighborhoods still permits a typed delivery address.
+  h.save('neighborhoods',{...knownNeighborhood,available:false});
+  const emptyListClient=await clientContext.newPage();await emptyListClient.goto('http://127.0.0.1:4173/index.html');await emptyListClient.locator('#welcome-close').click();
+  await emptyListClient.locator('[data-product]').first().click();await emptyListClient.locator('#add-product').click();await emptyListClient.locator('#header-cart').click();await emptyListClient.locator('#go-checkout').click();
+  await emptyListClient.locator('[name=fulfillment][value=delivery]').locator('..').click();assert.equal(await emptyListClient.locator('#neighborhood-list option').count(),0);
+  await emptyListClient.locator('[name=address]').fill('Carrera 10 # 12-15');await emptyListClient.locator('[name=neighborhood]').fill('Barrio escrito');
+  await emptyListClient.locator('[name=name]').fill('Sin lista de barrios');await emptyListClient.locator('[name=phone]').fill('3102241444');
+  await emptyListClient.locator('#confirm-order').click();await emptyListClient.waitForFunction(()=>window.qaWhatsApp);
+  assert.equal(h.sheets.get('Ordenes_Web').getLastRow(),4);
+  assert.equal(h.call('dp_get_orders').orders[0].deliveryFeePending,true);
   assert.deepEqual(errors,[]);
-  console.log(`Recepción entre dos navegadores: ${receivedAt-orderCommitted} ms; apertura WhatsApp: ${navigation.at-orderCommitted} ms (red simulada).`);
-  console.log('OK: aviso persistente al navegar, lectura anterior cancelada, una alarma, comanda al clic móvil/escritorio, datos privados, respaldo y filtros.');
+  console.log(`Recepción entre dos navegadores: ${receivedAt-firstCommittedAt} ms; apertura WhatsApp: ${navigation.at-firstCommittedAt} ms (red simulada).`);
+  console.log('OK: barrios elegidos y escritos con lista vacía, tarifa pendiente conservada, aviso persistente al navegar, lectura anterior cancelada, tono original y voz, comanda al clic, datos privados, respaldo y filtros.');
  }finally{oldReadGate?.resolve();await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

@@ -7,7 +7,7 @@ var DP_TABLES = {
   toppings: { name: 'Adicionales_Web', headers: ['id','name','kind','price','available','sort_order','version'] },
   payments: { name: 'Pagos_Web', headers: ['id','name','account_value','instructions','available','sort_order','version'] },
   neighborhoods: { name: 'Barrios_Web', headers: ['id','name','delivery_fee','available','sort_order','version'] },
-  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version'] }
+  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version','deliveryFeePending'] }
 };
 var DP_STATUSES = ['nueva','atendiendo','lista','despachada','cancelada'];
 
@@ -25,11 +25,13 @@ function dpSeedProperties_() {
 function dpEnsureSheets_(spreadsheet) {
   Object.keys(DP_TABLES).forEach(function (key) {
     var definition = DP_TABLES[key];
-    ensureSheet_(spreadsheet, definition.name, definition.headers);
+    var sheet = ensureSheet_(spreadsheet, definition.name, definition.headers);
+    if(key==='orders')sheet.getRange(1,definition.headers.length).setValue('deliveryFeePending');
   });
   // Payment configuration only. No demo products, clients, orders or sales.
   var payments = spreadsheet.getSheetByName(DP_TABLES.payments.name);
   if (payments.getLastRow() < 2) payments.appendRow(['efectivo','Efectivo','','Paga al recibir tu pedido',true,0,1]);
+  dpSeedInitialMenu_(spreadsheet);
 }
 
 function dpDispatch_(request) {
@@ -81,7 +83,7 @@ function dpObjects_(key,rows) {
     var result = {};
     definition.headers.forEach(function(header,i){result[header]=row[i] instanceof Date ? row[i].toISOString() : row[i];});
     ['price','delivery_fee','sort_order','version','sequence','total','subtotal','deliveryFee','queuePosition','ordersAhead'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=Number(result[field]) || 0;});
-    ['available','featured'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=dpBoolean_(result[field]);});
+    ['available','featured','deliveryFeePending'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=dpBoolean_(result[field]);});
     if(key==='products') { try {result.modifiers=JSON.parse(result.modifiers || '[]');} catch(_){result.modifiers=[];} }
     if(key==='orders') { try {result.items=JSON.parse(result.itemsJson || '[]');} catch(_){result.items=[];} delete result.itemsJson; }
     return result;
@@ -179,21 +181,25 @@ function dpPriceOrder_(raw,catalog) {
     if(Number(line.unitPrice)!==unitPrice)throw new Error('El precio de '+product.name+' cambió. Actualiza la carta antes de confirmar.');
     return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels};
   });
-  var fulfillment=raw.fulfillment==='delivery'?'delivery':'pickup',neighborhood=null,deliveryFee=0;
+  var fulfillment=raw.fulfillment==='delivery'?'delivery':'pickup',neighborhood=null,deliveryFee=0,deliveryFeePending=false,neighborhoodName='';
   if(fulfillment==='delivery') {
-    neighborhood=catalog.neighborhoods.filter(function(n){return n.id===raw.neighborhoodId && n.available;})[0];
-    if(!neighborhood || dpText_(raw.address,300).length<5)throw new Error('Selecciona un barrio y una dirección válida.');
-    deliveryFee=dpMoney_(neighborhood.delivery_fee);
+    neighborhoodName=dpText_(raw.neighborhood,80);
+    var neighborhoodId=dpText_(raw.neighborhoodId,80);
+    neighborhood=catalog.neighborhoods.filter(function(n){return neighborhoodId?n.id===neighborhoodId:normalizeSearch_(n.name)===normalizeSearch_(neighborhoodName);})[0];
+    if((neighborhoodId&&!neighborhood)||(neighborhood&&!neighborhood.available))throw new Error('Ese barrio ya no está disponible. Revisa la dirección de entrega.');
+    if(dpText_(raw.address,300).length<5||(!neighborhood&&neighborhoodName.length<2))throw new Error('Escribe un barrio y una dirección válida.');
+    if(neighborhood){neighborhoodName=neighborhood.name;deliveryFee=dpMoney_(neighborhood.delivery_fee);}
+    else deliveryFeePending=true;
     if(Number(raw.deliveryFee)!==deliveryFee)throw new Error('La tarifa del domicilio cambió. Actualiza la carta.');
   }
   var payment=catalog.payments.filter(function(p){return p.id===raw.paymentId && p.available;})[0];
   if(!payment)throw new Error('Selecciona un medio de pago disponible.');
   var subtotal=items.reduce(function(sum,line){return sum+line.unitPrice*line.quantity;},0);
-  return {items:items,fulfillment:fulfillment,neighborhood:neighborhood?neighborhood.name:'',deliveryFee:deliveryFee,subtotal:subtotal,total:subtotal+deliveryFee,payment:payment};
+  return {items:items,fulfillment:fulfillment,neighborhood:neighborhoodName,deliveryFee:deliveryFee,deliveryFeePending:deliveryFeePending,subtotal:subtotal,total:subtotal+deliveryFee,payment:payment};
 }
 
 function dpOrderResult_(order,duplicate) {
-  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,deliveryFee:order.deliveryFee,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
+  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
 }
 
 function dpCreateOrder_(raw) {
@@ -214,6 +220,7 @@ function dpCreateOrder_(raw) {
     var active=metadata.filter(function(row){return ['nueva','atendiendo','lista'].indexOf(String(row[5]))>=0;});
     var id='DP-'+Utilities.formatDate(new Date(),'America/Bogota','yyyyMMdd')+'-'+String(sequence).padStart(4,'0');
     var order={id:id,request_id:raw.requestId,sequence:sequence,createdAt:now,updatedAt:now,status:'nueva',customerName:customerName,phone:phone,fulfillment:priced.fulfillment,address:priced.fulfillment==='delivery'?dpText_(raw.address,300):'',neighborhood:priced.neighborhood,deliveryFee:priced.deliveryFee,subtotal:priced.subtotal,total:priced.total,paymentMethod:priced.payment.name,paymentValue:priced.payment.account_value,notes:dpText_(raw.notes,1000),itemsJson:JSON.stringify(priced.items),queuePosition:active.length+1,ordersAhead:active.length,handledByName:'',version:1};
+    order.deliveryFeePending=priced.deliveryFeePending;
     try {
       sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
       SpreadsheetApp.flush();

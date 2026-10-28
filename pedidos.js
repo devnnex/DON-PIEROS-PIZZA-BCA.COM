@@ -63,8 +63,9 @@
       '🍕 *Detalle del pedido:*',
       ...productLines,
       `🧮 *Subtotal:* ${money(order.subtotal)}`,
-      order.fulfillment === 'delivery' ? `🛵 *Domicilio:* ${money(order.deliveryFee)}` : '🏪 *Envío:* Sin costo (recoge en el negocio)',
-      `💰 *TOTAL: ${money(totalValue)}*`,
+      order.fulfillment === 'delivery' ? `🛵 *Domicilio:* ${order.deliveryFeePending ? 'Por confirmar con el negocio' : money(order.deliveryFee)}` : '🏪 *Envío:* Sin costo (recoge en el negocio)',
+      `💰 *${order.deliveryFeePending ? 'Total de productos' : 'TOTAL'}: ${money(totalValue)}*`,
+      ...(order.deliveryFeePending ? ['El valor del domicilio se confirma por este chat.'] : []),
       ...(order.receipt ? ['📎 Comprobante adjunto a la orden.'] : []),
       ...(order.liveLocation ? ['📍 *Ubicación del cliente:* ' + window.DonPierosServices.locationUrl(orderId, order.liveLocation.viewerToken)] : []),
       ...(order.notes ? ['', `📝 *Indicaciones:* ${order.notes}`] : []),
@@ -128,6 +129,16 @@
   }
   function subtotal() { return state.cart.reduce((sum,item) => sum + item.unitPrice * item.quantity, 0); }
   function deliveryFee() { return state.fulfillment === 'delivery' ? Number(state.selectedNeighborhood?.delivery_fee || 0) : 0; }
+  function deliveryFeePending() { return state.fulfillment === 'delivery' && !state.selectedNeighborhood; }
+  function neighborhoodKey(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLocaleLowerCase('es'); }
+  function updateDeliverySummary() {
+    const amount=$('#checkout-delivery-fee');if(!amount)return;
+    amount.textContent=state.selectedNeighborhood ? money(deliveryFee()) : 'Por confirmar';
+    $('#checkout-total-label').textContent=deliveryFeePending() ? 'Total de productos' : 'Total';
+    $('#checkout-total').textContent=money(total());
+    $('#neighborhood-help').textContent=state.selectedNeighborhood ? 'Tarifa del domicilio: '+money(deliveryFee()) : 'Puedes escribir tu barrio. Si no tiene tarifa, confirmaremos el valor del domicilio por WhatsApp.';
+    $('#confirm-order').textContent='Confirmar pedido · '+money(total())+(deliveryFeePending()?' + domicilio por confirmar':'');
+  }
   function total() { return subtotal() + deliveryFee(); }
   function productById(id) { return products.find(product => product.id === id) || state.cart.find(item => item.productId === id)?.productSnapshot; }
 
@@ -374,13 +385,13 @@
       const selectedPayment = paymentMethods.find(method => method.id === state.payment);
       const paymentInfo = selectedPayment ? `<div class="payment-info"><div><small>Dato para pagar</small><strong>${escapeHtml(selectedPayment.account_value || 'Pendiente de configurar')}</strong><span>${escapeHtml(selectedPayment.instructions || '')}</span></div>${selectedPayment.account_value ? '<button type="button" id="copy-payment" aria-label="Copiar dato de pago">▣</button>' : ''}</div>` : '';
       const neighborhoodOptions = neighborhoods.map(item => `<option value="${escapeHtml(item.name)}"></option>`).join('');
-      const deliveryFields = state.fulfillment === 'delivery' ? `<div class="delivery-fields"><label>Dirección<input name="address" value="${escapeHtml(state.customer.address)}" placeholder="Calle, carrera, número y detalles" maxlength="120" autocomplete="street-address" required><div class="neighborhood-suggestions" id="neighborhood-suggestions"></div></label><label>Barrio<input name="neighborhood" list="neighborhood-list" value="${escapeHtml(state.customer.neighborhood)}" placeholder="Escribe y selecciona tu barrio" maxlength="60" autocomplete="off" required><datalist id="neighborhood-list">${neighborhoodOptions}</datalist></label></div>` : '';
-      root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido?</legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''}><span><b>⌂</b><strong>Recoger</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''}><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}<label>Nombre completo<input name="name" value="${escapeHtml(state.customer.name)}" placeholder="¿A nombre de quién?" maxlength="60" autocomplete="name" required></label><label>Teléfono<input name="phone" type="tel" inputmode="tel" value="${escapeHtml(state.customer.phone)}" placeholder="300 000 0000" maxlength="20" autocomplete="tel" required></label><label>Indicaciones especiales <small><span id="note-count">${state.customer.notes.length}</span>/180</small><textarea name="notes" maxlength="180" placeholder="Ej: sin cebolla, alergias o alguna indicación...">${escapeHtml(state.customer.notes)}</textarea></label><fieldset class="checkout-choice payment-choice"><legend>Método de pago</legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''}><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${state.fulfillment === 'delivery' ? `<div><span>Domicilio${state.selectedNeighborhood ? ` · ${escapeHtml(state.selectedNeighborhood.name)}` : ''}</span><span>${state.selectedNeighborhood ? money(deliveryFee()) : 'Selecciona tu barrio'}</span></div>` : ''}<div class="total"><strong>Total</strong><strong>${money(total())}</strong></div></div></form>`;
+      const deliveryFields = state.fulfillment === 'delivery' ? `<div class="delivery-fields"><label>Dirección<input name="address" value="${escapeHtml(state.customer.address)}" placeholder="Calle, carrera, número y detalles" maxlength="120" autocomplete="street-address" required><div class="neighborhood-suggestions" id="neighborhood-suggestions"></div></label><label>Barrio<input name="neighborhood" aria-describedby="neighborhood-help" list="neighborhood-list" value="${escapeHtml(state.customer.neighborhood)}" placeholder="Escribe tu barrio o elige uno" maxlength="60" autocomplete="off" required><datalist id="neighborhood-list">${neighborhoodOptions}</datalist><small id="neighborhood-help"></small></label></div>` : '';
+      root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido?</legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''}><span><b>⌂</b><strong>Recoger</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''}><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}<label>Nombre completo<input name="name" value="${escapeHtml(state.customer.name)}" placeholder="¿A nombre de quién?" maxlength="60" autocomplete="name" required></label><label>Teléfono<input name="phone" type="tel" inputmode="tel" value="${escapeHtml(state.customer.phone)}" placeholder="300 000 0000" maxlength="20" autocomplete="tel" required></label><label>Indicaciones especiales <small><span id="note-count">${state.customer.notes.length}</span>/180</small><textarea name="notes" maxlength="180" placeholder="Ej: sin cebolla, alergias o alguna indicación...">${escapeHtml(state.customer.notes)}</textarea></label><fieldset class="checkout-choice payment-choice"><legend>Método de pago</legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''}><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${state.fulfillment === 'delivery' ? `<div><span>Domicilio</span><span id="checkout-delivery-fee">${state.selectedNeighborhood ? money(deliveryFee()) : 'Por confirmar'}</span></div>` : ''}<div class="total"><strong id="checkout-total-label">${deliveryFeePending()?'Total de productos':'Total'}</strong><strong id="checkout-total">${money(total())}</strong></div></div></form>`;
       if (state.fulfillment === 'delivery') {
         const wrapper = document.createElement('div'); wrapper.id = 'checkout-location'; wrapper.innerHTML = delivery.markup(); $('.delivery-fields', root).after(wrapper);
       }
       const receipt = document.createElement('section'); receipt.id = 'checkout-receipt'; receipt.className = 'receipt-checkout-card'; receipt.innerHTML = receiptMarkup(); ($('.payment-info', root) || $('.payment-choice', root)).after(receipt);
-      action.innerHTML = `<button id="confirm-order" ${state.receiptBusy ? 'disabled' : ''}>Confirmar pedido · ${money(total())}</button>`; return;
+      action.innerHTML = `<button id="confirm-order" ${state.receiptBusy ? 'disabled' : ''}>Confirmar pedido · ${money(total())}${deliveryFeePending()?' + domicilio por confirmar':''}</button>`; updateDeliverySummary(); return;
     }
     if (!state.cart.length) { root.innerHTML = '<div class="cart-empty"><i>♢</i><h3>Tu pedido está vacío</h3><p>Explora el menú y agrega algo delicioso.</p><button id="explore-menu">Explorar el menú</button></div>'; action.innerHTML = ''; return; }
     const issues = cartAvailabilityIssues();
@@ -392,8 +403,8 @@
   function showOverlay(name) { $(`#${name}-overlay`).hidden = false; document.body.classList.add('modal-open'); }
   function hideOverlay(name) { if(name==='cart')clearTimeout(state.redirectTimer); $(`#${name}-overlay`).hidden = true; if (!$$('.overlay:not([hidden])').length) document.body.classList.remove('modal-open'); }
   function setNeighborhood(value) {
-    const normalized = String(value || '').trim().toLocaleLowerCase('es');
-    state.selectedNeighborhood = neighborhoods.find(item => item.name.toLocaleLowerCase('es') === normalized) || null;
+    const normalized = neighborhoodKey(value);
+    state.selectedNeighborhood = neighborhoods.find(item => neighborhoodKey(item.name) === normalized) || null;
     state.customer.neighborhood = state.selectedNeighborhood?.name || String(value || '');
   }
   function renderAddressSuggestions(value) {
@@ -424,8 +435,8 @@
       showAvailabilityAlert();
       return toast('Revisa tu pedido', 'Un producto o topping dejó de estar disponible.');
     }
-    if (state.fulfillment === 'delivery' && !state.customer.address.trim()) return guideCheckoutField('[name="address"]','Completa el domicilio','Ingresa la dirección para continuar.');
-    if (state.fulfillment === 'delivery' && !state.selectedNeighborhood) return guideCheckoutField('[name="neighborhood"]','Selecciona un barrio','Elige un barrio de la lista para calcular el domicilio.');
+    if (state.fulfillment === 'delivery' && state.customer.address.trim().length<5) return guideCheckoutField('[name="address"]','Completa el domicilio','Ingresa una dirección completa para continuar.');
+    if (state.fulfillment === 'delivery' && state.customer.neighborhood.trim().length<2) return guideCheckoutField('[name="neighborhood"]','Completa el barrio','Escribe tu barrio o elige uno de la lista.');
     if (state.customer.name.trim().length<2) return guideCheckoutField('[name="name"]','Completa tus datos','Ingresa al menos dos letras de tu nombre para continuar.');
     if (digits.length < 7) return guideCheckoutField('[name="phone"]','Completa tus datos','Ingresa un teléfono válido para continuar.');
     if (!state.payment) return guideCheckoutField('[name="payment"]','Selecciona el pago','Elige un método de pago para continuar.');
@@ -434,7 +445,7 @@
     const order = {
       requestId: getPendingOrderId(), paymentId:state.payment, neighborhoodId:state.selectedNeighborhood?.id || "",
       customerName:state.customer.name,phone:state.customer.phone,fulfillment:state.fulfillment,
-      address:state.customer.address,neighborhood:state.customer.neighborhood,deliveryFee:deliveryFee(),
+      address:state.customer.address,neighborhood:state.customer.neighborhood.trim(),deliveryFee:deliveryFee(),deliveryFeePending:deliveryFeePending(),
       subtotal:subtotal(),paymentMethod:selectedPayment?.name || state.payment,paymentValue:selectedPayment?.account_value || '',notes:state.customer.notes,
       items:state.cart.map(item => ({ productId:item.productId,name:(productById(item.productId) || item.productSnapshot).name,quantity:item.quantity,unitPrice:item.unitPrice,selectionIds:item.selections || {},selections:Object.values(item.selectionLabels || {}).flat() }))
     };
@@ -452,6 +463,8 @@
       const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
       notifyOrderCreated(result.orderId);
       order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;
+      order.deliveryFeePending=!!result.deliveryFeePending;
+      if(result.neighborhood)order.neighborhood=result.neighborhood;
       const whatsappUrl = orderWhatsAppUrl(order, result.orderId, result.total,result.queuePosition,result.ordersAhead);
       localStorage.removeItem('don_pieros_pending_order_v1');localStorage.removeItem('don_pieros_pending_order_id');
       state.customer.name=order.customerName;state.queuePosition = result.queuePosition; state.ordersAhead = result.ordersAhead; state.lastWhatsappUrl = whatsappUrl; state.lastOrderId = result.orderId; state.orderTotal = result.total; state.cartStep = 'success';
@@ -499,12 +512,12 @@
     if (event.target.name === 'receiptFile') return;
     if (!event.target.name) return;
     event.target.closest('.checkout-attention')?.classList.remove('checkout-attention');
-    if (event.target.name === 'fulfillment') { state.fulfillment = event.target.value; if (state.fulfillment === 'pickup') { state.selectedNeighborhood = null; if (!delivery.confirmed) void delivery.stop(); } renderCart(); return; }
+    if (event.target.name === 'fulfillment') { state.fulfillment = event.target.value; if (state.fulfillment === 'delivery') setNeighborhood(state.customer.neighborhood); if (state.fulfillment === 'pickup') { state.selectedNeighborhood = null; if (!delivery.confirmed) void delivery.stop(); } renderCart(); return; }
     if (event.target.name === 'payment') { state.payment = event.target.value; renderCart(); return; }
     state.customer[event.target.name] = event.target.value;
     if (event.target.name === 'notes') $('#note-count').textContent = event.target.value.length;
     if (event.target.name === 'address') renderAddressSuggestions(event.target.value);
-    if (event.target.name === 'neighborhood') { setNeighborhood(event.target.value); const current = event.target.value; const selected = state.selectedNeighborhood; if (selected) { state.customer.neighborhood = selected.name; event.target.value = selected.name; setTimeout(renderCart,0); } else state.customer.neighborhood = current; }
+    if (event.target.name === 'neighborhood') { setNeighborhood(event.target.value); updateDeliverySummary(); }
   });
   $('#cart-action').addEventListener('click', event => { if (event.target.closest('#go-checkout')) { state.cartStep = 'checkout'; renderCart(); } if (event.target.closest('#confirm-order')) void confirmOrder(); });
   $('#cart-content').addEventListener('change', event => { if (event.target.name === 'receiptFile') void selectReceipt(event.target.files?.[0]); });
