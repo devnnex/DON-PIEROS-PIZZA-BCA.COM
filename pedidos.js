@@ -370,7 +370,7 @@
       return;
     }
     if (state.cartStep === 'success') {
-      root.innerHTML = `<div class="confetti-layer" aria-hidden="true">${confettiMarkup()}</div><div class="success success-celebration"><button class="success-close" id="success-close" type="button" aria-label="Cerrar">×</button><div class="success-mark"><svg viewBox="0 0 52 52" aria-hidden="true"><path d="M14 27.5 22.5 36 39 18"></path></svg></div><small>ORDEN REALIZADA</small><h3>¡Pedido realizado<br>con éxito!</h3><p>Gracias, ${escapeHtml(state.customer.name.split(' ')[0] || '')}. Te llevaremos a WhatsApp para enviar los detalles de tu pedido.</p><div class="order-number"><small>NÚMERO DE PEDIDO</small><strong>${escapeHtml(state.lastOrderId)}</strong></div><div class="queue-confirmation"><strong>Tu turno: ${Number(state.queuePosition) || 1}</strong><p>${Number(state.ordersAhead) || 0} pedido(s) delante al confirmar. Te avisaremos por WhatsApp.</p></div><a class="dp-whatsapp" href="${escapeHtml(state.lastWhatsappUrl)}">Continuar a WhatsApp →</a><button id="finish-order">Volver al menú</button></div>`;
+      root.innerHTML = `<div class="confetti-layer" aria-hidden="true">${confettiMarkup()}</div><div class="success success-celebration"><button class="success-close" id="success-close" type="button" aria-label="Cerrar">×</button><div class="success-mark"><svg viewBox="0 0 52 52" aria-hidden="true"><path d="M14 27.5 22.5 36 39 18"></path></svg></div><small>ORDEN REALIZADA</small><h3>¡Pedido realizado<br>con éxito!</h3><p>Gracias, ${escapeHtml(state.customer.name.split(' ')[0] || '')}. En 4 segundos abriremos el chat de WhatsApp con los detalles de tu pedido.</p><div class="order-number"><small>NÚMERO DE PEDIDO</small><strong>${escapeHtml(state.lastOrderId)}</strong></div><div class="queue-confirmation"><strong>Tu turno: ${Number(state.queuePosition) || 1}</strong><p>${Number(state.ordersAhead) || 0} pedido(s) delante al confirmar. Te avisaremos por WhatsApp.</p></div><a class="dp-whatsapp" href="${escapeHtml(state.lastWhatsappUrl)}">Continuar a WhatsApp →</a><button id="finish-order">Volver al menú</button></div>`;
       if (delivery.confirmed && delivery.active) {
         $('.success-celebration p', root).textContent = 'Tu ubicación se está compartiendo con Don Pieros Pizza. Envíanos los detalles por WhatsApp sin cerrar esta página.';
         const link = document.createElement('a'); link.href = state.lastWhatsappUrl; link.target = '_blank'; link.rel = 'noopener noreferrer'; link.className = 'order-whatsapp-link'; link.textContent = 'Enviar pedido por WhatsApp ↗'; $('#finish-order').before(link);
@@ -470,7 +470,8 @@
       state.customer.name=order.customerName;state.queuePosition = result.queuePosition; state.ordersAhead = result.ordersAhead; state.lastWhatsappUrl = whatsappUrl; state.lastOrderId = result.orderId; state.orderTotal = result.total; state.cartStep = 'success';
       if(cartFingerprint()===fingerprint)state.cart=[];
       state.receipt=null;saveCart();renderCart();
-      openOrderWhatsApp(whatsappUrl);
+      clearTimeout(state.redirectTimer);
+      state.redirectTimer=setTimeout(()=>{if(state.cartStep==='success'&&!$('#cart-overlay').hidden)openOrderWhatsApp(whatsappUrl);},4000);
     } catch (error) {
       if(error.confirmedRejected){localStorage.removeItem('don_pieros_pending_order_v1');localStorage.removeItem('don_pieros_pending_order_id');state.cartStep='checkout';void loadStoreData(true);}
       else state.cartStep='recovery';
@@ -497,6 +498,7 @@
     if (state.cartStep === 'success') { state.cartStep = 'cart'; state.customer = {name:'',phone:'',address:'',neighborhood:'',notes:''}; }
   });
   $('#cart-content').addEventListener('click', event => {
+    if(state.cartStep==='success'&&event.target.closest('a.dp-whatsapp,a.order-whatsapp-link'))clearTimeout(state.redirectTimer);
     if(event.target.closest('#retry-pending')){const pending=readPendingOrder();if(pending)void sendOrder(pending.order,pending.cartFingerprint);return;}
     if (event.target.closest('#checkout-location-toggle')) { if (delivery.active) void delivery.stop(); else delivery.open(); return; }
     if (event.target.closest('#receipt-remove')) { state.receiptRevision++; state.receiptBusy = false; state.receipt = null; $('#checkout-receipt').innerHTML = receiptMarkup(); $('#confirm-order').disabled = false; return; }

@@ -108,10 +108,10 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   oldReadGate=deferred();await admin.locator('#dp-orders-refresh').click();
   await admin.waitForTimeout(100);assert.equal(oldReadStarted,true);
   await client.locator('#confirm-order').click();
-  await client.waitForFunction(()=>window.qaWhatsApp);
+  await client.locator('.queue-confirmation').waitFor();
   const firstCommittedAt=orderCommitted;
-  const navigation=await client.evaluate(()=>window.qaWhatsApp);
-  assert.ok(navigation.at-orderCommitted<700,'WhatsApp abre al confirmar, sin una pausa de celebración.');
+  assert.equal(await client.evaluate(()=>window.qaWhatsApp),undefined,'La confirmación queda visible antes de abrir WhatsApp.');
+  assert.match(await client.locator('.success-celebration').innerText(),/En 4 segundos/);
   assert.equal(await client.evaluate(()=>window.qaKeepAlive),true);
   await admin.locator('#dp-orders-list [data-dp-order]').first().waitFor({timeout:2000});
   const receivedAt=Date.now();assert.ok(receivedAt-orderCommitted<2000,'El aviso debe interrumpir la lectura anterior.');
@@ -119,6 +119,9 @@ const deferred=()=>{let resolve;const promise=new Promise(done=>resolve=done);re
   await admin.waitForFunction(()=>window.qaSpoken.includes('Una nueva orden ha llegado a Don Pieros Pizza.'),{},{timeout:6000});
   assert.equal(await admin.evaluate(()=>window.qaOrderChimes),1);
   assert.equal(await admin.locator('#webOrderAudio').evaluate(audio=>audio.duration>1&&audio.duration<2),true);
+  await client.waitForFunction(()=>window.qaWhatsApp);
+  const navigation=await client.evaluate(()=>window.qaWhatsApp);
+  assert.ok(navigation.at-firstCommittedAt>=4000&&navigation.at-firstCommittedAt<6000,'WhatsApp se abre después de mostrar la confirmación durante 4 segundos.');
   const createdNotices=notices.filter(notice=>notice.event==='order-created');
   assert.equal(createdNotices.length,1);assert.deepEqual(Object.keys(createdNotices[0].payload),['orderId']);
   const url=new URL(navigation.url),text=url.searchParams.get('text');

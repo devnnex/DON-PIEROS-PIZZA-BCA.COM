@@ -2,4 +2,16 @@
 @media(max-width:640px){.dp-panel{padding:18px}.dp-connection{grid-template-columns:1fr}.dp-connection button{width:100%}.dp-dialog-card{padding:24px 18px}.dp-order-actions{grid-template-columns:1fr 1fr}.dp-orders{grid-template-columns:1fr}.dp-tabs button{padding:9px 10px}.dp-menu-grid{grid-template-columns:1fr 1fr;gap:10px}.dp-menu-card>img{height:115px}.dp-menu-card>div{padding:12px}.dp-menu-card footer{flex-wrap:wrap;padding:0 12px 12px}.dp-menu-card footer button{padding:8px}.dp-menu-card h3{font-size:15px}.dp-modifier{grid-template-columns:1fr}.dp-toolbar{gap:12px}}
 .dp-category-filter{display:flex;gap:12px;align-items:center;font-size:13px;margin:16px 0}.dp-category-filter[hidden]{display:none}.dp-category-filter select{max-width:300px}.dp-category-section{margin:28px 0}.dp-category-section>h3{font-size:20px;border-bottom:1px solid #eee;padding-bottom:12px}.dp-category-section>h3 small{font-size:12px;color:#888}.dp-availability{border:1px solid #ddd;background:#f2f2f2;color:#777;padding:8px 10px;border-radius:9px;font-size:11px;cursor:pointer}.dp-availability.is-available{background:#111;color:#fff;border-color:#111}.dp-menu-unavailable>img{filter:grayscale(1);opacity:.5}.dp-menu-card footer{flex-wrap:wrap}.dp-menu-card footer .dp-availability{flex-basis:100%}
 .dp-menu-card>img{object-fit:cover}.dp-image-editor img{border-radius:10px;object-fit:cover}
+.dp-dialog .dp-image-editor{padding:18px;border:1px solid #eadbb9;border-radius:20px;background:linear-gradient(145deg,#fffefa,#fff6e5);box-shadow:0 8px 24px #98651a09}
+.dp-image-editor .dp-image-heading{display:grid;gap:5px;margin:15px 0}
+.dp-image-heading strong{font-size:15px;color:#241b16}
+.dp-image-heading #dp-image-file{font-size:12px;line-height:1.5;color:#746253;overflow-wrap:anywhere}
+.dp-image-editor .dp-image-actions{display:flex;gap:10px;flex-wrap:wrap}
+.dp-image-actions button{display:inline-flex;align-items:center;justify-content:center;gap:9px;min-height:44px;padding:11px 16px;border-radius:12px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.dp-image-actions .dp-upload-image{border:1px solid #d83a29;background:#dc3d2c;color:#fff;box-shadow:0 4px 12px #dc3d2c22}
+.dp-upload-image svg{width:19px;height:19px;fill:none;stroke:#ffe296;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.dp-image-actions .dp-upload-image:hover{background:#c72e20}
+.dp-image-actions button:focus-visible{outline:3px solid #e9b839;outline-offset:3px}
+.dp-image-editor #dp-image-hint{font-size:11px;line-height:1.6;color:#7d6b5b;margin-top:13px}
+.dp-image-editor input[hidden]{display:none!important}
 .admin-sidebar #dp-nav-count:empty{display:none}
