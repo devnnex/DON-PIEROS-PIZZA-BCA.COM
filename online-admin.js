@@ -168,6 +168,11 @@
     if(!dialog.open)dialog.showModal();
   }
 
+  function kitchenSelection(value){
+    return String(value??'').replace(/\s*\(\s*\+\s*\$[\d.,\s]+\)\s*$/,'')
+      .replace(/^elige\s+(?:el\s+)?tama[ñn]o\s*:/i,'Tamaño:')
+      .replace(/^sabor de la segunda mitad\s*:/i,'Segunda mitad:').trim();
+  }
   function printOrder(order,width){
     width=width===58?58:80;
     const frame=document.createElement('iframe');frame.dataset.dpReceipt='';frame.title='Comanda de cocina';
@@ -181,19 +186,19 @@
       .center{text-align:center}.rule{border-top:1px dashed #000;margin:11px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
       .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
       .kitchen-item{border-bottom:1px dashed #000;padding:11px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
-      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'14':'16'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}.line-value{font-size:11px;margin-top:8px}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'15':'17'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
       .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
-      .total{font-size:18px;font-weight:900}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:10px;text-align:center;margin-top:12px}
+      .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:10px;text-align:center;margin-top:12px}
       </style></head><body><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${order.fulfillment==='delivery'?'DOMICILIO':'RECOGER EN TIENDA'}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
-      ${order.items.map((item,index)=>`<section class="kitchen-item"><h3>${index+1}. ${Number(item.quantity)||0} × ${esc(item.name)}</h3>${item.selections.length?`<ul class="options">${item.selections.map(selection=>`<li>${esc(selection)}</li>`).join('')}</ul>`:''}<p class="line-value">Valor de esta línea: ${money(item.unitPrice*item.quantity)}</p></section>`).join('')}
+      ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3>${item.selections.length?`<ul class="options">${item.selections.map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
-      <div class="rule"></div><p>Subtotal: ${money(order.subtotal)}</p>${order.fulfillment==='delivery'?`<p>Domicilio: ${order.deliveryFeePending?'POR CONFIRMAR':money(order.deliveryFee)}</p>`:''}
-      <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'} ${money(order.total)}</p><p class="payment">Pago: ${esc(order.paymentMethod)}<br>POR VERIFICAR</p>
-      <footer>Comanda interna · No es factura fiscal<br>Revisa las opciones e indicaciones de cada producto.</footer></body></html>`);d.close();
+      <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
+      <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
+      <footer>Comanda de cocina · No es factura fiscal</footer></body></html>`);d.close();
     frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
