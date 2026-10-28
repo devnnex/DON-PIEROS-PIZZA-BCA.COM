@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#111111" id="pwaThemeColor">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Don Pieros Pizza · Servicio a la mesa</title>
+    <link rel="preconnect" href="https://unpkg.com">
+    <link rel="manifest" href="manifest.webmanifest?v=black-logo-v2" id="appManifest" type="application/manifest+json">
+    <link rel="icon" href="./images/icon-192.png?v=black-logo-v2" id="appFavicon" type="image/png" sizes="192x192">
+    <link rel="apple-touch-icon" href="./images/icon-512.png?v=black-logo-v2" id="appleTouchIcon" sizes="512x512">
+    <script>
+      window.__APP_ASSET_VERSION__ = "donpieros-20261027-v12";
+      document.write(`<link rel="stylesheet" href="style.css?v=${window.__APP_ASSET_VERSION__}">`);
+    </script>
+    <link rel="stylesheet" href="menu-cards.css?v=20261019-visual-details-v1">
+    <link rel="stylesheet" href="mesa-theme.css?v=donpieros-20261027-v12">
+    <script defer src="business-language.js?v=1"></script>
+    <script defer src="config.js?v=donpieros-1"></script>
+    <script defer src="vendor/supabase.js"></script>
+  </head>
+  <body data-page="client" data-service="pizzeria">
+    <main class="client-app">
+      <section class="client-hero">
+        <nav class="topbar">
+          <div class="brand-lockup">
+            <span class="js-brand-logo"></span>
+            <div>
+              <strong class="js-business-name">Don Pieros Pizza</strong>
+              <span class="js-business-subtitle">Servicio a la mesa</span>
+            </div>
+          </div>
+        </nav>
+
+        <div class="mesa-hero-banner">
+          <img class="client-cover-image" id="clientCoverImage" alt="Portada del negocio" decoding="async" hidden>
+          <div class="hero-copy">
+            <span class="eyebrow">Hecha para compartir</span>
+            <h1>Tu mesa.<br>Tu pizza favorita.</h1>
+            <p>Pide algo rico, habla con el equipo y disfruta. Nosotros nos encargamos.</p>
+          </div>
+          <img class="mesa-hero-logo" src="images/don-pieros-logo.png" alt="" aria-hidden="true" decoding="async">
+        </div>
+      </section>
+
+      <section class="client-panel sticky-actions" id="tablePicker"></section>
+
+      <section class="quick-actions" aria-label="Solicitudes">
+        <button class="request-btn" type="button" data-request="waiter">
+          <i data-lucide="bell-ring"></i>
+          <span>Mesero</span>
+        </button>
+        <button class="request-btn" type="button" data-request="bill">
+          <i data-lucide="receipt-text"></i>
+          <span>Ver cuenta</span>
+        </button>
+        <button class="request-btn" id="openMenuCards" type="button" aria-haspopup="dialog" aria-controls="menuCardsViewer"><i data-lucide="book-open"></i><span>Carta</span></button>
+        <button class="request-btn" id="focusTableChat" type="button" data-focus-chat aria-controls="assistantInput">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 9 9 0 0 1-4-.9L3 21l1.9-5.5a9 9 0 0 1-.9-4A8.5 8.5 0 0 1 12.5 3H13a8.5 8.5 0 0 1 8 8v.5Z"/><path d="M8 11h8M8 15h5"/></svg>
+          <span>Chat</span>
+        </button>
+      </section>
+
+
+      <section id="clientQueueStatus" class="client-queue-status" aria-live="polite" hidden></section>
+      <section class="client-section">
+        <div class="assistant-panel">
+          <div class="assistant-head">
+          <div>
+            <span class="eyebrow" id="assistantEyebrow">Agente pizzería</span>
+              <h2 id="assistantTitle"><span class="assistant-live-dot" aria-hidden="true"></span>Pide por chat</h2>
+            </div>
+            <span class="assistant-mode-icon" id="assistantModeIcon"><i data-lucide="pizza"></i></span>
+          </div>
+          <div class="assistant-chat" id="assistantChat"></div>
+          <div class="typing-indicator client-typing-indicator" id="clientChatTyping" hidden><i></i><i></i><i></i><span>El administrador está escribiendo</span></div>
+          <div class="assistant-suggestions" id="assistantSuggestions"></div>
+          <form class="assistant-form" id="assistantForm">
+            <input id="assistantInput" name="message" type="text" autocomplete="off" placeholder="Ej: Queremos una pizza hawaiana" aria-label="Mensaje para el equipo de la pizzería" enterkeyhint="send">
+            <button class="primary" type="submit" aria-label="Enviar mensaje"><i data-lucide="send"></i></button>
+          </form>
+        </div>
+      </section>
+
+      <section class="client-section" id="billChat" hidden></section>
+    </main>
+
+    <script defer src="https://unpkg.com/lucide@latest"></script>
+    <script defer src="menu-cards.js?v=donpieros-20261027-v9"></script>
+    <script>document.write(`<script defer src="app.js?v=${window.__APP_ASSET_VERSION__}"><\/script>`);</script>
+  </body>
+</html>

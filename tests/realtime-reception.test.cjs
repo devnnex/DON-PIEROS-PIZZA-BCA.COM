@@ -1,0 +1,312 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
+const block = (start, end) => {
+  const from = source.indexOf(start), to = source.indexOf(end, from + 1);
+  assert.ok(from >= 0 && to > from, start);
+  return source.slice(from, to);
+};
+const section = (start, end) => block(`  const ${start} =`, `  const ${end} =`);
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
+
+function backend() {
+  const server = { channels: [], messages: [], requests: [], snapshotGate: null, ledgerGate: new Promise(() => {}) };
+  server.channel = name => {
+    const channel = {
+      name, active: true, handlers: [], status: null,
+      on(type, filter, handler) { this.handlers.push({ type, filter, handler }); return this; },
+      subscribe(handler) { this.status = handler; queueMicrotask(() => { if (this.active) handler?.('SUBSCRIBED'); }); return this; },
+      send(event) { server.emit(name, event.event, event.payload, this); return Promise.resolve('ok'); }
+    };
+    server.channels.push(channel);
+    return channel;
+  };
+  server.emit = (name, event, payload = {}, sender = null) => {
+    server.channels.filter(channel => channel.active && channel.name === name && channel !== sender)
+      .forEach(channel => channel.handlers.filter(handler => handler.type === 'broadcast' && handler.filter.event === event)
+        .forEach(handler => { void handler.handler({ payload }); }));
+  };
+  server.sb = {
+    channel: server.channel,
+    removeChannel(channel) { channel.active = false; channel.status?.('CLOSED'); },
+    rpc: async (name, payload) => {
+      if (name === 'getClientTableState') {
+        if (server.snapshotGate) await server.snapshotGate;
+        return { data: { session: { id: 'session-a', table_id: 'table-a' }, sessionItems: [], requests: server.requests.map(row => ({ ...row })) } };
+      }
+      if (name === 'getClientSnapshot') {
+        if (server.snapshotGate) await server.snapshotGate;
+        return { data: { sessionItems: [], requests: server.requests.map(row => ({ ...row })) } };
+      }
+      if (name === 'get_service_request_queue') return { data: { requests: [] } };
+      if (name === 'get_session_payments') { await server.ledgerGate; return { data: { payments: [] } }; }
+      if (name === 'getAdminSnapshot') { if(server.adminGate)await server.adminGate; return { data: { requests: server.requests.map(row => ({ ...row })), sessions: [] } }; }
+      if (name === 'listChatMessages') return { data: { messages: server.messages.filter(row => row.session_id === payload.p_session_id).map(row => ({ ...row })) } };
+      if (name === 'sendChatMessage') {
+        const message = { id: payload.p_message_id, session_id: payload.p_session_id, sender_type: payload.p_sender_type,
+          body: payload.p_body, created_at: new Date().toISOString() };
+        server.messages.push(message);
+        return { data: { message } };
+      }
+      throw Error(name);
+    },
+    from(name) {
+      const query = { select() { return this; }, eq() { return this; }, neq() { return this; }, order() { return this; },
+        in() { return this; }, limit() { return this; }, maybeSingle() { return this; },
+        then(resolve, reject) { return Promise.resolve({ data: name === 'table_sessions' ? { id: 'session-a', table_id: 'table-a', status: 'open' } : name === 'service_requests' ? server.requests : [] }).then(resolve, reject); } };
+      return query;
+    }
+  };
+  return server;
+}
+
+function device(server, page = 'client') {
+  let clock = 0, nextId = 0, renders = 0;
+  const sounds = [], queueBox = { hidden: true, innerHTML: '' };
+  const timers = new Map(), events = new Map(), storage = new Map();
+  const schedule = (callback, delay, interval = false) => {
+    const id = ++nextId;
+    timers.set(id, { callback, due: clock + delay, delay, interval });
+    return id;
+  };
+  const state = {
+    page, currentTable: { id: 'table-a' }, currentSession: page === 'client' ? null : { id: 'session-a' }, sb: server.sb,
+    clientHydrationToken: 0, clientStaffMessageSoundIds: new Set(), clientSyncBusy: false, clientRequests: [],
+    chatMessages: [], assistantMode: 'bar', assistantThreads: { bar: [], song: [] },
+    tables: [], adminChats: new Map(), adminChatTypingTimers: new Map(), subscriptions: [], requests: [], sessions: [],
+    authToken: page === 'admin' ? 'valid' : '', optimisticRequestStates: new Map(), posFeatures: {}
+  };
+  const document = { hidden: false, addEventListener: (name, callback) => events.set(name, callback) };
+  const context = vm.createContext({
+    state, document, readBudgetClock:()=>clock, navigator: { onLine: true }, console, Date, AbortController, SUPABASE_CONFIG: { url: 'fixture' },
+    SYNC_INTERVAL_MS: 5000, CHAT_SYNC_INTERVAL_MS: 1200,
+    window: { setTimeout: (callback, delay) => schedule(callback, delay), clearTimeout: id => timers.delete(id),
+      addEventListener: (name, callback) => events.set(name, callback) },
+    setInterval: (callback, delay) => schedule(callback, delay, true), clearInterval: id => timers.delete(id),
+    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+    db: async query => (await query)?.data || null, retryQuiet: async factory => (await factory())?.data || null,
+    tableCode: () => 'table-code', uid: () => `message-${page}-${++nextId}`,
+    $: selector => selector === '#clientQueueStatus' ? queueBox : null, escapeHTML: String,
+    RECEIPT_SOUND: 'notification.mp3', Audio: class { constructor(src) { this.src = src; } async play() { sounds.push(this.src); } },
+    normalizeText: value => String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(),
+    renderAccount() {}, renderBillChat() {}, renderTablePicker() {}, refreshTableLock() {},
+    renderClientQueue() {}, songTurnCount: () => 0, pendingBillIds: () => [], readRequestOutbox: () => [],
+    renderAssistant: () => { renders++; }, renderAdminChat: () => { renders++; }, renderAdminLive: () => { renders++; },
+    playClientChatReceipt() {}, playAdminChatReceipt() {}, assistantSay() {}, setPeerTyping() {},
+    mergeOptimisticRequests: rows => rows, mergeOptimisticSessions: rows => rows,
+    refreshBackgroundReports() { if(server.reportGate) { server.reportReads=(server.reportReads||0)+1; return server.reportGate; } }, notifyAdminPeers() {}, flushPeerRefreshes() {}, startConfirmedReportSync() {}, syncConfirmedReports() {}, refreshInventoryFromPeer() {}, isBoss: () => false,
+    setRealtimeStatus() {}, refreshCoreNow() {}, loadUsers() {}
+  });
+  vm.runInContext(section('createReadBudget', 'state')+'state.readBudget=createReadBudget(readBudgetClock);'+section('dbQuiet', 'bootstrapCacheKey')
+    + section('ensureOpenSession', 'bootstrapCacheKey')
+      .split('  const dbQuiet =')[0]
+    + section('loadClientSnapshot', 'pwaAssetUrl')
+    + section('getReceiptAudio', 'playReceiptSound')
+    + section('playClientChatReceipt', 'playAdminChatReceipt')
+    + section('isSongRequest', 'hasOpenAdminChatForRequest')
+    + section('renderClientQueue', 'bindAccountFeatures')
+    + section('mergeChatMessageList', 'setPeerTyping')
+    + section('broadcastChatEvent', 'broadcastTyping')
+    + section('subscribeClient', 'initClient')
+    + section('subscribeAdminChat', 'openAdminChat')
+    + block('  let clientPosReadPending =', '  const renderClientQueue =')
+    + section('pendingAdminRequestsStorageKey', 'mergePendingCoreData')
+    + block('  const receiveAdminRequests =', '  let adminRefreshPending =')
+    + block('  let adminRefreshPending =', '  const startAdminPolling =')
+    + section('startAdminPolling', 'pendingAdminRequestsStorageKey')
+    + section('subscribeAdmin', 'tableFromScannedValue')
+    + section('resumeRealtimeReception', 'init')
+    + ';globalThis.api = { hydrateSelectedTable, subscribeClient, loadChatMessages, persistChatMessage, '
+    + 'broadcastChatEvent, resumeRealtimeReception, subscribeAdmin, refreshAdminNow, pollAdminRequests, readRealtimeData, renderClientQueue, startAdminPolling };', context);
+  return {
+    state, api: context.api, document, sounds, queueBox, renders: () => renders,
+    async advance(ms) {
+      const end = clock + ms;
+      while (true) {
+        const next = [...timers].filter(([, timer]) => timer.due <= end).sort((a, b) => a[1].due - b[1].due)[0];
+        if (!next) break;
+        const [id, timer] = next;
+        clock = timer.due;
+        if (timer.interval) timer.due += timer.delay; else timers.delete(id);
+        timer.callback();
+        await settle();
+      }
+      clock = end;
+      await settle();
+    },
+    timerCount: () => timers.size
+  };
+}
+
+(async () => {
+  const server = backend(), first = device(server), second = device(server), admin = device(server, 'admin');
+  let initialized = false;
+  first.api.hydrateSelectedTable('table-a').then(() => { initialized = true; });
+  await second.api.hydrateSelectedTable('table-a');
+  await settle();
+  assert.equal(initialized, true, 'Una consulta de pagos que no responde no retrasa el inicio de la recepción.');
+  assert.ok(first.state.clientChannel && second.state.clientChannel, 'Cada dispositivo abre su propia recepción por mesa.');
+  const originalChannel = first.state.clientChannel;
+  first.api.subscribeClient();
+  assert.equal(first.state.clientChannel, originalChannel, 'Revisar la sesión conserva una conexión saludable.');
+
+  admin.api.subscribeAdmin();
+  admin.api.startAdminPolling();
+  const initialAdminChannel = admin.state.adminBroadcastChannel;
+  admin.api.subscribeAdmin();
+  assert.equal(admin.state.adminBroadcastChannel, initialAdminChannel);
+  initialAdminChannel.active = false;
+  initialAdminChannel.status('CHANNEL_ERROR');
+  server.requests.push({ id: 'disconnected-request', table_id: 'table-a', session_id: 'session-a', status: 'pending', request_type: 'waiter' });
+  await admin.advance(1500);
+  assert.ok(admin.state.requests.some(row => row.id === 'disconnected-request'), 'El respaldo recibe solicitudes incluso con WebSocket desconectado.');
+  await admin.advance(1500);
+  assert.notEqual(admin.state.adminBroadcastChannel, initialAdminChannel, 'El canal del administrador se reconstruye sin recargar.');
+  assert.equal(admin.state.subscriptions.length, 2, 'La reconexión conserva un canal de avisos y otro de datos, sin acumular conexiones.');
+  server.requests = [];
+  admin.state.requests = [];
+  const adminChat = { sessionId: 'session-a', table: { id: 'table-a' }, messages: [], channel: server.channel('table:table-a') };
+  admin.state.adminChats.set('session-a', adminChat);
+  await admin.api.persistChatMessage('staff', 'Respuesta en vivo', { sessionId: 'session-a', table: adminChat.table });
+  await admin.api.broadcastChatEvent('chat-refresh', {}, 'session-a');
+  await settle();
+  for (const client of [first, second]) {
+    assert.ok(client.state.chatMessages.some(row => row.body === 'Respuesta en vivo'), 'Ambos clientes reciben el mensaje sin recargar.');
+    assert.ok(client.renders() > 0);
+    await client.advance(0);
+    assert.equal(client.sounds.length, 1, 'La respuesta del administrador reproduce el sonido en cada dispositivo.');
+    await client.api.loadChatMessages();
+    await client.advance(0);
+    assert.equal(client.sounds.length, 1, 'Leer el mismo mensaje otra vez no repite el sonido.');
+  }
+  await first.api.persistChatMessage('client', 'Mensaje desde la mesa');
+  await first.api.broadcastChatEvent('chat-refresh');
+  await settle();
+  assert.ok(second.state.chatMessages.some(row => row.body === 'Mensaje desde la mesa'));
+
+  server.requests.push({ id: 'request-a', table_id: 'table-a', session_id: 'session-a', status: 'pending', request_type: 'waiter', created_at: '2026-10-08T18:00:00Z' });
+  server.emit('admin', 'refresh');
+  server.emit('table:table-a', 'refresh');
+  await settle();
+  assert.equal(admin.state.requests[0].id, 'request-a', 'El admin recibe las solicitudes mediante el aviso remoto.');
+  assert.equal(first.state.clientRequests[0].id, 'request-a', 'La recepción de solicitudes no espera a los pagos.');
+
+  assert.doesNotMatch(first.queueBox.innerHTML, /Te estamos atendiendo/);
+  server.requests[0].status = 'acknowledged';
+  server.requests.push({ id: 'chat-request', table_id: 'table-a', session_id: 'session-a', status: 'acknowledged', request_type: 'other', message: 'Hola' });
+  server.emit('table:table-a', 'refresh');
+  await settle();
+  assert.match(first.queueBox.innerHTML, /data-attending-request="request-a"/);
+  assert.match(first.queueBox.innerHTML, /está siendo atendida en este momento/);
+  assert.doesNotMatch(first.queueBox.innerHTML, /data-attending-request="chat-request"/, 'El chat conserva su propio aviso de conexión.');
+  server.requests[0].status = 'resolved';
+  server.emit('table:table-a', 'refresh');
+  await settle();
+  assert.doesNotMatch(first.queueBox.innerHTML, /Te estamos atendiendo/);
+
+  first.state.clientChannel.active = false;
+  server.messages.push({ id: 'fallback', session_id: 'session-a', sender_type: 'staff', body: 'Recibido sin WebSocket', created_at: '2026-10-08T18:01:00Z' });
+  await first.advance(1200);
+  assert.ok(first.state.chatMessages.some(row => row.id === 'fallback'), 'El respaldo de 1,2 segundos entrega mensajes cuando se pierde el canal.');
+  originalChannel.status('CHANNEL_ERROR');
+  await first.advance(3000);
+  assert.notEqual(first.state.clientChannel, originalChannel, 'El canal fallido se reconstruye automáticamente.');
+  assert.equal(first.state.clientRealtimeNeedsReconnect, false);
+
+  server.snapshotGate = new Promise(() => {});
+  server.emit('table:table-a', 'refresh');
+  await settle();
+  assert.equal(first.state.clientSyncBusy, true);
+  server.messages.push({ id: 'independent', session_id: 'session-a', sender_type: 'staff', body: 'Chat independiente', created_at: '2026-10-08T18:02:00Z' });
+  server.emit('table:table-a', 'chat-refresh');
+  await settle();
+  assert.ok(first.state.chatMessages.some(row => row.id === 'independent'), 'El chat recibe aunque otra lectura siga esperando.');
+  await first.advance(8000);
+  server.snapshotGate = null;
+  await first.advance(0);
+
+  first.document.hidden = true;
+  server.messages.push({ id: 'resume', session_id: 'session-a', sender_type: 'staff', body: 'Mensaje durante suspensión', created_at: '2026-10-08T18:03:00Z' });
+  first.document.hidden = false;
+  first.api.resumeRealtimeReception();
+  await settle();
+  assert.ok(first.state.chatMessages.some(row => row.id === 'resume'), 'Volver a la pestaña recupera inmediatamente los mensajes pendientes.');
+
+  const requestsBeforeClose = JSON.stringify(second.state.clientRequests);
+  second.state.assistantMode = 'song';
+  second.state.assistantThreads.song = [{ role: 'bot', text: 'Tu canción está pendiente.' }];
+  server.messages = [];
+  server.emit('table:table-a', 'chat-closed', { sessionId: 'session-a' });
+  assert.match(second.state.assistantThreads.bar[0].text, /La conversación ha finalizado/);
+  assert.equal(second.state.assistantThreads.song[0].text, 'Tu canción está pendiente.');
+  assert.equal(JSON.stringify(second.state.clientRequests), requestsBeforeClose, 'La despedida no modifica otras solicitudes.');
+  await second.advance(1000);
+  const previousSounds = second.sounds.length;
+  server.messages.push({ id: 'after-close', session_id: 'session-a', sender_type: 'staff', body: 'Nueva respuesta', created_at: '2026-10-08T18:04:00Z' });
+  server.emit('table:table-a', 'chat-refresh');
+  await settle();
+  await second.advance(0);
+  assert.equal(second.sounds.length, previousSounds + 1, 'La primera respuesta después de un cierre también suena.');
+  second.state.adminChatActive = true;
+  server.messages = [];
+  await second.api.loadChatMessages();
+  assert.match(second.state.assistantThreads.bar[0].text, /La conversación ha finalizado/, 'El respaldo detecta el cierre aunque no llegue el aviso remoto.');
+  assert.equal(second.state.chatMessages.length, 0);
+
+  let finishRead;
+  const oldRpc = server.sb.rpc;
+  server.sb.rpc = name => name === 'listChatMessages' ? new Promise(resolve => { finishRead = resolve; }) : oldRpc(name);
+  const obsolete = first.api.loadChatMessages();
+  assert.equal(first.api.loadChatMessages(), obsolete, 'Los avisos concurrentes comparten una lectura y no saturan la conexión.');
+  first.state.currentSession = { id: 'new-session' };
+  first.state.chatMessages = [];
+  finishRead({ data: { messages: [{ id: 'old-session', session_id: 'session-a', sender_type: 'staff', body: 'Mensaje viejo' }] } });
+  assert.equal(await obsolete, false);
+  assert.equal(first.state.chatMessages.length, 0, 'Una respuesta de una sesión anterior no contamina la conversación actual.');
+
+  const closingRead = second.api.loadChatMessages();
+  server.emit('table:table-a', 'chat-closed', { sessionId: 'session-a' });
+  finishRead({ data: { messages: [{ id: 'old-join', session_id: 'session-a', sender_type: 'system', body: 'El administrador se unió al chat.' }] } });
+  assert.equal(await closingRead, false);
+  assert.equal(second.state.adminChatActive, false, 'Una lectura iniciada antes del cierre no reabre el chat.');
+  assert.match(second.state.assistantThreads.bar[0].text, /La conversación ha finalizado/);
+
+  const timed = device(backend());
+  let signal;
+  const waiting = timed.api.readRealtimeData({ abortSignal(value) { signal = value; return this; }, then() {} });
+  await timed.advance(8000);
+  assert.equal(await waiting, null);
+  assert.equal(signal.aborted, true, 'Una lectura detenida se cancela para permitir el siguiente intento.');
+  const busyBackend = backend(), receiver = device(busyBackend, 'admin');
+  busyBackend.reportGate = new Promise(() => {});
+  receiver.state.activeAdminSection = 'movements';
+  receiver.api.subscribeAdmin(); await settle();
+  await receiver.api.refreshAdminNow();
+  assert.ok(busyBackend.reportReads, 'Simula reportes esperando al backend.');
+  let releaseAdmin;
+  busyBackend.adminGate = new Promise(resolve => { releaseAdmin=resolve; });
+  void receiver.api.refreshAdminNow(); await settle();
+  assert.equal(receiver.state.adminSyncBusy,true);
+  for(const [i,type,message] of [[1,'waiter',''],[2,'other','Mesa b solicita la canción: prueba'],[3,'other','Mesa c escribió en el chat: hola']]) {
+    busyBackend.requests.push({id:'simultaneous-'+i,table_id:'table-'+i,session_id:'draft-'+i,status:'pending',request_type:type,message,created_at:'2026-10-13T18:00:00Z'});
+  }
+  busyBackend.emit('admin','request-arrived',{requestIds:busyBackend.requests.map(row=>row.id)}); await settle();
+  assert.equal(receiver.state.requests.length,3,'Mesero, canción y chat de distintas mesas llegan con un snapshot ocupado y reportes lentos.');
+  releaseAdmin(); await settle();
+  assert.equal(receiver.state.requests.length,3,'Completar la lectura anterior no oculta ni duplica solicitudes.');
+  const priorityBackend=backend(),priorityAdmin=device(priorityBackend,'admin');
+  priorityBackend.reportGate=new Promise(()=>{});priorityBackend.adminGate=new Promise(()=>{});
+  priorityAdmin.api.subscribeAdmin();priorityAdmin.api.startAdminPolling();await settle();
+  assert.equal(priorityAdmin.state.adminSyncBusy,true);
+  priorityAdmin.state.adminDataChannel.status('CHANNEL_ERROR');
+  assert.equal(priorityAdmin.state.adminBroadcastChannel.active,true,'Una falla del canal de tablas no desconecta los avisos de solicitudes.');
+  assert.ok(!priorityAdmin.state.adminBroadcastChannel.handlers.some(handler=>handler.type==='postgres_changes'),'Los avisos no dependen de permisos de cambios de filas.');
+  priorityBackend.requests.push(...[1,2,3].map(i=>({id:'priority-'+i,table_id:'table-'+i,session_id:null,status:'pending',request_type:i===1?'waiter':'other',message:i===2?'Canción':i===3?'Chat':'',created_at:'2026-10-13T18:00:00Z'})));
+  await priorityAdmin.advance(1000);
+  assert.equal(priorityAdmin.state.requests.length,3,'Sin avisos ni recargar, llegan solicitudes de cualquier mesa en un ciclo del lector prioritario aunque cuentas y reportes no respondan.');
+  const rendered=priorityAdmin.renders();await priorityAdmin.api.pollAdminRequests();
+  assert.equal(priorityAdmin.renders(),rendered,'Una respuesta idéntica no reconstruye la interfaz.');
+  console.log('PASS recepción en vivo: dos dispositivos, solicitudes, pagos lentos, chat independiente, respaldo, reconexión y reanudación sin recarga.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

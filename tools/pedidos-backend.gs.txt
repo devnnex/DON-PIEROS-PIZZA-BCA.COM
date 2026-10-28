@@ -1,0 +1,273 @@
+/** DON PIEROS PIZZA · extensión incorporada al final de Code.gs.
+ * No pegar este archivo aparte si se usa Code.gs: ya está incluido allí.
+ * Las órdenes y el catálogo viven exclusivamente en el archivo APP.spreadsheetId.
+ */
+var DP_TABLES = {
+  products: { name: 'Menu_Web', headers: ['id','name','category','price','image_url','image_path','description','badge','featured','available','sort_order','modifiers','version'] },
+  toppings: { name: 'Adicionales_Web', headers: ['id','name','kind','price','available','sort_order','version'] },
+  payments: { name: 'Pagos_Web', headers: ['id','name','account_value','instructions','available','sort_order','version'] },
+  neighborhoods: { name: 'Barrios_Web', headers: ['id','name','delivery_fee','available','sort_order','version'] },
+  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version'] }
+};
+var DP_STATUSES = ['nueva','atendiendo','lista','despachada','cancelada'];
+
+function dpSeedProperties_() {
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty(APP.properties.supabaseUrl)) props.setProperty(APP.properties.supabaseUrl, 'https://bxyvxbutjlvoconfsjub.supabase.co');
+  if (!props.getProperty(APP.properties.supabaseAnonKey)) {
+    var values = getSpreadsheet_().getSheetByName(APP.sheets.config).getDataRange().getValues();
+    values.forEach(function (row) { if (row[0] === 'SUPABASE_ANON_KEY') props.setProperty(APP.properties.supabaseAnonKey, String(row[1] || '')); });
+  }
+  if (!props.getProperty(APP.properties.allowedOrigins)) props.setProperty(APP.properties.allowedOrigins, 'null,http://localhost:5500');
+  CacheService.getScriptCache().remove('dp_config');
+}
+
+function dpEnsureSheets_(spreadsheet) {
+  Object.keys(DP_TABLES).forEach(function (key) {
+    var definition = DP_TABLES[key];
+    ensureSheet_(spreadsheet, definition.name, definition.headers);
+  });
+  // Payment configuration only. No demo products, clients, orders or sales.
+  var payments = spreadsheet.getSheetByName(DP_TABLES.payments.name);
+  if (payments.getLastRow() < 2) payments.appendRow(['efectivo','Efectivo','','Paga al recibir tu pedido',true,0,1]);
+}
+
+function dpDispatch_(request) {
+  var action = request.action, payload = request.payload || request;
+  if (action === 'dp_get_catalog') return dpCatalog_(false);
+  if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
+  var user = validateSupabaseUser_(request.authToken);
+  if (action === 'dp_get_orders' || action === 'dp_order_status' || action === 'dp_update_order') {
+    dpRequireOrders_(user);
+    if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
+    if (action === 'dp_get_orders') return dpOrders_(payload);
+    return dpUpdateOrder_(payload,user);
+  }
+  requireSection_(user,'inventory');
+  if (action === 'dp_admin_catalog') return dpCatalog_(true);
+  if (action === 'dp_save_catalog') return dpSaveCatalog_(payload,user);
+  if (action === 'dp_delete_catalog') return dpDeleteCatalog_(payload,user);
+  throw new Error('Acción no permitida.');
+}
+
+function dpRequireOrders_(user) {
+  if (!user || !user.id) throw new Error('Sesión requerida.');
+  if (user.role === 'boss' || user.role === 'waiter') return;
+  if (user.role === 'admin' && (!Array.isArray(user.permissions) || user.permissions.indexOf('dashboard') >= 0 || user.permissions.indexOf('service') >= 0)) return;
+  throw new Error('No tienes permiso para atender pedidos.');
+}
+
+function dpText_(value,max) {
+  return String(value == null ? '' : value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g,'').trim().slice(0,max || 200);
+}
+function dpCell_(value) {
+  return typeof value === 'string' && /^[=+@\-\t\r]/.test(value) ? "'" + value : value;
+}
+function dpBoolean_(value) { return value === true || /^(true|si|sí|1)$/i.test(String(value)); }
+function dpMoney_(value) {
+  var number = Number(value);
+  if (!isFinite(number) || number < 0 || number > 100000000) throw new Error('Valor monetario inválido.');
+  return Math.round(number);
+}
+function dpRejectOrder_(message){var error=new Error(message);error.retryable=false;error.code='ORDER_VALIDATION';throw error;}
+function dpRows_(key) {
+  var definition = DP_TABLES[key], sheet = getSpreadsheet_().getSheetByName(definition.name);
+  if (sheet.getLastRow() < 2) return [];
+  return dpObjects_(key,sheet.getRange(2,1,sheet.getLastRow()-1,definition.headers.length).getValues());
+}
+function dpObjects_(key,rows) {
+  var definition=DP_TABLES[key];
+  return rows.filter(function(row){return row[0];}).map(function(row){
+    var result = {};
+    definition.headers.forEach(function(header,i){result[header]=row[i] instanceof Date ? row[i].toISOString() : row[i];});
+    ['price','delivery_fee','sort_order','version','sequence','total','subtotal','deliveryFee','queuePosition','ordersAhead'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=Number(result[field]) || 0;});
+    ['available','featured'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=dpBoolean_(result[field]);});
+    if(key==='products') { try {result.modifiers=JSON.parse(result.modifiers || '[]');} catch(_){result.modifiers=[];} }
+    if(key==='orders') { try {result.items=JSON.parse(result.itemsJson || '[]');} catch(_){result.items=[];} delete result.itemsJson; }
+    return result;
+  });
+}
+
+function dpWithLock_(callback) {
+  var lock=LockService.getScriptLock();lock.waitLock(10000);
+  try{return callback();}finally{lock.releaseLock();}
+}
+
+function dpCatalog_(admin) {
+  var cache = CacheService.getScriptCache(), cached = !admin && cache.get('DP_CATALOG');
+  if(cached) return JSON.parse(cached);
+  var result={ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_CATALOG_REVISION') || '0'};
+  ['products','toppings','payments','neighborhoods'].forEach(function(key){
+    result[key]=dpRows_(key).filter(function(row){return admin || key==='products' || row.available;}).sort(function(a,b){return a.sort_order-b.sort_order || String(a.name).localeCompare(String(b.name));});
+  });
+  if(!admin) {try {cache.put('DP_CATALOG',JSON.stringify(result),30);}catch(_){} }
+  return result;
+}
+
+function dpInvalidateCatalog_() {
+  CacheService.getScriptCache().remove('DP_CATALOG');
+  PropertiesService.getScriptProperties().setProperty('DP_CATALOG_REVISION',Utilities.getUuid());
+}
+
+function dpSaveCatalog_(payload,user) {
+  var key=payload.kind, definition=DP_TABLES[key];
+  if(['products','toppings','payments','neighborhoods'].indexOf(key)<0)throw new Error('Catálogo inválido.');
+  return dpWithLock_(function(){
+    var item=payload.item || {}, rows=dpRows_(key), old=rows.filter(function(row){return row.id===item.id;})[0];
+    if(old && Number(item.version)!==old.version)throw new Error('Otra persona editó este registro. Actualiza antes de guardar.');
+    var saved={id:old ? old.id : /^[a-f0-9-]{36}$/i.test(String(item.id||'')) ? item.id : Utilities.getUuid(),name:dpText_(item.name,120),available:item.available!==false,sort_order:Number(item.sort_order)||0,version:(old ? old.version : 0)+1};
+    if(!saved.name)throw new Error('Escribe un nombre.');
+    if(key==='products') {
+      saved.category=dpText_(item.category,80) || 'Menú'; saved.price=dpMoney_(item.price); saved.description=dpText_(item.description,1000);saved.badge=dpText_(item.badge,40);saved.featured=!!item.featured;
+      saved.image_url=dpText_(item.image_url,1200);saved.image_path=dpText_(item.image_path,300);
+      var allowed='https://bxyvxbutjlvoconfsjub.supabase.co/storage/v1/object/public/product-images/';
+      if(saved.image_url && saved.image_url.indexOf(allowed)!==0)throw new Error('La imagen debe subirse al almacenamiento de este negocio.');
+      var modifiers=Array.isArray(item.modifiers) ? item.modifiers : [];
+      if(modifiers.length>12)throw new Error('Máximo 12 grupos de adicionales.');
+      saved.modifiers=modifiers.map(function(group,index){
+        var min=Math.max(0,Math.min(30,Math.floor(Number(group.min)||0))),max=Math.max(1,Math.min(30,Math.floor(Number(group.max)||1)));
+        if(min>max)throw new Error('El mínimo de opciones supera el máximo.');
+        return {id:dpText_(group.id,50)||'grupo-'+index,name:dpText_(group.name,100)||'Adicionales',source:dpText_(group.source,60)||'Adicional',required:!!group.required,min:min,max:max,usePrice:!!group.usePrice};
+      });
+    }
+    if(key==='toppings'){saved.kind=dpText_(item.kind,60)||'Adicional';saved.price=dpMoney_(item.price);}
+    if(key==='payments'){saved.account_value=dpText_(item.account_value,160);saved.instructions=dpText_(item.instructions,500);}
+    if(key==='neighborhoods')saved.delivery_fee=dpMoney_(item.delivery_fee);
+    var sheet=getSpreadsheet_().getSheetByName(definition.name),values=sheet.getDataRange().getValues(),rowIndex=-1;
+    for(var i=1;i<values.length;i++)if(String(values[i][0])===saved.id){rowIndex=i+1;break;}
+    var cells=definition.headers.map(function(header){var value=saved[header];return dpCell_(header==='modifiers'?JSON.stringify(value):value==null?'':value);});
+    sheet.getRange(rowIndex>0?rowIndex:sheet.getLastRow()+1,1,1,cells.length).setValues([cells]);
+    dpInvalidateCatalog_();appendAudit_('WEB_MENU_SAVE',saved.id,user.full_name,'OK',key+': '+saved.name);
+    return {ok:true,item:saved};
+  });
+}
+
+function dpDeleteCatalog_(payload,user) {
+  if(['products','toppings','payments','neighborhoods'].indexOf(payload.kind)<0)throw new Error('Catálogo inválido.');
+  return dpWithLock_(function(){
+    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES[payload.kind].name),values=sheet.getDataRange().getValues();
+    for(var i=1;i<values.length;i++)if(String(values[i][0])===payload.id){
+      var versionIndex=DP_TABLES[payload.kind].headers.indexOf('version');
+      if(Number(values[i][versionIndex])!==Number(payload.version))throw new Error('El registro cambió. Actualiza antes de eliminar.');
+      sheet.deleteRow(i+1);dpInvalidateCatalog_();appendAudit_('WEB_MENU_DELETE',payload.id,user.full_name,'OK',payload.kind);return {ok:true};
+    }
+    return {ok:true,alreadyDeleted:true};
+  });
+}
+
+function dpPriceOrder_(raw,catalog) {
+  if(!raw || !Array.isArray(raw.items) || !raw.items.length || raw.items.length>60)throw new Error('La orden debe contener entre 1 y 60 productos.');
+  var items=raw.items.map(function(line){
+    var product=catalog.products.filter(function(p){return p.id===line.productId;})[0];
+    if(!product || !product.available)throw new Error('Un producto ya no está disponible. Actualiza la carta.');
+    var quantity=Number(line.quantity);
+    if(!Number.isInteger(quantity) || quantity<1 || quantity>99)throw new Error('Cantidad inválida.');
+    var unitPrice=dpMoney_(product.price),labels=[],selectionIds=line.selectionIds||{},groupIds=[];
+    (product.modifiers||[]).forEach(function(group){
+      groupIds.push(group.id);
+      var ids=selectionIds[group.id] || [];
+      if(!Array.isArray(ids)||new Set(ids).size!==ids.length)throw new Error('Opciones inválidas.');
+      var min=group.required?Math.max(1,Number(group.min)||1):0,max=Number(group.max)||99;
+      if(ids.length<min || ids.length>max)throw new Error('Revisa las opciones de '+product.name+'.');
+      ids.forEach(function(id){
+        var option=catalog.toppings.filter(function(t){return t.id===id && t.available && t.kind===group.source;})[0];
+        if(!option)throw new Error('Un adicional ya no está disponible.');
+        var price=group.usePrice ? dpMoney_(option.price) : 0;unitPrice+=price;labels.push(group.name+': '+option.name+(price?' (+$'+price+')':''));
+      });
+    });
+    Object.keys(selectionIds).forEach(function(id){if(groupIds.indexOf(id)<0 && selectionIds[id].length)throw new Error('Las opciones del producto cambiaron. Actualiza la carta.');});
+    if(Number(line.unitPrice)!==unitPrice)throw new Error('El precio de '+product.name+' cambió. Actualiza la carta antes de confirmar.');
+    return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels};
+  });
+  var fulfillment=raw.fulfillment==='delivery'?'delivery':'pickup',neighborhood=null,deliveryFee=0;
+  if(fulfillment==='delivery') {
+    neighborhood=catalog.neighborhoods.filter(function(n){return n.id===raw.neighborhoodId && n.available;})[0];
+    if(!neighborhood || dpText_(raw.address,300).length<5)throw new Error('Selecciona un barrio y una dirección válida.');
+    deliveryFee=dpMoney_(neighborhood.delivery_fee);
+    if(Number(raw.deliveryFee)!==deliveryFee)throw new Error('La tarifa del domicilio cambió. Actualiza la carta.');
+  }
+  var payment=catalog.payments.filter(function(p){return p.id===raw.paymentId && p.available;})[0];
+  if(!payment)throw new Error('Selecciona un medio de pago disponible.');
+  var subtotal=items.reduce(function(sum,line){return sum+line.unitPrice*line.quantity;},0);
+  return {items:items,fulfillment:fulfillment,neighborhood:neighborhood?neighborhood.name:'',deliveryFee:deliveryFee,subtotal:subtotal,total:subtotal+deliveryFee,payment:payment};
+}
+
+function dpOrderResult_(order,duplicate) {
+  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,deliveryFee:order.deliveryFee,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
+}
+
+function dpCreateOrder_(raw) {
+  if(!raw || !/^[a-f0-9-]{36}$/i.test(String(raw.requestId||'')))dpRejectOrder_('Identificador de pedido inválido.');
+  var customerName=dpText_(raw.customerName,80),phone=dpText_(raw.phone,25);
+  if(customerName.length<2 || !/^\+?[\d\s()-]{7,25}$/.test(phone) || phone.replace(/\D/g,'').length<7)dpRejectOrder_('Nombre o teléfono inválido.');
+  return dpWithLock_(function(){
+    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
+    // Read metadata only. Historical item JSON is not downloaded to assign a turn.
+    var metadata=last>1?sheet.getRange(2,1,last-1,6).getValues():[],duplicateIndex=-1;
+    metadata.some(function(row,index){if(row[1]===raw.requestId){duplicateIndex=index+2;return true;}return false;});
+    if(duplicateIndex>0){PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());return dpOrderResult_(dpObjects_('orders',sheet.getRange(duplicateIndex,1,1,DP_TABLES.orders.headers.length).getValues())[0],true);}
+    // Authoritative prices and availability, including direct edits to Sheets.
+    var priced;
+    try{priced=dpPriceOrder_(raw,dpCatalog_(true));}catch(error){error.retryable=false;error.code='ORDER_VALIDATION';throw error;}
+    var now=new Date().toISOString(),properties=PropertiesService.getScriptProperties();
+    var sequence=Math.max(Number(properties.getProperty('DP_NEXT_ORDER')||1),metadata.reduce(function(max,row){return Math.max(max,(Number(row[2])||0)+1);},1));
+    var active=metadata.filter(function(row){return ['nueva','atendiendo','lista'].indexOf(String(row[5]))>=0;});
+    var id='DP-'+Utilities.formatDate(new Date(),'America/Bogota','yyyyMMdd')+'-'+String(sequence).padStart(4,'0');
+    var order={id:id,request_id:raw.requestId,sequence:sequence,createdAt:now,updatedAt:now,status:'nueva',customerName:customerName,phone:phone,fulfillment:priced.fulfillment,address:priced.fulfillment==='delivery'?dpText_(raw.address,300):'',neighborhood:priced.neighborhood,deliveryFee:priced.deliveryFee,subtotal:priced.subtotal,total:priced.total,paymentMethod:priced.payment.name,paymentValue:priced.payment.account_value,notes:dpText_(raw.notes,1000),itemsJson:JSON.stringify(priced.items),queuePosition:active.length+1,ordersAhead:active.length,handledByName:'',version:1};
+    try {
+      sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
+      SpreadsheetApp.flush();
+    } finally { properties.setProperty('DP_ORDERS_REVISION',Utilities.getUuid()); }
+    properties.setProperty('DP_NEXT_ORDER',String(sequence+1));properties.setProperty('DP_ORDERS_REVISION',Utilities.getUuid());
+    try{appendAudit_('WEB_ORDER',id,customerName,'OK','Orden guardada; turno '+order.queuePosition);}catch(_){}
+    return dpOrderResult_(order,false);
+  });
+}
+
+function dpOrders_(payload) {
+  var revision=PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION')||'0';
+  if(payload.revision && payload.revision===revision)return {ok:true,changed:false,revision:revision};
+  var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow(),limit=Math.min(100,Math.max(20,Number(payload.limit)||60));
+  var metadata=last>1?sheet.getRange(2,3,last-1,4).getValues():[];
+  var orders=metadata.map(function(row,index){return{row:index+2,sequence:Number(row[0])||0,status:String(row[3])};}).sort(function(a,b){return b.sequence-a.sequence;});
+  var filter=payload.status||'active';
+  var filtered=orders.filter(function(order){return filter==='all' || (filter==='active'?['nueva','atendiendo','lista'].indexOf(order.status)>=0:order.status===filter);});
+  var offset=Math.max(0,Number(payload.offset)||0);
+  var selected=filtered.slice(offset,offset+limit).sort(function(a,b){return a.row-b.row;}),cells=[];
+  for(var i=0;i<selected.length;){var start=selected[i].row,end=start;i++;while(i<selected.length && selected[i].row===end+1){end=selected[i].row;i++;}cells=cells.concat(sheet.getRange(start,1,end-start+1,DP_TABLES.orders.headers.length).getValues());}
+  var result=dpObjects_('orders',cells).sort(function(a,b){return b.sequence-a.sequence;});
+  return {ok:true,changed:true,revision:revision,total:filtered.length,orders:result,activeCount:orders.filter(function(o){return ['nueva','atendiendo','lista'].indexOf(o.status)>=0;}).length};
+}
+
+function dpUpdateOrder_(payload,user) {
+  return dpWithLock_(function(){
+    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
+    if(DP_STATUSES.indexOf(payload.status)<0)throw new Error('Estado inválido.');
+    var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
+    for(var i=0;i<ids.length;i++)if(ids[i][0]===payload.id){
+      var row=sheet.getRange(i+2,1,1,headers.length).getValues()[0];
+      if(row[headers.indexOf('status')]===payload.status)return {ok:true,duplicate:true};
+      if(Number(row[headers.indexOf('version')])!==Number(payload.version))throw new Error('Otra persona atendió esta orden. Actualiza para ver su estado.');
+      row[headers.indexOf('status')]=payload.status;row[headers.indexOf('updatedAt')]=new Date().toISOString();row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);row[headers.indexOf('version')]=Number(payload.version)+1;
+      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+      appendAudit_('WEB_ORDER_STATUS',payload.id,user.full_name,'OK',payload.status);return {ok:true};
+    }
+    throw new Error('No se encontró el pedido.');
+  });
+}
+
+// For a script bound to this spreadsheet, direct edits refresh caches automatically.
+function onEdit(e) {
+  if(!e || !e.range)return;
+  var name=e.range.getSheet().getName();
+  if(['Menu_Web','Adicionales_Web','Pagos_Web','Barrios_Web'].indexOf(name)>=0)dpInvalidateCatalog_();
+  if(name==='Ordenes_Web')PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());
+}
+
+/** Optional installable trigger for a standalone Apps Script project. */
+function ACTIVAR_EDICIONES_DIRECTAS() {
+  CONFIGURAR_SISTEMA();
+  var exists=ScriptApp.getProjectTriggers().some(function(t){return t.getHandlerFunction()==='onEdit';});
+  if(!exists)ScriptApp.newTrigger('onEdit').forSpreadsheet(APP.spreadsheetId).onEdit().create();
+  return {ok:true};
+}

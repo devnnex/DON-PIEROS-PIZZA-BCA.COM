@@ -1,0 +1,7 @@
+1. 01_BASE.sql (solo una vez en Supabase vacío)
+2. 02_ACTUALIZACIONES_NAPOLES.sql
+3. 03_DON_PIEROS.sql
+4. 04_PIN_4_A_12.sql (si ya ejecutaste el 03 anterior, ejecuta solo este para habilitar PIN de 4 a 12 números).
+No ejecutar schema.sql aparte: ya está incluido en las migraciones.
+NO ejecutar backups/data_2026-09-03.sql ni backups/roles_2026-09-03.sql.
+Después: abre admin.html y crea tu Jefe.

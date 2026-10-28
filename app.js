@@ -1,0 +1,13570 @@
+const SYNC_INTERVAL_MS = 1500;
+const REMOTE_CONFIRMATION_HOLD_MS = 15000;
+const CHAT_SYNC_INTERVAL_MS = 1200;
+
+const SUPABASE_CONFIG = {
+  url: "https://bxyvxbutjlvoconfsjub.supabase.co",
+  anonKey: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ4eXZ4YnV0amx2b2NvbmZzanViIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1MDcwNDUsImV4cCI6MjEwMzA4MzA0NX0.-7NfjICnFLbUI952-Vpw8vlNo70-p7J9yB8Inqh_7b8"
+};
+
+// Al duplicar una instalación se pega a veces la URL REST completa. supabase-js
+// necesita solo el origen del proyecto y construye internamente /rest/v1.
+const APPS_SCRIPT_CONFIG = {
+  // Tambien puede configurarse desde Inventario > Respaldo remoto del negocio.
+  webAppUrl: window.DON_PIEROS_CONFIG?.appsScriptUrl || ""
+};
+const APPS_SCRIPT_TIMEOUT_MS = 45000;
+
+const transientAppsScriptError = (message) => {
+  const error = new Error(message);
+  error.transient = true;
+  return error;
+};
+
+const isTransientAppsScriptError = (error) => Boolean(
+  error?.transient
+  || /failed to fetch|networkerror|network request failed|load failed|aborterror|timeout/i.test(String(error?.message || error || ""))
+);
+
+const SupabaseDb = (() => {
+  let authToken = "";
+  let clientTableAccess = { table_id: "", code: "" };
+  let client = null;
+  const rpcNames = {
+    getBootstrapData: "get_bootstrap_data",
+    getAdminSnapshot: "get_admin_snapshot",
+    getClientSnapshot: "get_client_snapshot",
+    getClientTableState: "get_client_table_state",
+    getCurrentUser: "get_current_user",
+    listUsers: "list_users",
+    saveUser: "save_user",
+    deleteUser: "delete_user",
+    acknowledgeServiceRequests: "acknowledge_service_requests",
+    resolveBill: "resolve_bill",
+    createServiceRequest: "create_service_request",
+    createServiceRequestsBatch: "create_service_requests_batch",
+    listChatMessages: "list_chat_messages",
+    sendChatMessage: "send_chat_message",
+    closeChatSession: "close_chat_session"
+  };
+
+  const init = () => {
+    if (client) return client;
+    if (!window.supabase?.createClient) throw new Error("No pudimos iniciar la conexión. Actualiza la página e inténtalo de nuevo.");
+    const authenticatedFetch = (input, options = {}) => {
+      const headers = new Headers(options.headers || {});
+      if (authToken) headers.set("x-app-token", authToken);
+      if (clientTableAccess.table_id) headers.set("x-table-id", clientTableAccess.table_id);
+      if (clientTableAccess.code) headers.set("x-table-code", clientTableAccess.code);
+      const requestPath = new URL(typeof input === "string" ? input : input?.url || String(input), SUPABASE_CONFIG.url).pathname;
+      const urgent = /\/(service_requests|rpc\/(create_service_requests?(?:_batch)?|dp_notify_waiter_order|list_chat_messages|send_chat_message))$/.test(requestPath);
+      const reporting = /\/rpc\/(get_report_changes|publish_report_change)$/.test(requestPath);
+      return fetch(input, { ...options, headers, cache: "no-store", priority: urgent ? "high" : reporting ? "low" : "auto" }).then(async (response) => {
+        try {
+          const url = new URL(typeof input === "string" ? input : input?.url || String(input), SUPABASE_CONFIG.url);
+          const method = String(options.method || input?.method || "GET").toUpperCase();
+          const entity = url.pathname.replace(/^.*\/rest\/v1\//, "");
+          const core = ["business_settings", "restaurant_tables", "menu_categories", "menu_items"].includes(entity);
+          const operational = ["table_sessions", "session_items", "service_requests"].includes(entity)
+            || /^rpc\/(save_table_zones|record_session_payment|replay_table_session_change|acknowledge_service_requests|resolve_bill|create_service_requests?(?:_batch)?|dp_notify_waiter_order)$/.test(entity);
+          const users = entity === "app_users" || /^rpc\/(save_user|delete_user)$/.test(entity);
+          if (response.ok && !response.headers.get("X-Offline-Queued") && ["POST","PATCH","DELETE"].includes(method)
+            && (core || operational || users) && typeof window.dispatchEvent === "function") {
+            let confirmedRows = [];
+            if (["table_sessions","session_items"].includes(entity)) {
+              const value = await response.clone().json().catch(() => null);
+              confirmedRows = (Array.isArray(value) ? value : [value]).filter(row => row?.id);
+            }
+            window.dispatchEvent(new CustomEvent("donpieros-remote-change", { detail: { core, operational, users, entity, confirmedRows } }));
+          }
+        } catch (_) { /* El aviso no interrumpe una respuesta ya confirmada. */ }
+        return response;
+      });
+    };
+    client = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      global: { fetch: authenticatedFetch }
+    });
+    return client;
+  };
+
+  return {
+    init,
+    from: (table) => init().from(table),
+    rpc: (name, payload = {}) => init().rpc(rpcNames[name] || name, payload),
+    setAuthToken: (token = "") => { authToken = token; },
+    setTableAccess: (tableId = "", code = "") => { clientTableAccess = { table_id: tableId, code }; },
+    storage: { from: (bucket) => init().storage.from(bucket) },
+    channel: (...args) => init().channel(...args),
+    removeChannel: (channel) => init().removeChannel(channel)
+  };
+})();
+
+const App = (() => {
+  class OptimisticSessionMap extends Map {
+    set(id, overlay) {
+      if (overlay?.mode === "upsert") {
+        const lines = overlay.expectedItems || (overlay.expectedItem ? [overlay.expectedItem] : []);
+        const version = JSON.stringify([lines.map(line => [line.id,line.item_name,line.quantity,line.unit_price,line.notes || "",line.status]),overlay.expectedSession || null]);
+        const previous = this.get(id);
+        overlay = { ...overlay, versionSignature: version, mutationStartedAt: previous?.versionSignature === version ? previous.mutationStartedAt : Date.now() };
+        if (previous?.versionSignature !== version) delete overlay.confirmedAt;
+      }
+      return super.set(id, overlay);
+    }
+  }
+  const rememberRemoteConfirmation = detail => {
+    if (!Array.isArray(detail?.confirmedRows) || !detail.entity) return;
+    state.confirmedRemoteRows ||= new Map();
+    for (const row of detail.confirmedRows) if (row?.id) state.confirmedRemoteRows.set(detail.entity + ":" + row.id, { row, at: Date.now() });
+    if (state.confirmedRemoteRows.size > 4000) state.confirmedRemoteRows.delete(state.confirmedRemoteRows.keys().next().value);
+  };
+
+  const REQUEST_LABELS = {
+    waiter: "Llamar mesero",
+    bill: "Ver cuenta",
+    other: "Canción solicitada"
+  };
+
+  const REQUEST_ICONS = {
+    waiter: "bell-ring",
+    bill: "receipt-text",
+    other: "message-circle-question"
+  };
+
+  const DEFAULT_CURRENCY = "COP";
+  const INVENTORY_STORAGE_KEY = "don_pieros_inventory_v1";
+  const INVOICE_STORAGE_KEY = "don_pieros_invoices_v1";
+  const INVENTORY_MOVEMENTS_STORAGE_KEY = "don_pieros_inventory_movements_v1";
+  const PURCHASE_HISTORY_CUTOFF_KEY = "don_pieros_purchase_history_cutoff_v1";
+  const HIDDEN_PURCHASE_MOVEMENTS_KEY = "don_pieros_hidden_purchase_movements_v1";
+  const INCOME_REPORT_CACHE_KEY = "don_pieros_income_report_cache_v1";
+  const APPS_SCRIPT_OUTBOX_KEY = "don_pieros_appscript_outbox_v1";
+  const WALK_IN_DRAFTS_STORAGE_KEY = "don_pieros_walk_in_drafts_v1";
+  const SERVICE_ZONE_STORAGE_KEY = "don_pieros_service_zone_v1";
+  const QR_REGENERATION_STORAGE_KEY = "don_pieros_qr_regeneration_enabled_v1";
+  const TIP_SETTINGS_STORAGE_KEY = "don_pieros_tip_settings_v1";
+  const TIP_SPLIT_STORAGE_KEY = "don_pieros_tip_split_people_v1";
+  const USER_LIST_CACHE_KEY = "don_pieros_users_v1";
+  const USER_CREDENTIALS_CACHE_KEY = "don_pieros_user_credentials_v1";
+  const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v2";
+  const ADMIN_SECTION_KEYS = ["dashboard", "service", "accounts", "tips", "inventory", "movements", "income", "menu", "brand"];
+  const CATEGORY_PRESETS = ["Snack", "Bebidas", "Medicina", "Otros"];
+  const REQUEST_IMAGES = {
+    waiter: "images/mesero.png",
+    bill: "images/check.png"
+  };
+  const RECEIPT_SOUND = "sound/receipt-received.mp3";
+  const PIZZERIA_ASSISTANT_OPTIONS = [
+    { name: "Pizza Don Pieros", aliases: ["pizza especial", "pizza don piero"], detail: "Una de nuestras pizzas especiales. El mesero te ayuda a confirmar tamaño, ingredientes y disponibilidad." },
+    { name: "Pizza hawaiana", aliases: ["hawaiana", "pizza de jamon y pina"], detail: "Elige el tamaño y consulta con el mesero las opciones de la segunda mitad." },
+    { name: "Pizza de carnes", aliases: ["pizza carnes", "pizza de carne"], detail: "Una pizza especial para compartir. El equipo confirma los ingredientes y el tamaño de tu elección." },
+    { name: "Pizza pollo champiñón", aliases: ["pollo champinon", "pollo champinones"], detail: "Pizza de pollo y champiñón. El mesero confirma el tamaño y el valor antes de preparar tu pedido." },
+    { name: "Pizzeta", aliases: ["pizzetas"], detail: "Una opción de 24 × 24 cm. Consulta los sabores disponibles con el equipo." },
+    { name: "Porción de pizza", aliases: ["porcion", "porciones"], detail: "Pregunta al equipo por los sabores de porciones disponibles." },
+    { name: "Lasaña", aliases: ["lasana", "lasagna"], detail: "Consulta las opciones de lasaña de nuestra carta y el equipo confirmará tu elección." },
+    { name: "Panzerotti", aliases: ["panzeroti", "panzarotti"], detail: "Consulta las opciones hawaiano, carnes o especial con el mesero." },
+    { name: "Gaseosa", aliases: ["gaseosas", "soda", "agua"], detail: "El mesero confirma los sabores y las presentaciones disponibles." },
+    { name: "Jugo natural", aliases: ["jugo", "jugos", "limonada", "naranjada"], detail: "Consulta con el equipo los sabores de jugos, limonadas y naranjadas disponibles." }
+  ];
+  const ASSISTANT_SYSTEM_PROMPT = [
+    "Eres el agente de Don Pieros Pizza y atiendes al cliente desde su mesa con tono amable, claro y profesional.",
+    "Entiendes frases naturales para pedir bebidas y productos, ver la cuenta, llamar al mesero, consultar la carta o preguntar precios.",
+    "Cuando reconoces un pedido, identificas el producto y la cantidad y avisas al mesero para que confirme los detalles.",
+    "Si falta una mesa, no permites enviar pedidos ni solicitudes; primero pides verificar la mesa.",
+    "No informas precios ni inventas presentaciones; el mesero confirma marcas, tamaños, disponibilidad y valores.",
+    "Si no reconoces el producto exacto, envías igualmente la solicitud al equipo y se lo explicas al cliente.",
+    "Siempre corriges ortografía, tildes, mayúsculas, puntos y comas en los mensajes que llegan al administrador.",
+    "Orientas sobre pizzas, tamaños, porciones, lasañas, panzerotti y bebidas. El equipo confirma disponibilidad y valores."
+  ].join("\n");
+
+  const ASSISTANT_INTENTS = {
+    help: [
+      "en que me puedes ayudar",
+      "como me puedes ayudar",
+      "me puedes ayudar",
+      "que puedes hacer",
+      "que haces",
+      "ayudame",
+      "ayuda",
+      "hola",
+      "buenas"
+    ],
+    menu: [
+      "menu",
+      "carta",
+      "opciones",
+      "que tienen",
+      "que venden",
+      "que me recomiendas",
+      "recomiendame",
+      "recomendacion",
+      "bebidas",
+      "cervezas",
+      "licores",
+      "cocteles",
+      "cócteles",
+      "botellas",
+      "tragos"
+    ],
+    order: [
+      "quiero pedir",
+      "quiero ordenar",
+      "me gustaria pedir",
+      "me gustaria ordenar",
+      "voy a pedir",
+      "voy a ordenar",
+      "dame",
+      "traeme",
+      "agrega",
+      "anota",
+      "pideme",
+      "ordenar"
+    ],
+    bill: [
+      "cuenta",
+      "factura",
+      "recibo",
+      "cobrar",
+      "pagar",
+      "la cuenta por favor"
+    ],
+    waiter: [
+      "mesero",
+      "mesera",
+      "atiendan",
+      "atender",
+      "venga alguien",
+      "llama a alguien",
+      "necesito atencion"
+    ],
+    inquiry: [
+      "que tiene",
+      "ingredientes",
+      "cuanto vale",
+      "cuanto cuesta",
+      "precio",
+      "precios",
+      "de que es",
+      "como viene",
+      "presentacion",
+      "presentación",
+      "cuantos ml"
+    ]
+  };
+
+  const ASSISTANT_NUMBER_WORDS = {
+    un: 1,
+    una: 1,
+    uno: 1,
+    dos: 2,
+    tres: 3,
+    cuatro: 4,
+    cinco: 5,
+    seis: 6,
+    siete: 7,
+    ocho: 8,
+    nueve: 9,
+    diez: 10
+  };
+  // Atomic local persistence is shared by checkout only; BCA's network sync is unchanged.
+  const LOCAL_DATA_DB = "don-pieros-bca-checkout-v1";
+  const LOCAL_DATA_DB_VERSION = 1;
+  const LOCAL_DATA_STORE = "records";
+  const DURABLE_LOCAL_KEYS = [INVENTORY_STORAGE_KEY, INVOICE_STORAGE_KEY,
+    INVENTORY_MOVEMENTS_STORAGE_KEY, APPS_SCRIPT_OUTBOX_KEY, WALK_IN_DRAFTS_STORAGE_KEY,
+    "donpieros_checkout_intents_v1", INCOME_REPORT_CACHE_KEY];
+  let localDataDbPromise = null;
+  let durableWriteChain = Promise.resolve();
+  let durableRevisionOffset = 0;
+  let checkoutBatch = null;
+  const durableMemoryRevision = new Map();
+  const durableMemory = new Map();
+  const durableIndexedStatus = new Map();
+
+  const localRevisionKey = (key) => `${key}__durable_revision`;
+
+  const openLocalDataDb = () => {
+    if (!window.indexedDB) return Promise.resolve(null);
+    if (localDataDbPromise) return localDataDbPromise;
+    localDataDbPromise = new Promise((resolve) => {
+      const request = indexedDB.open(LOCAL_DATA_DB, LOCAL_DATA_DB_VERSION);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(LOCAL_DATA_STORE)) {
+          request.result.createObjectStore(LOCAL_DATA_STORE, { keyPath: "key" });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+    });
+    return localDataDbPromise;
+  };
+
+  const localDataRecord = async (key) => {
+    const database = await openLocalDataDb();
+    if (!database) return null;
+    return new Promise((resolve) => {
+      const transaction = database.transaction(LOCAL_DATA_STORE, "readonly");
+      const request = transaction.objectStore(LOCAL_DATA_STORE).get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+      transaction.onabort = () => resolve(null);
+    });
+  };
+
+  const putLocalDataRecord = async (record) => {
+    const database = await openLocalDataDb();
+    if (!database) return false;
+    return new Promise((resolve) => {
+      try {
+        const transaction = database.transaction(LOCAL_DATA_STORE, "readwrite");
+        transaction.objectStore(LOCAL_DATA_STORE).put(record);
+        transaction.oncomplete = () => resolve(true);
+        transaction.onerror = () => resolve(false);
+        transaction.onabort = () => resolve(false);
+      } catch (_) {
+        resolve(false);
+      }
+    });
+  };
+
+  const nextDurableRevision = () => (Date.now() * 1000) + (++durableRevisionOffset % 1000);
+
+  const persistDurableJson = (key, value) => {
+    if (checkoutBatch) {
+      const snapshot = JSON.parse(JSON.stringify(value));
+      checkoutBatch.set(key, snapshot);
+      return Promise.resolve(true);
+    }
+    const revision = nextDurableRevision();
+    const serialized = JSON.stringify(value);
+    const snapshot = JSON.parse(serialized);
+    durableMemory.set(key, snapshot);
+    durableMemoryRevision.set(key, revision);
+    let localSaved = false;
+    try {
+      // localStorage queda como proyeccion sincrona para compatibilidad; IndexedDB
+      // es la copia durable que permite recuperar colas y datos criticos.
+      localStorage.setItem(key, serialized);
+      localStorage.setItem(localRevisionKey(key), String(revision));
+      localSaved = true;
+    } catch (_) { /* IndexedDB sigue siendo la persistencia principal. */ }
+    durableWriteChain = durableWriteChain
+      .catch(() => undefined)
+      .then(async () => {
+        const indexedSaved = await putLocalDataRecord({ key, value: snapshot, revision, updatedAt: new Date().toISOString() });
+        const saved = indexedSaved || localSaved;
+        durableIndexedStatus.set(key, indexedSaved);
+        return saved;
+      });
+    return durableWriteChain;
+  };
+
+  const hydrateDurableKey = async (key) => {
+    const record = await localDataRecord(key);
+    let localValue = null;
+    let localRevision = 0;
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw !== null) localValue = JSON.parse(raw);
+      localRevision = Number(localStorage.getItem(localRevisionKey(key)) || 0);
+    } catch (_) {
+      localValue = null;
+      localRevision = 0;
+    }
+    if (localValue !== null && (!record || localRevision >= Number(record.revision || 0))) {
+      if (!record || localRevision > Number(record.revision || 0)) {
+        await persistDurableJson(key, localValue);
+        return localValue;
+      }
+      durableMemory.set(key, localValue);
+      durableMemoryRevision.set(key, localRevision);
+      durableIndexedStatus.set(key, true);
+      return localValue;
+    }
+    if (record) {
+      try {
+        localStorage.setItem(key, JSON.stringify(record.value));
+        localStorage.setItem(localRevisionKey(key), String(record.revision || 0));
+      } catch (_) { /* El estado se conserva en IndexedDB. */ }
+      durableMemory.set(key, record.value);
+      durableMemoryRevision.set(key, Number(record.revision || 0));
+      durableIndexedStatus.set(key, true);
+      return record.value;
+    }
+    return null;
+  };
+
+  const hydrateDurableLocalState = async () => {
+    await Promise.all(DURABLE_LOCAL_KEYS.map(hydrateDurableKey));
+    await durableWriteChain.catch(() => undefined);
+  };
+
+  const flushDurableWrites = async (requiredKeys = []) => {
+    await durableWriteChain.catch(() => undefined);
+    return requiredKeys.every((key) => durableIndexedStatus.get(key) === true);
+  };
+
+  // One IndexedDB transaction commits invoice, stock, movements, outbox and
+  // recovery intent. A crash cannot expose half of a financial projection.
+  const persistCheckoutAtomically = async (project) => {
+    if (checkoutBatch) throw new Error("Ya hay un cobro en procesamiento.");
+    const values = new Map();
+    checkoutBatch = values;
+    try { project(); } finally { checkoutBatch = null; }
+    let committed = false;
+    const commit = async () => {
+      const database = await openLocalDataDb();
+      if (!database) return false;
+      const revision = nextDurableRevision();
+      const updatedAt = new Date().toISOString();
+      const saved = await new Promise((resolve) => {
+        let tx;
+        try {
+          tx = database.transaction(LOCAL_DATA_STORE, "readwrite");
+          const store = tx.objectStore(LOCAL_DATA_STORE);
+          for (const [key, value] of values) {
+            if (key !== APPS_SCRIPT_OUTBOX_KEY) { store.put({ key, value, revision, updatedAt }); continue; }
+            const current = store.get(key);
+            current.onsuccess = () => {
+              readRemovedOutboxJobs(store, value.map(job => job.id), removed => {
+                const merged = mergeOutboxJobs(current.result?.value || [], value, removed);
+                values.set(key, merged);
+                store.put({ key, value: merged, revision, updatedAt });
+              });
+            };
+          }
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = tx.onabort = () => resolve(false);
+        } catch (_) { if (tx) tx.abort(); resolve(false); }
+      });
+      if (!saved) return false;
+      for (const [key, value] of values) {
+        durableMemory.set(key, value);
+        durableMemoryRevision.set(key, revision);
+        durableIndexedStatus.set(key, true);
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+          localStorage.setItem(localRevisionKey(key), String(revision));
+        } catch (_) { /* The committed IndexedDB record is authoritative. */ }
+      }
+      committed = true;
+      return true;
+    };
+    durableWriteChain = durableWriteChain.catch(() => undefined).then(commit);
+    await durableWriteChain;
+    return committed;
+  };
+
+  // Solo regula lecturas periódicas; nunca almacena respuestas ni encola escrituras.
+  const createReadBudget = (clock = () => Date.now()) => {
+    const entries = new Map();
+    let owner;
+    const entry = (key, scope) => {
+      if (owner !== scope) { entries.clear(); owner = scope; }
+      if (!entries.has(key)) {
+        if (entries.size >= 128) entries.delete(entries.keys().next().value);
+        entries.set(key, { at: -Infinity, failures: 0, retryAt: 0 });
+      }
+      return entries.get(key);
+    };
+    return {
+      due(key, interval, scope = "") {
+        const item = entry(key, scope), now = clock();
+        if (now < item.at) { item.at = -Infinity; item.retryAt = 0; }
+        if (now < item.retryAt || now - item.at < interval) return false;
+        item.at = now;
+        return true;
+      },
+      touch(key, scope = "") { entry(key, scope).at = clock(); },
+      settled(key, success, scope = "") {
+        if (owner !== scope || !entries.has(key)) return;
+        const item = entries.get(key);
+        if (success) { item.failures = 0; item.retryAt = 0; }
+        else { item.failures += 1; item.retryAt = clock() + Math.min(30000, 1000 * 2 ** Math.min(item.failures, 5)); }
+      }
+    };
+  };
+
+  const state = {
+    sb: null,
+    readBudget: createReadBudget(),
+    page: "",
+    pizzeriaService: document.body.dataset.service === "pizzeria",
+    business: null,
+    tables: [],
+    categories: [],
+    items: [],
+    activeCategory: "all",
+    currentTable: null,
+    currentSession: null,
+    sessionItems: [],
+    clientRequests: [],
+    tableAccountStatus: "idle",
+    tableAccountTotal: 0,
+    localBillOpen: false,
+    clientHydrationToken: 0,
+    billReceiptArmedIds: new Set(),
+    requests: [],
+    sessions: [],
+    authToken: "",
+    currentUser: null,
+    users: [],
+    userCredentialPins: {},
+    inventoryMeta: {},
+    inventoryMovements: [],
+    movementCursor: null,
+    movementRevision: "",
+    movementHasMore: false,
+    movementLoading: false,
+    movementRequestId: 0,
+    movementLoaded: false,
+    movementFetchedAt: 0,
+    movementSearch: "",
+    movementTypeFilter: "all",
+    invoiceHistory: [],
+    inventorySearch: "",
+    inventoryStatusFilter: "all",
+    inventoryCategoryFilter: "all",
+    purchaseSearch: "",
+    purchaseProductFilter: "all",
+    purchaseDateFrom: "",
+    purchaseDateTo: "",
+    incomeReport: null,
+    incomeAwaitingRemote: true,
+    incomeRevision: "",
+    incomeLoading: false,
+    incomeRequestId: 0,
+    incomeRangePreset: "today",
+    incomePageLoading: false,
+    incomeFetchedAt: 0,
+    incomeAppliedRange: null,
+    businessTimeZone: "America/Bogota",
+    incomeSearchTimer: null,
+    productPickerMatches: [],
+    consumptionDrafts: [],
+    consumptionDraftEditIndex: -1,
+    activePaymentTotal: 0,
+    posFeatures: {},
+    clientQueuePositions: [],
+    activePaymentBase: 0,
+    activePaymentTip: 0,
+    tipSettings: { enabled: false, percentage: 10 },
+    tipSplitPeople: 1,
+    paymentProcessing: false,
+    lastPaidReceipt: null,
+    appsScriptOutboxBusy: false,
+    appsScriptOutboxTimer: null,
+    alertFilter: "all",
+    optimisticRequestStates: new Map(),
+    optimisticSessionStates: new OptimisticSessionMap(),
+    soundEnabled: false,
+    soundPrimed: false,
+    soundPriming: false,
+    mousePrimeAttempted: false,
+    lastAlertSignature: "",
+    lastRequestBadgeCount: 0,
+    announcedRequestIds: new Set(),
+    alertAnnouncementQueue: [],
+    alertAnnouncementBusy: false,
+    alarmToneFinish: null,
+    speechFinish: null,
+    alertRenderSignature: null,
+    outdoorTableDraftIds: null,
+    outdoorTableDraftDirty: false,
+    accountsRenderSignature: null,
+    activeAccountDetailId: "",
+    adminSnapshotSignature: "",
+    clientSnapshotSignature: "",
+    visibleToastKeys: new Set(),
+    toastLastShown: new Map(),
+    alarmTimer: null,
+    alarmStopTimer: null,
+    adminPollTimer: null,
+    adminSyncBusy: false,
+    backgroundReportSyncBusy: false,
+    backgroundReportCheckedAt: 0,
+    appsScriptInventoryRevision: "",
+    activeAdminSection: "dashboard",
+    dashboardTableGroupFilter: "all",
+    tableManagerGroupFilter: "all",
+    tableManagerRenderSignature: "",
+    usersRenderSignature: "",
+    adminAiRenderSignature: "",
+    pwaBrandSignature: "",
+    pwaBrandSyncToken: 0,
+    pwaManifestObjectUrl: "",
+    pwaIconObjectUrls: [],
+    pwaRegistrationPromise: null,
+    qrCache: new Map(),
+    selectedTableQrIds: new Set(),
+    activeServiceZone: localStorage.getItem(SERVICE_ZONE_STORAGE_KEY) === "planter" ? "planter" : "bar",
+    tableRenderSignature: "",
+    assistantMessages: [],
+    assistantThreads: { bar: [], song: [] },
+    assistantMode: "bar",
+    chatMessages: [],
+    adminChats: new Map(),
+    adminChatTypingTimers: new Map(),
+    adminBroadcastChannel: null,
+    adminChatActive: false,
+    adminChatNotice: "",
+    clientChatInitialized: false,
+    clientChatSoundSessionId: "",
+    clientStaffMessageSoundIds: new Set(),
+    chatPollTimer: null,
+    chatTypingTimer: null,
+    peerTyping: false,
+    adminAiMessages: [],
+    tableLocked: false,
+    qrLocked: false,
+    clientChannel: null,
+    clientSubscribedTableId: "",
+    clientReconnectTimer: null,
+    clientRealtimeNeedsReconnect: false,
+    clientPollTimer: null,
+    clientSyncBusy: false,
+    requestOutboxBusy: false,
+    requestOutboxTimer: null,
+    requestOutboxMemory: [],
+    billResolutionBusy: false,
+    billResolutionTimer: null,
+    qrCameraStream: null,
+    qrScanner: null,
+    qrScannerControls: null,
+    qrCameraDevices: [],
+    qrScanBusy: false,
+    subscriptions: []
+  };
+
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+
+  const icon = (name, size = 18) => `<i data-lucide="${name}" style="width:${size}px;height:${size}px"></i>`;
+
+  const money = (value, currency = DEFAULT_CURRENCY) =>
+    (money.formatter ||= new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: DEFAULT_CURRENCY,
+      maximumFractionDigits: 0
+    })).format(Number(value || 0));
+
+  const currencyInputNumber = (fieldOrValue) => {
+    if (typeof fieldOrValue === "number") return Number.isFinite(fieldOrValue) ? Math.max(0, Math.round(fieldOrValue)) : 0;
+    const raw = typeof fieldOrValue === "object" && fieldOrValue !== null ? fieldOrValue.value : fieldOrValue;
+    const digits = String(raw ?? "").replace(/\D/g, "").slice(0, 15);
+    return digits ? Number(digits) : 0;
+  };
+
+  const formattedCurrencyInput = (value, { allowEmpty = false } = {}) => {
+    const raw = typeof value === "object" && value !== null ? value.value : value;
+    const normalizedRaw = typeof raw === "number" ? String(Math.max(0, Math.round(raw))) : String(raw ?? "");
+    const digits = normalizedRaw.replace(/\D/g, "").slice(0, 15);
+    if (!digits) return allowEmpty ? "" : "$0";
+    return `$${Number(digits).toLocaleString("es-CO", { maximumFractionDigits: 0 })}`;
+  };
+
+  const setCurrencyInputValue = (input, value) => {
+    if (!input) return;
+    input.value = formattedCurrencyInput(value);
+    input.dataset.rawValue = String(currencyInputNumber(value));
+  };
+
+  const bindCurrencyInputs = (root = document) => {
+    $$('[data-currency-input]', root).forEach((input) => {
+      if (input.dataset.currencyBound === "true") return;
+      input.dataset.currencyBound = "true";
+      setCurrencyInputValue(input, input.value);
+      input.addEventListener("input", () => {
+        input.value = formattedCurrencyInput(input.value, { allowEmpty: true });
+        input.dataset.rawValue = String(currencyInputNumber(input));
+        const end = input.value.length;
+        input.setSelectionRange?.(end, end);
+      });
+      input.addEventListener("focus", () => {
+        window.setTimeout(() => input.select(), 0);
+      });
+      input.addEventListener("blur", () => setCurrencyInputValue(input, input.value));
+    });
+  };
+
+  const friendlyMessage = (value) => window.DonPierosLanguage?.message(value) ?? String(value?.message ?? value ?? "");
+  const toast = (message, type = "ok", key = `${type}:${message}`) => {
+    message = globalThis.DonPierosLanguage?.message(message) ?? message;
+    const now = Date.now();
+    const stockNotice = type === "error" && String(key).startsWith("payment-stock:");
+    const cooldown = stockNotice ? 5000 : type === "error" ? 15000 : 3000;
+    if (state.visibleToastKeys.has(key)) return;
+    if (now - Number(state.toastLastShown.get(key) || 0) < cooldown) return;
+    state.visibleToastKeys.add(key);
+    state.toastLastShown.set(key, now);
+    let box = $(".system-modal-stack");
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "system-modal-stack";
+      document.body.appendChild(box);
+    }
+    const item = document.createElement("div");
+    const clientNotice = state.page === "client";
+    item.className = `system-modal ${type}${clientNotice && type === "ok" ? " client-notification" : ""}${stockNotice ? " stock-warning" : ""}`;
+    const iconName = type === "error" ? "circle-alert" : "badge-check";
+    item.innerHTML = `
+      <div class="system-modal-icon">${icon(iconName, 24)}</div>
+      <div>
+        <strong>${stockNotice ? "Stock insuficiente" : type === "error" ? "Atencion" : "Listo"}</strong>
+        <p>${message}</p>
+      </div>
+    `;
+    box.appendChild(item);
+    if (stockNotice) {
+      item.setAttribute("role", "alert");
+      item.setAttribute("aria-live", "assertive");
+      if (typeof item.showPopover === "function") {
+        item.setAttribute("popover", "manual");
+        item.showPopover();
+      } else {
+        const dialogs = document.querySelectorAll("dialog[open]");
+        dialogs[dialogs.length - 1]?.appendChild(item);
+      }
+    }
+    refreshIcons();
+    setTimeout(() => {
+      if (clientNotice || stockNotice) { item.remove(); state.visibleToastKeys.delete(key); return; }
+      item.classList.add("leaving");
+      setTimeout(() => {
+        item.remove();
+        state.visibleToastKeys.delete(key);
+      }, 220);
+    }, clientNotice || stockNotice ? 5000 : type === "error" ? 5600 : 3600);
+  };
+
+  const isConfigured = () => Boolean(
+    window.supabase?.createClient &&
+    SUPABASE_CONFIG.url &&
+    SUPABASE_CONFIG.anonKey &&
+    !SUPABASE_CONFIG.url.includes("TU_") &&
+    !SUPABASE_CONFIG.anonKey.includes("TU_")
+  );
+
+  const uid = () =>
+    crypto?.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+  const refreshIcons = () => {
+    if (window.lucide) window.lucide.createIcons({
+      root: { querySelectorAll: (selector) => document.querySelectorAll(`${selector}:not(svg)`) }
+    });
+  };
+
+  const paintRowsProgressively = (target, renderers, { append = false } = {}) => {
+    const revision = (target.rowPaintRevision || 0) + 1;
+    target.rowPaintRevision = revision;
+    const pending = paintRowsProgressively.pending ||= new Map();
+    pending.delete(target);
+    paintRowsProgressively.resume = () => {
+      for (const [list, next] of pending) {
+        if (list.closest("[data-admin-section]")?.classList.contains("section-active")) {
+          pending.delete(list); window.setTimeout(next, 0);
+        }
+      }
+    };
+    let offset = 0;
+    if (!append) target.innerHTML = "";
+    const paint = () => {
+      if (target.rowPaintRevision !== revision || !target.isConnected) return;
+      const section = target.closest("[data-admin-section]");
+      if (section && !section.classList.contains("section-active")) { pending.set(target, paint); return; }
+      const shiftDialog = document.querySelector("#salesShiftDialog[open]");
+      if (shiftDialog) { shiftDialog.addEventListener("close", () => window.setTimeout(paint, 0), { once: true }); return; }
+      const started = performance.now(), parts = [];
+      do { parts.push(renderers[offset++]()); }
+      while (offset < renderers.length && parts.length < 20 && performance.now() - started < 4);
+      target.insertAdjacentHTML("beforeend", parts.join(""));
+      refreshIcons();
+      if (offset < renderers.length) {
+        if (window.scheduler?.postTask) void window.scheduler.postTask(paint, { priority: "background" });
+        else window.setTimeout(paint, 0);
+      }
+    };
+    if (renderers.length) paint();
+  };
+
+  const setLoading = (isLoading) => {
+    document.body.classList.toggle("is-loading", isLoading);
+  };
+
+  const connect = () => {
+    if (!isConfigured()) {
+      toast("La conexión del negocio necesita revisión. Contacta al responsable.", "error");
+      return false;
+    }
+    state.sb = SupabaseDb;
+    state.sb.init();
+    return true;
+  };
+
+  const db = async (builder, fallback = null) => {
+    try {
+      const { data, error } = await builder;
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error(error);
+      const message = String(error?.message || "");
+      const transient = error?.transient || /reintento de red|failed to fetch|networkerror|network request failed|load failed|aborterror|timeout/i.test(message);
+      if (!transient) toast(message || "No pudimos conectar. Vuelve a intentarlo.", "error");
+      return fallback;
+    }
+  };
+
+  const loadBusiness = async () => refreshCoreNow();
+
+  const loadCore = async () => { const loaded = await refreshCoreNow(); if (loaded) loadInventoryStore(); return loaded; };
+
+  const ensurePresetCategories = async () => {
+    if (!canAccessAdminSection("menu") && !canAccessAdminSection("inventory")) return;
+    const existing = new Set(state.categories.map((category) => normalizeText(category.name)));
+    const missing = CATEGORY_PRESETS.filter((name) => !existing.has(normalizeText(name)));
+    if (!missing.length) return;
+    const created = (await Promise.all(missing.map((name, index) => dbQuiet(
+      state.sb.from("menu_categories").insert({ name, sort_order: 100 + index, is_active: true }).select("*").single(),
+      null
+    )))).filter(Boolean);
+    if (created.length) {
+      state.categories = [...state.categories, ...created];
+      persistBootstrapCache();
+      renderMenuManager();
+    }
+  };
+
+  const emptyState = (title, text, iconName = "sparkles") => `
+    <div class="empty-state">
+      ${icon(iconName, 26)}
+      <strong>${title}</strong>
+      <span>${text}</span>
+    </div>
+  `;
+
+  const tableLabel = (table) => table?.table_name || `Mesa ${table?.table_number || ""}`.trim();
+
+  const OUTDOOR_TABLE_PREFIX = "tn-outdoor:v1:";
+  const isOutdoorTable = (table) => typeof table?.is_outdoor === "boolean" ? table.is_outdoor : String(table?.qr_image_url || "").startsWith(OUTDOOR_TABLE_PREFIX);
+  const originalQrImageUrl = (table) => {
+    const value = String(table?.qr_image_url || "");
+    if (!value.startsWith(OUTDOOR_TABLE_PREFIX)) return value || null;
+    try { return decodeURIComponent(value.slice(OUTDOOR_TABLE_PREFIX.length)) || null; }
+    catch (error) { return null; }
+  };
+  const outdoorQrImageValue = (table, outdoor) => outdoor
+    ? `${OUTDOOR_TABLE_PREFIX}${encodeURIComponent(originalQrImageUrl(table) || "")}`
+    : originalQrImageUrl(table);
+
+  const servicePointKind = (table) => {
+    const qrCode = String(table?.qr_code || "");
+    if (qrCode.startsWith("interno-bar-")) return "bar";
+    if (qrCode.startsWith("interno-planter-")) return "planter";
+    const name = normalizeText(table?.table_name || "");
+    if (/^barra\s+\d+$/.test(name)) return "bar";
+    if (/^matera\s+\d+$/.test(name)) return "planter";
+    return "";
+  };
+
+  const isServicePoint = (table) => Boolean(servicePointKind(table));
+
+  const normalTables = () => state.tables.filter((table) => !isServicePoint(table));
+
+  const tableGroupKey = (table) => {
+    const name = normalizeText(table?.table_name || "mesa").replace(/\s*\d+\s*$/, "").trim() || "mesa";
+    if (/^mesas?$/.test(name)) return "mesa";
+    if (/^terrazas?$/.test(name)) return "terraza";
+    return name;
+  };
+
+  const isTerraceTable = (table) => /^terrazas?(?:\s|$)/.test(tableGroupKey(table));
+  const tableMatchesGroup = (table, group) => group === "all" || tableGroupKey(table) === group;
+  const tableMatchesSearch = (table, query) => {
+    const term = normalizeText(query).replace(/\s+/g, "");
+    if (!term) return true;
+    const number = String(table.table_number || "");
+    if (/^(?:m|mesa)?\d+$/.test(term)) return ["m" + number, "mesa" + number, number].includes(term);
+    return [`m${number}`, `mesa${number}`, number, tableLabel(table)]
+      .some((value) => normalizeText(value).replace(/\s+/g, "").includes(term));
+  };
+  const syncTableGroupOptions = (select, selected) => {
+    if (!select) return selected;
+    const groups = [...new Set(normalTables().map(tableGroupKey))].sort((a, b) => a.localeCompare(b, "es"));
+    const signature = JSON.stringify(groups);
+    if (select.dataset.groups !== signature) {
+      select.innerHTML = '<option value="all">Todos los nombres</option>' + groups.map((group) =>
+        `<option value="${escapeHTML(group)}">${escapeHTML(group === "mesa" ? "MESAS" : group === "terraza" ? "TERRAZAS" : group.toLocaleUpperCase("es-CO"))}</option>`
+      ).join("");
+      select.dataset.groups = signature;
+    }
+    const value = selected === "all" || groups.includes(selected) ? selected : "all";
+    select.value = value;
+    return value;
+  };
+  const qrRegenerationEnabled = () => localStorage.getItem(QR_REGENERATION_STORAGE_KEY) === "1";
+
+  const sessionLabel = (session) => session?.sale_channel === "walk_in" || !session?.table_id
+    ? "Venta individual"
+    : tableLabel(session?.restaurant_tables);
+
+  const sessionReference = (session) => String(session?.id || "")
+    .replace(/^walk-in-/i, "")
+    .replace(/-/g, "")
+    .slice(0, 8)
+    .toUpperCase();
+
+  const tableCode = (table) => table?.qr_code || `mesa-${table?.table_number || ""}`;
+
+  const clientUrlForCode = (code) => {
+    const url = new URL("mesa.html", window.FRONTEND_URL || location.href);
+    url.search = "";
+    url.searchParams.set("mesa", code);
+    url.searchParams.set("page", "client");
+    return url.href;
+  };
+
+  const qrTextForTable = (table) => clientUrlForCode(tableCode(table));
+
+  const qrLogoSource = () => state.business?.logo_url || "images/don-pieros-logo.png";
+  const qrLogoImages = new Map();
+  const loadQrLogo = (url) => {
+    if (!qrLogoImages.has(url)) qrLogoImages.set(url, new Promise((resolve, reject) => {
+      const image = new Image(); image.crossOrigin = "anonymous";
+      const timer = window.setTimeout(() => reject(new Error("No pudimos cargar el logo del QR.")), 6000);
+      image.onload = () => { window.clearTimeout(timer); resolve(image); };
+      image.onerror = () => { window.clearTimeout(timer); reject(new Error("No pudimos cargar el logo del QR.")); };
+      image.src = url;
+    }).catch((error) => { qrLogoImages.delete(url); throw error; }));
+    return qrLogoImages.get(url);
+  };
+  const brandQrCanvas = async (source, size, modules) => {
+    const canvas = document.createElement("canvas"); canvas.width = size; canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
+    // Four quiet modules protect the outer pattern. The central logo covers under 4% of the code.
+    const quiet = Math.ceil(size * 4 / (modules + 8)), codeSize = size - quiet * 2;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(source, quiet, quiet, codeSize, codeSize);
+    let logo;
+    try { logo = await loadQrLogo(qrLogoSource()); }
+    catch (_) { logo = await loadQrLogo("images/don-pieros-logo.png"); }
+    const patch = Math.round(codeSize * .19), inset = Math.round(patch * .09), left = (size - patch) / 2;
+    ctx.fillStyle = "#fff"; ctx.fillRect(left, left, patch, patch);
+    const ratio = Math.min((patch - inset * 2) / logo.naturalWidth, (patch - inset * 2) / logo.naturalHeight);
+    const width = logo.naturalWidth * ratio, height = logo.naturalHeight * ratio;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(logo, (size - width) / 2, (size - height) / 2, width, height);
+    return canvas.toDataURL("image/png");
+  };
+
+  const generateQrDataUrl = (text, size = 720) =>
+    new Promise((resolve, reject) => {
+      if (!window.QRCode) {
+        reject(new Error("No se cargo el generador de QR."));
+        return;
+      }
+      const host = document.createElement("div");
+      host.style.position = "fixed";
+      host.style.left = "-9999px";
+      host.style.top = "0";
+      document.body.appendChild(host);
+      const qr = new window.QRCode(host, {
+        text,
+        width: size,
+        height: size,
+        colorDark: "#14171d",
+        colorLight: "#ffffff",
+        correctLevel: window.QRCode.CorrectLevel.H
+      });
+      window.setTimeout(async () => {
+        try {
+          const source = host.querySelector("canvas") || host.querySelector("img");
+          if (!source) throw new Error("No se pudo generar el QR.");
+          if (source instanceof HTMLImageElement) await source.decode();
+          resolve(await brandQrCanvas(source, size, qr._oQRCode?.getModuleCount?.() || 49));
+        } catch (error) { reject(error); }
+        finally { host.remove(); }
+      }, 40);
+    });
+
+  const cachedQrDataUrl = async (text, size = 720) => {
+    const key = `branded-v1:${size}:${qrLogoSource()}:${text}`;
+    if (!state.qrCache.has(key)) {
+      state.qrCache.set(key, generateQrDataUrl(text, size).catch(error => { state.qrCache.delete(key); throw error; }));
+    }
+    return state.qrCache.get(key);
+  };
+
+  const renderQrImage = async (target, text, alt = "QR") => {
+    if (!target || !text) return;
+    if (target.dataset.qrText === text && target.dataset.qrLogo === qrLogoSource() && target.querySelector("img")) return;
+    target.dataset.qrText = text;
+    target.dataset.qrLogo = qrLogoSource();
+    target.classList.add("qr-loading");
+    try {
+      const dataUrl = await cachedQrDataUrl(text, 420);
+      target.innerHTML = `<img src="${dataUrl}" alt="${alt}">`;
+    } catch (error) {
+      target.innerHTML = `${icon("qr-code", 20)}`;
+    } finally {
+      target.classList.remove("qr-loading");
+      refreshIcons();
+    }
+  };
+
+  const setRealtimeStatus = (status, tone = "connecting") => {
+    const badge = $("#realtimeStatus");
+    if (!badge) return;
+    badge.className = `live-status ${tone}`;
+    badge.innerHTML = `${icon(tone === "live" ? "wifi" : "wifi-off", 15)} ${status}`;
+    refreshIcons();
+  };
+
+  const isBoss = (user = state.currentUser) => user?.role === "boss";
+  const isManager = (user = state.currentUser) => ["boss", "admin"].includes(user?.role);
+  const isWaiter = (user = state.currentUser) => user?.role === "waiter";
+  const roleLabel = (role) => ({ boss: "Jefe", admin: "Administrador", waiter: "Mesero" }[role] || "Usuario");
+  const normalizedUserPermissions = (user = state.currentUser) => {
+    if (isBoss(user)) return [...ADMIN_SECTION_KEYS, "users"];
+    if (isWaiter(user)) return ["service"];
+    if (Array.isArray(user?.permissions)) return [...new Set(user.permissions.filter((section) => ADMIN_SECTION_KEYS.includes(section)))];
+    return [...ADMIN_SECTION_KEYS];
+  };
+  const canAccessAdminSection = (section, user = state.currentUser) => normalizedUserPermissions(user).includes(({onlineorders:"dashboard",webmenu:"inventory"})[section] || section);
+  const firstAllowedAdminSection = (user = state.currentUser) => normalizedUserPermissions(user)[0] || "service";
+  const canDeleteRecords = () => isBoss();
+
+  const syncAdminSectionAccess = () => {
+    $$(".admin-sidebar nav a").forEach((link) => {
+      const section = link.getAttribute("href")?.replace("#", "") || "";
+      link.hidden = !canAccessAdminSection(section) || (link.hasAttribute("data-tip-feature") && !tipsEnabled());
+    });
+  };
+
+  const showAdminSection = (section = "dashboard") => {
+    syncAdminSectionAccess();
+    if (section === "tips" && !tipsEnabled()) section = canAccessAdminSection("accounts") ? "accounts" : firstAllowedAdminSection();
+    if (!canAccessAdminSection(section)) section = firstAllowedAdminSection();
+    state.activeAdminSection = section;
+    $$("[data-admin-section]").forEach((el) => {
+      el.classList.toggle("section-active", el.dataset.adminSection === section);
+    });
+    $$(".admin-sidebar nav a").forEach((link) => {
+      const target = link.getAttribute("href")?.replace("#", "");
+      const active = target === section;
+      link.classList.toggle("active", active);
+      if (active) link.setAttribute("aria-current", "page");
+      else link.removeAttribute("aria-current");
+    });
+    if (section === "dashboard") {
+      renderAlerts();
+      renderTables();
+    }
+    if (section === "accounts") renderAccounts();
+    if (section === "tips") renderTips();
+    if (section === "service") {
+      renderServiceTables();
+      renderWaiterTableSelect();
+    }
+    if (section === "menu") {
+      renderMenuManager();
+      renderTableManager();
+      renderTableFormQr();
+    }
+    if (section === "brand") renderBusinessForm();
+    if (section === "inventory") {
+      renderInventory();
+      void syncInventoryWithAppsScript();
+    }
+    if (section === "movements") {
+      renderInventoryMovements();
+      if (!state.movementLoading && (!state.movementLoaded || Date.now() - Number(state.movementFetchedAt || 0) >= 5000)) void loadInventoryMovements({ background: state.movementLoaded });
+    }
+    if (section === "income") {
+      renderSalesShift();
+      initializeIncomeFilters();
+      const currentFilters = incomeFiltersFromForm();
+      const samePeriod = state.incomeReport && JSON.stringify(state.incomeReport.filters) === JSON.stringify(currentFilters);
+      if (!samePeriod) void loadIncomeReport();
+      else {
+        renderIncomeReport();
+        void refreshBackgroundReports();
+      }
+    }
+    if (section === "users") renderUsers();
+    if (section === "assistant") renderAdminAi();
+    if (typeof paintRowsProgressively === "function") paintRowsProgressively.resume?.();
+  };
+
+  const findTableFromUrl = () => {
+    const params = new URLSearchParams(location.search);
+    const raw = params.get("mesa") || params.get("table") || params.get("t") || params.get("qr");
+    if (!raw) return null;
+    const table = state.tables.find(
+      (table) =>
+        !isServicePoint(table) && (
+          String(table.table_number) === String(raw) ||
+          String(table.qr_code).toLowerCase() === String(raw).toLowerCase() ||
+          String(table.id) === String(raw)
+        )
+    );
+    state.qrLocked = Boolean(table);
+    state.tableLocked = state.qrLocked;
+    return table;
+  };
+
+  const refreshTableLock = () => {
+    if (!state.currentTable) return;
+    const hasAccount = state.sessionItems.some(
+      (item) => item.status !== "cancelled" && Number(item.quantity || 0) > 0
+    );
+    state.tableAccountStatus = hasAccount ? "active" : "empty";
+    state.tableAccountTotal = state.sessionItems
+      .filter((item) => item.status !== "cancelled")
+      .reduce((total, item) => total + Number(item.unit_price || 0) * Number(item.quantity || 0), 0);
+    if (!state.tableLocked) state.tableLocked = hasAccount;
+    if (state.currentTable) renderTablePicker();
+  };
+
+  const ensureOpenSession = async (tableId, { create = true, updateState = true } = {}) => {
+    let session = await db(
+      state.sb
+        .from("table_sessions")
+        .select("*")
+        .eq("table_id", tableId)
+        .eq("status", "open")
+        .order("opened_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      null
+    );
+    if (!session && create) {
+      session = await db(
+        state.sb.from("table_sessions").insert({ table_id: tableId, status: "open" }).select("*").single(),
+        null
+      );
+    }
+    if (!session && create) session = await db(state.sb.from("table_sessions").select("*").eq("table_id",tableId).eq("status","open").limit(1).maybeSingle(),null);
+    if (!updateState) return session;
+    if (state.currentSession?.id !== session?.id) state.clientSnapshotSignature = "";
+    if (state.page === "client" && state.currentTable?.id !== tableId) return session;
+    state.currentSession = session;
+    if (state.page === "client" && session) subscribeClient();
+    return session;
+  };
+
+  const reconcilePendingBillsForTable = (requests = []) => {
+    const queuedIds = new Set(readRequestOutbox().map((item) => item.request_id));
+    pendingBillIds().forEach((id) => {
+      const request = requests.find((item) => item.id === id);
+      if (request?.status === "pending" || request?.status === "sending" || queuedIds.has(id)) {
+        state.billReceiptArmedIds.add(id);
+      } else if (!state.billReceiptArmedIds.has(id)) {
+        clearPendingBill(id);
+      }
+    });
+  };
+
+  const hydrateSelectedTable = async (tableId, { background = false } = {}) => {
+    const table = state.currentTable;
+    if (!table || table.id !== tableId) return null;
+    subscribeClient();
+    const token = ++state.clientHydrationToken;
+    if (!background) {
+      state.tableAccountStatus = "checking";
+      state.tableAccountTotal = 0;
+      renderTablePicker();
+    }
+    const snapshot = await readRealtimeData(state.sb.rpc("getClientTableState", {
+      table_id: table.id,
+      table_access_code: tableCode(table),
+      ensure_session: false
+    }));
+    if (token !== state.clientHydrationToken || state.currentTable?.id !== tableId) return null;
+    if (snapshot?.session) {
+      state.currentSession = snapshot.session;
+      state.sessionItems = snapshot.sessionItems || [];
+      state.clientRequests = snapshot.requests || [];
+      state.clientSnapshotSignature = "";
+    } else {
+      const session = snapshot ? null : await ensureOpenSession(tableId, { create: false, updateState: false });
+      if (token !== state.clientHydrationToken || state.currentTable?.id !== tableId) return null;
+      if (session) { state.currentSession = session; await loadClientSnapshot(); }
+      else {
+        state.currentSession = null;
+        state.sessionItems = [];
+        state.clientRequests = [];
+        state.clientSnapshotSignature = "";
+        state.tableLocked = false;
+        state.localBillOpen = false;
+      }
+    }
+    void refreshClientPosData();
+    if (token !== state.clientHydrationToken || state.currentTable?.id !== tableId) return null;
+    reconcilePendingBillsForTable(state.clientRequests);
+    renderClientQueue();
+    refreshTableLock();
+    renderAccount();
+    renderBillChat();
+    subscribeClient();
+    return state.currentSession;
+  };
+
+  const loadClientSessionItems = async () => {
+    if (!state.currentSession) return;
+    state.sessionItems = await db(
+      state.sb
+        .from("session_items")
+        .select("*")
+        .eq("session_id", state.currentSession.id)
+        .neq("status", "cancelled")
+        .order("created_at", { ascending: false }),
+      []
+    );
+    refreshTableLock();
+  };
+
+  const loadClientRequests = async () => {
+    if (!state.currentSession) {
+      state.clientRequests = [];
+      renderClientQueue();
+      return;
+    }
+    state.clientRequests = await db(
+      state.sb
+        .from("service_requests")
+        .select("*")
+        .eq("session_id", state.currentSession.id)
+        .order("created_at", { ascending: false }),
+      []
+    );
+    renderClientQueue();
+  };
+
+  const dbQuiet = async (builder, fallback = null) => {
+    try {
+      const { data, error } = await builder;
+      if (error) return fallback;
+      return data;
+    } catch (error) {
+      return fallback;
+    }
+  };
+
+  const readRealtimeData = async (query, timeoutMs = 8000) => {
+    let timeout;
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    const builder = controller && typeof query?.abortSignal === "function" ? query.abortSignal(controller.signal) : query;
+    try {
+      return await Promise.race([
+        dbQuiet(builder, null),
+        new Promise((resolve) => { timeout = window.setTimeout(() => { controller?.abort(); resolve(null); }, timeoutMs); })
+      ]);
+    } finally { window.clearTimeout(timeout); }
+  };
+
+  let bootstrapPromise = null;
+  const bootstrapCacheKey = () => {
+    const params = new URLSearchParams(location.search);
+    const code = params.get("mesa") || params.get("table") || params.get("t") || params.get("qr") || "none";
+    return `don_pieros_supabase_bootstrap_v2_${state.page}_${state.authToken ? "staff" : encodeURIComponent(code)}`;
+  };
+
+  const tableValueFromUrl = () => {
+    const params = new URLSearchParams(location.search);
+    return params.get("mesa") || params.get("table") || params.get("t") || params.get("qr") || "";
+  };
+  const persistBootstrapCache = () => {
+    try {
+      localStorage.setItem(bootstrapCacheKey(), JSON.stringify({
+        business: state.business,
+        tables: state.tables,
+        categories: state.categories,
+        items: state.items
+      }));
+    } catch (error) { /* cache opcional */ }
+  };
+  const loadBootstrap = async () => {
+    if (bootstrapPromise) return bootstrapPromise;
+    const applyBootstrap = (data) => {
+      if (!data) return false;
+      state.business = data.business || {
+        business_name: "Tu restaurante",
+        subtitle: "Servicio a la mesa rapido y claro",
+        accent_color: "#f05a28",
+        currency: DEFAULT_CURRENCY,
+        tips_enabled: false,
+        tip_percentage: 10
+      };
+      state.tables = data.tables || [];
+      state.categories = data.categories || [];
+      state.items = data.items || [];
+      loadInventoryStore();
+      document.documentElement.style.setProperty("--accent", state.business.accent_color || "#f05a28");
+      return true;
+    };
+    let hasCachedBootstrap = false;
+    try {
+      hasCachedBootstrap = applyBootstrap(JSON.parse(localStorage.getItem(bootstrapCacheKey()) || "null"));
+    } catch (error) {
+      hasCachedBootstrap = false;
+    }
+    bootstrapPromise = (async () => {
+      const params = new URLSearchParams(location.search);
+      const accessCode = params.get("mesa") || params.get("table") || params.get("t") || params.get("qr") || "";
+      const data = await dbQuiet(state.sb.rpc("getBootstrapData", {
+        auth_token: state.authToken || "",
+        table_access_code: accessCode
+      }), null);
+      if (data) {
+        applyBootstrap(data);
+        persistBootstrapCache();
+      } else if (!hasCachedBootstrap) {
+        await Promise.all([loadBusiness(), loadCore()]);
+      }
+      document.documentElement.style.setProperty("--accent", state.business.accent_color || "#f05a28");
+      return true;
+    })();
+    // Con datos de la sesion anterior la interfaz no espera a la red.
+    if (hasCachedBootstrap) {
+      bootstrapPromise.then(() => {
+        if (state.page === "client") {
+          renderBrand();
+          renderTablePicker();
+          renderMenu();
+        }
+        if (state.page === "admin") {
+          renderBrand();
+          renderAdminShell();
+          renderTableFormQr();
+        }
+      });
+      return true;
+    }
+    return bootstrapPromise;
+  };
+
+  const loadClientSnapshot = async () => {
+    void refreshClientPosData();
+    if (!state.currentSession) return false;
+    const sessionId = state.currentSession.id;
+    const tableId = state.currentTable?.id;
+    const snapshot = await readRealtimeData(
+      state.sb.rpc("getClientSnapshot", {
+        session_id: state.currentSession.id,
+        table_id: state.currentTable?.id || null,
+        table_access_code: tableCode(state.currentTable)
+      })
+    );
+    if (state.currentSession?.id !== sessionId || state.currentTable?.id !== tableId) return false;
+    if (!snapshot) {
+      await Promise.all([loadClientSessionItems(), loadClientRequests()]);
+      return true;
+    }
+    const signature = JSON.stringify([
+      (snapshot.sessionItems || []).map((item) => [item.id, item.status, item.quantity, item.updated_at]),
+      (snapshot.requests || []).map((request) => [request.id, request.status, request.updated_at])
+    ]);
+    if (signature === state.clientSnapshotSignature) return false;
+    state.clientSnapshotSignature = signature;
+    state.sessionItems = snapshot.sessionItems || [];
+    state.clientRequests = snapshot.requests || [];
+    renderClientQueue();
+    refreshTableLock();
+    return true;
+  };
+
+  const pwaAssetUrl = (name) => new URL(name, document.baseURI).href;
+
+  const pwaBrandVersion = (value) => Array.from(String(value || "")).reduce(
+    (hash, character) => ((hash << 5) - hash + character.charCodeAt(0)) | 0,
+    0
+  ).toString(36).replace("-", "n");
+
+  const registerPwa = () => {
+    if (state.pwaRegistrationPromise) return state.pwaRegistrationPromise;
+    const localHost = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
+    if (!("serviceWorker" in navigator) || (location.protocol !== "https:" && !localHost)) {
+      state.pwaRegistrationPromise = Promise.resolve(null);
+      return state.pwaRegistrationPromise;
+    }
+    state.pwaRegistrationPromise = navigator.serviceWorker.register("./service-worker.js", { scope: "./", updateViaCache: "none" })
+      .then((registration) => {
+        void registration.update();
+        return registration;
+      })
+      .catch(() => null);
+    return state.pwaRegistrationPromise;
+  };
+
+  const waitForPwaController = async () => {
+    if (!("serviceWorker" in navigator)) return false;
+    if (navigator.serviceWorker.controller) return true;
+    await new Promise((resolve) => {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        navigator.serviceWorker.removeEventListener("controllerchange", finish);
+        resolve();
+      };
+      navigator.serviceWorker.addEventListener("controllerchange", finish, { once: true });
+      window.setTimeout(finish, 2500);
+    });
+    return Boolean(navigator.serviceWorker.controller);
+  };
+
+  const loadPwaLogo = (url) => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("No se pudo preparar el logo para la instalación."));
+    image.src = url;
+  });
+
+  const pwaIconBlob = async (logoUrl, size) => {
+    const image = await loadPwaLogo(logoUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("El navegador no puede generar el icono de instalación.");
+    context.fillStyle = "#000000";
+    context.fillRect(0, 0, size, size);
+    const safeArea = size * .76;
+    const scale = Math.min(safeArea / image.naturalWidth, safeArea / image.naturalHeight);
+    const width = image.naturalWidth * scale;
+    const height = image.naturalHeight * scale;
+    context.drawImage(image, (size - width) / 2, (size - height) / 2, width, height);
+    return new Promise((resolve, reject) => canvas.toBlob(
+      (blob) => blob ? resolve(blob) : reject(new Error("No se pudo convertir el logo en icono.")),
+      "image/png"
+    ));
+  };
+
+  const replacePwaManifestLink = (href) => {
+    const current = $("#appManifest");
+    if (!current || current.href === href) return;
+    current.href = href;
+  };
+
+  const syncPwaBranding = async () => {
+    if (!state.business) return;
+    const name = String(state.business.business_name || "Don Pieros Pizza").trim() || "Don Pieros Pizza";
+    const logoUrl = String(state.business.logo_url || "images/don-pieros-logo.png").trim();
+    const themeColor = String(state.business.accent_color || "#f05a28");
+    const signature = `${name}|${logoUrl}|${themeColor}|black-icon-v2`;
+    if (signature === state.pwaBrandSignature) return;
+    state.pwaBrandSignature = signature;
+    const syncToken = ++state.pwaBrandSyncToken;
+    const version = pwaBrandVersion(signature);
+    const themeMeta = $("#pwaThemeColor");
+    if (themeMeta) themeMeta.content = themeColor;
+
+    state.pwaIconObjectUrls.forEach((url) => URL.revokeObjectURL(url));
+    state.pwaIconObjectUrls = [];
+    let icon192 = null;
+    let icon512 = null;
+    if (logoUrl) {
+      try {
+        [icon192, icon512] = await Promise.all([pwaIconBlob(logoUrl, 192), pwaIconBlob(logoUrl, 512)]);
+      } catch (error) {
+        icon192 = null;
+        icon512 = null;
+      }
+    }
+    if (syncToken !== state.pwaBrandSyncToken) return;
+
+    let iconEntries = [
+      { src: "./images/icon-192.png?v=black-logo-v2", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "./images/icon-512.png?v=black-logo-v2", sizes: "512x512", type: "image/png", purpose: "any" }
+    ];
+    if (icon192 && icon512) {
+      const faviconUrl = URL.createObjectURL(icon192);
+      const largeIconUrl = URL.createObjectURL(icon512);
+      state.pwaIconObjectUrls = [faviconUrl, largeIconUrl];
+      if ($("#appFavicon")) {
+        $("#appFavicon").href = faviconUrl;
+        $("#appFavicon").type = "image/png";
+      }
+      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = faviconUrl;
+      if ("caches" in window) {
+        const cache = await caches.open(PWA_BRAND_CACHE);
+        await Promise.all([
+          cache.put(pwaAssetUrl("pwa-icon-192.png"), new Response(icon192, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } })),
+          cache.put(pwaAssetUrl("pwa-icon-512.png"), new Response(icon512, { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } }))
+        ]);
+      }
+      iconEntries = [
+        { src: `./pwa-icon-192.png?v=${version}`, sizes: "192x192", type: "image/png", purpose: "any maskable" },
+        { src: `./pwa-icon-512.png?v=${version}`, sizes: "512x512", type: "image/png", purpose: "any maskable" }
+      ];
+    } else {
+      if ($("#appFavicon")) { $("#appFavicon").href = "./images/icon-192.png?v=black-logo-v2"; $("#appFavicon").type = "image/png"; }
+      if ($("#appleTouchIcon")) $("#appleTouchIcon").href = "./images/icon-512.png?v=black-logo-v2";
+    }
+
+    const manifest = {
+      id: "./admin.html",
+      name,
+      short_name: Array.from(name).slice(0, 15).join(""),
+      description: "Administración y servicio a la mesa",
+      lang: "es-CO",
+      start_url: "./admin.html",
+      scope: "./",
+      display: "standalone",
+      background_color: "#ffffff",
+      theme_color: themeColor,
+      prefer_related_applications: false,
+      icons: iconEntries
+    };
+    const manifestText = JSON.stringify(manifest);
+    if ("caches" in window) {
+      const cache = await caches.open(PWA_BRAND_CACHE);
+      await cache.put(pwaAssetUrl("pwa-manifest.webmanifest"), new Response(manifestText, {
+        headers: { "Content-Type": "application/manifest+json", "Cache-Control": "no-store" }
+      }));
+    }
+    if (syncToken !== state.pwaBrandSyncToken) return;
+    await registerPwa();
+    const controlled = await waitForPwaController();
+    if (syncToken !== state.pwaBrandSyncToken) return;
+    if (controlled) {
+      replacePwaManifestLink(`${pwaAssetUrl("pwa-manifest.webmanifest")}?v=${version}`);
+      return;
+    }
+    if (state.pwaManifestObjectUrl) URL.revokeObjectURL(state.pwaManifestObjectUrl);
+    state.pwaManifestObjectUrl = URL.createObjectURL(new Blob([manifestText], { type: "application/manifest+json" }));
+    replacePwaManifestLink(state.pwaManifestObjectUrl);
+  };
+
+  const renderBrand = () => {
+    syncClientBillVisibility();
+    syncClientActions();
+    const logo = state.business?.logo_url
+      ? `<img src="${escapeHTML(state.business.logo_url)}" alt="${escapeHTML(state.business.business_name)}" class="brand-logo">`
+      : `<div class="brand-mark">${icon("utensils", 24)}</div>`;
+    $$(".js-business-name").forEach((el) => {
+      el.textContent = state.business?.business_name || "Tu restaurante";
+    });
+    $$(".js-business-subtitle").forEach((el) => {
+      el.textContent = state.business?.subtitle || "Servicio a la mesa rapido y claro";
+    });
+    $$(".js-brand-logo").forEach((el) => {
+      if (el.dataset.brandMarkup === logo) return;
+      el.dataset.brandMarkup = logo;
+      el.innerHTML = logo;
+    });
+    const cover = $(".client-hero");
+    const coverImage = $("#clientCoverImage");
+    if (cover && coverImage) {
+      const coverUrl = state.business?.cover_url || "";
+      cover.classList.toggle("has-cover", Boolean(coverUrl));
+      coverImage.hidden = !coverUrl;
+      coverImage.alt = `Portada de ${state.business?.business_name || "nuestro negocio"}`;
+      if (coverUrl && coverImage.getAttribute("src") !== coverUrl) coverImage.src = coverUrl;
+      if (!coverUrl) coverImage.removeAttribute("src");
+    }
+    if (state.business) void syncPwaBranding();
+  };
+
+  const renderTablePicker = () => {
+    const picker = $("#tablePicker");
+    if (!picker) return;
+    if (state.currentTable) {
+      const accountStatus = state.tableAccountStatus === "checking"
+        ? `<small class="table-account-state checking">${icon("loader-circle", 14)} Consultando cuenta</small>`
+        : state.tableAccountStatus === "active"
+          ? `<small class="table-account-state active">${icon("receipt-text", 14)} Cuenta activa · ${money(state.tableAccountTotal)}</small>`
+          : `<small class="table-account-state empty">${icon("circle-check", 14)} Sin cuenta</small>`;
+      picker.innerHTML = `
+        <div class="selected-table-state">
+          <strong class="selected-table-name">${icon("map-pin", 16)} ${escapeHTML(tableLabel(state.currentTable))}</strong>
+          ${accountStatus}
+        </div>
+        ${
+          state.tableLocked
+            ? `<strong class="locked-table-badge">${icon("lock-keyhole", 14)} ${state.qrLocked ? "QR verificado" : "Cuenta activa"}</strong>`
+            : `<button class="ghost small" data-action="change-table">${icon("refresh-cw", 15)} Cambiar</button>`
+        }
+      `;
+      refreshIcons();
+      return;
+    }
+    picker.innerHTML = `
+      <label for="tableSelect">Selecciona tu mesa</label>
+      <select id="tableSelect">
+        <option value="">Mesa</option>
+        ${normalTables()
+          .filter((table) => table.is_active)
+          .map((table) => `<option value="${escapeHTML(table.id)}">${escapeHTML(tableLabel(table))}</option>`)
+          .join("")}
+      </select>
+    `;
+    refreshIcons();
+  };
+
+  const filteredItems = () =>
+    state.items.filter(
+      (item) =>
+        item.is_available &&
+        (state.activeCategory === "all" || item.category_id === state.activeCategory)
+    );
+
+  const renderMenu = () => {
+    const tabs = $("#categoryTabs");
+    const menu = $("#menuList");
+    if (!tabs || !menu) return;
+
+    tabs.innerHTML = `
+      <button class="chip ${state.activeCategory === "all" ? "active" : ""}" data-category="all">
+        ${icon("layout-grid", 16)} Todo
+      </button>
+      ${state.categories
+        .filter((category) => category.is_active)
+        .map(
+          (category) => `
+            <button class="chip ${state.activeCategory === category.id ? "active" : ""}" data-category="${category.id}">
+              ${icon("tag", 16)} ${escapeHTML(category.name)}
+            </button>
+          `
+        )
+        .join("")}
+    `;
+
+    const items = filteredItems();
+    menu.innerHTML = items.length
+      ? items
+          .map(
+            (item) => `
+              <article class="menu-item">
+                <div class="food-image">
+                  ${
+                    item.image_url
+                      ? `<img src="${escapeHTML(item.image_url)}" alt="${escapeHTML(item.name)}">`
+                      : icon("chef-hat", 26)
+                  }
+                </div>
+                <div class="menu-copy">
+                  <div>
+                    <span class="category-name">${escapeHTML(item.menu_categories?.name || "Menu")}</span>
+                    <h3>${escapeHTML(item.name)}</h3>
+                    <p>${escapeHTML(item.description || "Preparado por la casa.")}</p>
+                  </div>
+                  <div class="menu-actions">
+                    <strong>${money(item.price)}</strong>
+                    <button class="icon-btn" data-add-item="${escapeHTML(item.id)}" aria-label="Agregar ${escapeHTML(item.name)}">
+                      ${icon("plus", 18)}
+                    </button>
+                  </div>
+                </div>
+              </article>
+            `
+          )
+          .join("")
+      : emptyState("Menu en preparacion", "Agrega productos desde el administrador.", "book-open");
+    refreshIcons();
+  };
+
+  const renderAccount = () => {
+    const box = $("#clientAccount");
+    if (!box) return;
+    const subtotal = state.sessionItems.reduce(
+      (sum, item) => sum + Number(item.unit_price || 0) * Number(item.quantity || 0),
+      0
+    );
+    box.innerHTML = state.sessionItems.length
+      ? `
+        <div class="account-head">
+          <span>${icon("receipt", 18)} Cuenta actual</span>
+          <strong>${money(Math.max(0,subtotal-sessionPaid(state.currentSession)))}</strong>
+        </div>
+        ${subtotal > 0 && sessionPaid(state.currentSession) ? `<div class="account-abono-summary">Consumo: ${money(subtotal)} · Abonos: −${money(sessionPaid(state.currentSession))}</div>` : ""}
+        <div class="account-list">
+          ${[...state.sessionItems]
+            .sort((left, right) => new Date(right.created_at || right.updated_at || 0) - new Date(left.created_at || left.updated_at || 0))
+            .map(
+              (item) => `
+                <div class="account-row">
+                  <span>${Number(item.quantity || 0)}x ${escapeHTML(item.item_name)}</span>
+                  <strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong>
+                </div>
+              `
+            )
+            .join("")}
+        </div>
+        ${abonoRowsHtml(state.currentSession)}
+      `
+      : emptyState("Sin consumos", "Agrega platos o llama al mesero para ordenar.", "shopping-bag");
+    refreshIcons();
+  };
+
+  const receiptItemsForSession = (session) =>
+    (session?.session_items || [])
+      .filter((item) => item.status !== "cancelled")
+      .map((item) => ({
+        name: item.item_name,
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        total: Number(item.unit_price || 0) * Number(item.quantity || 0),
+        registered_by: item.created_by_user?.full_name || "Cliente",
+        registered_at: item.created_at || null
+      }));
+
+  const buildBillMessage = (session) => {
+    const items = receiptItemsForSession(session);
+    const totals = sessionTotals(session);
+    return JSON.stringify({
+      kind: "bill_receipt",
+      sent_at: new Date().toISOString(),
+      business_name: state.business?.business_name || "Tu restaurante",
+      table: tableLabel(session?.restaurant_tables),
+      payer_name: session?.payer_name || "",
+      waiter_name: session?.assigned_waiter?.full_name || "",
+      currency: DEFAULT_CURRENCY,
+      items,
+      subtotal: totals.subtotal,
+      discount: totals.discount,
+      tax: totals.tax,
+      service_fee: totals.serviceFee,
+      consumption_total: totals.total,
+      paid: totals.total > 0 ? sessionPaid(session) : 0,
+      payments: totals.total > 0 ? sessionPayments(session) : [],
+      total: sessionBalance(session)
+    });
+  };
+
+  // BCA still waits for its backend; cap each attempt and reconcile stable-ID inserts.
+  const retryPosMutation = async (factory) => {
+    const query = factory();
+    if (query.abortSignal) query.abortSignal(AbortSignal.timeout(5000));
+    const result = await dbQuiet(query, null);
+    if (result) return result;
+    const payloads = Array.isArray(query.body) ? query.body : [query.body];
+    if (query.method !== "POST" || !payloads.length || payloads.some(row => !row?.id)) return null;
+    const entity = query.url?.pathname.split("/").pop();
+    if (!["table_sessions", "session_items"].includes(entity)) return null;
+    const read = state.sb.from(entity).select("*").in("id", payloads.map(row => row.id));
+    if (read.abortSignal) read.abortSignal(AbortSignal.timeout(5000));
+    const rows = await dbQuiet(read, null);
+    if (!Array.isArray(rows) || rows.length !== payloads.length || !payloads.every(payload => rows.some(row =>
+      row.id === payload.id && Object.keys(payload).every(key => payload[key] == null ? row[key] == null : String(row[key]) === String(payload[key]))))) return null;
+    return Array.isArray(query.body) ? rows : rows[0];
+  };
+
+  const retryQuiet = async (factory, attempts = 4) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const result = await dbQuiet(factory(), null);
+      if (result) return result;
+      if (attempt < attempts - 1) {
+        const delay = Math.min(5000, 350 * Math.pow(2, attempt));
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
+      }
+    }
+    return null;
+  };
+
+  const parseBillMessage = (message) => {
+    try {
+      const parsed = JSON.parse(message || "{}");
+      if (parsed.kind === "bill_receipt") return parsed;
+    } catch (error) {
+      return null;
+    }
+    return null;
+  };
+
+  const billTicketId = (request) => `#${String(request?.id || "").slice(0, 8).toUpperCase()}`;
+
+  const billRequestStorageKey = (tableId = state.currentTable?.id) =>
+    tableId ? `don_pieros_pending_bills_${tableId}` : "";
+
+  const pendingBillIds = () => {
+    try {
+      const stored = JSON.parse(sessionStorage.getItem(billRequestStorageKey()) || "[]");
+      return Array.isArray(stored) ? stored : [];
+    } catch (error) {
+      return [];
+    }
+  };
+
+  const rememberPendingBill = (requestOrId) => {
+    const id = typeof requestOrId === "string" ? requestOrId : requestOrId?.id;
+    if (!id || !state.currentTable?.id) return;
+    state.billReceiptArmedIds.add(id);
+    try {
+      sessionStorage.setItem(billRequestStorageKey(), JSON.stringify([...new Set([...pendingBillIds(), id])].slice(-20)));
+    } catch (error) { /* almacenamiento opcional */ }
+  };
+
+  const clearPendingBill = (requestId) => {
+    state.billReceiptArmedIds.delete(requestId);
+    try {
+      const remaining = pendingBillIds().filter((id) => id !== requestId);
+      sessionStorage.setItem(billRequestStorageKey(), JSON.stringify(remaining));
+    } catch (error) { /* almacenamiento opcional */ }
+  };
+
+  const BILL_RESOLUTION_OUTBOX_KEY = "don_pieros_bill_resolution_outbox_v1";
+
+  const readBillResolutionOutbox = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(BILL_RESOLUTION_OUTBOX_KEY) || "[]");
+      return Array.isArray(stored) ? stored : [];
+    } catch (error) {
+      return [];
+    }
+  };
+
+  const writeBillResolutionOutbox = (items) => {
+    try { localStorage.setItem(BILL_RESOLUTION_OUTBOX_KEY, JSON.stringify(items.slice(-100))); } catch (error) { /* cache opcional */ }
+  };
+
+  const queueBillResolution = (requestId) => {
+    if (!requestId || !state.currentTable?.id) return;
+    const outbox = readBillResolutionOutbox();
+    if (!outbox.some((item) => item.request_id === requestId)) {
+      outbox.push({
+        request_id: requestId,
+        table_id: state.currentTable.id,
+        table_access_code: tableCode(state.currentTable),
+        attempts: 0,
+        next_attempt_at: 0
+      });
+      writeBillResolutionOutbox(outbox);
+    }
+    window.clearTimeout(state.billResolutionTimer);
+    state.billResolutionTimer = window.setTimeout(flushBillResolutionOutbox, 40);
+  };
+
+  const flushBillResolutionOutbox = async () => {
+    if (state.billResolutionBusy || !navigator.onLine || !state.sb) return;
+    const now = Date.now();
+    const outbox = readBillResolutionOutbox();
+    const event = outbox.find((item) => Number(item.next_attempt_at || 0) <= now);
+    if (!event) {
+      const next = outbox.reduce((time, item) => Math.min(time, Number(item.next_attempt_at || Infinity)), Infinity);
+      if (Number.isFinite(next)) state.billResolutionTimer = window.setTimeout(flushBillResolutionOutbox, Math.max(250, next - now));
+      return;
+    }
+    state.billResolutionBusy = true;
+    try {
+      let saved = await dbQuiet(state.sb.rpc("resolveBill", event), null);
+      if (!saved && state.currentTable?.id === event.table_id) {
+        saved = await dbQuiet(
+          state.sb.from("service_requests")
+            .update({ status: "resolved", resolved_at: new Date().toISOString() })
+            .eq("id", event.request_id)
+            .select("*")
+            .single(),
+          null
+        );
+      }
+      const nextOutbox = readBillResolutionOutbox().flatMap((item) => {
+        if (item.request_id !== event.request_id) return [item];
+        if (saved) return [];
+        const attempts = Number(item.attempts || 0) + 1;
+        return [{ ...item, attempts, next_attempt_at: Date.now() + Math.min(30000, 500 * Math.pow(2, Math.min(attempts, 6))) }];
+      });
+      writeBillResolutionOutbox(nextOutbox);
+    } finally {
+      state.billResolutionBusy = false;
+      if (readBillResolutionOutbox().length) {
+        window.clearTimeout(state.billResolutionTimer);
+        state.billResolutionTimer = window.setTimeout(flushBillResolutionOutbox, 350);
+      }
+    }
+  };
+
+  const billDateParts = (value) => {
+    const date = new Date(value || Date.now());
+    return {
+      date: date.toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" }).replace(".", ""),
+      time: date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    };
+  };
+
+  const getReceiptAudio = () => {
+    if (!state.receiptAudio) state.receiptAudio = new Audio(RECEIPT_SOUND);
+    state.receiptAudio.volume = 1;
+    return state.receiptAudio;
+  };
+
+  const rememberPendingReceiptSound = (id, receipt) => {
+    state.pendingReceiptSounds ||= new Map();
+    state.pendingReceiptSounds.set(`${receipt ? "bill" : "message"}:${id}`, { id, receipt });
+  };
+
+  const playReceiptSound = async (requestId) => {
+    if (!requestId || localStorage.getItem(`receipt_sound_${requestId}`) === "1") return;
+    const audio = getReceiptAudio();
+    try {
+      await audio.play();
+      localStorage.setItem(`receipt_sound_${requestId}`, "1");
+      state.pendingReceiptSounds?.delete(`bill:${requestId}`);
+    } catch (error) {
+      state.receiptSoundPrimed = false;
+      rememberPendingReceiptSound(requestId, true);
+    }
+  };
+
+  const playClientChatReceipt = async (messageId) => {
+    if (!messageId) return;
+    const audio = getReceiptAudio();
+    try {
+      await audio.play();
+      state.pendingReceiptSounds?.delete(`message:${messageId}`);
+    } catch (error) {
+      state.receiptSoundPrimed = false;
+      rememberPendingReceiptSound(messageId, false);
+    }
+  };
+
+  const playAdminChatReceipt = async () => {
+    if (!state.soundEnabled) return;
+    const audio = getReceiptAudio();
+    try {
+      await audio.play();
+    } catch (error) {
+      // El navegador puede bloquear el sonido hasta que se active la alarma.
+      state.receiptSoundPrimed = false;
+    }
+  };
+
+  const primeReceiptAudio = () => {
+    if (state.receiptSoundPrimed || state.receiptSoundPriming) return;
+    state.receiptSoundPriming = true;
+    const audio = getReceiptAudio();
+    audio.volume = 0;
+    audio.play().then(async () => {
+      audio.pause(); audio.currentTime = 0; audio.volume = 1;
+      state.receiptSoundPrimed = true;
+      for (const pending of [...(state.pendingReceiptSounds?.values() || [])]) {
+        if (pending.receipt) await playReceiptSound(pending.id);
+        else await playClientChatReceipt(pending.id);
+      }
+    }).catch(() => { audio.volume = 1; }).finally(() => { state.receiptSoundPriming = false; });
+  };
+
+  const armClientSoundsOnFirstGesture = () => {
+    ["pointerdown", "pointerup", "touchstart", "touchend", "click", "keydown"].forEach(eventName => {
+      document.addEventListener(eventName, primeReceiptAudio, { passive: true, capture: true });
+    });
+  };
+
+  const latestClientBill = () =>
+    state.clientRequests.find(
+      (request) =>
+        request.request_type === "bill" &&
+        request.status === "acknowledged" &&
+        state.billReceiptArmedIds.has(request.id) &&
+        pendingBillIds().includes(request.id) &&
+        request.session_id === state.currentSession?.id &&
+        request.table_id === state.currentTable?.id &&
+        parseBillMessage(request.message)
+    );
+
+  const renderBillChat = () => {
+    if (state.page === "client" && !clientBillEnabled()) { syncClientBillVisibility(); return; }
+    const box = $("#billChat");
+    if (!box) return;
+    if (box.classList.contains("is-closing")) return;
+    const isLocalBill = state.localBillOpen && Boolean(state.currentTable);
+    const localSession = (isLocalBill || state.currentSession) ? {
+      ...(state.currentSession || {}),
+      id: state.currentSession?.id || state.currentTable.id,
+      restaurant_tables: state.currentTable,
+      session_items: state.sessionItems
+    } : null;
+    const request = isLocalBill
+      ? {
+          id: localSession.id,
+          status: "current",
+          created_at: new Date().toISOString(),
+          table_id: state.currentTable.id,
+          session_id: state.currentSession?.id || null
+        }
+      : latestClientBill();
+    const storedBill = parseBillMessage(request?.message);
+    const liveBill = localSession ? parseBillMessage(buildBillMessage(localSession)) : null;
+    const bill = isLocalBill ? liveBill
+      : storedBill && liveBill && request?.session_id === state.currentSession?.id
+        ? { ...storedBill, ...liveBill, sent_at: storedBill.sent_at || liveBill.sent_at,
+            payer_name: liveBill.payer_name || storedBill.payer_name, waiter_name: liveBill.waiter_name || storedBill.waiter_name }
+        : storedBill;
+    if (!request || !bill) {
+      document.body.classList.remove("receipt-open");
+      box.hidden = true;
+      box.innerHTML = "";
+      return;
+    }
+    if (!isLocalBill) playReceiptSound(request.id);
+    const sent = billDateParts(bill.sent_at || request.acknowledged_at || request.created_at);
+    box.hidden = false;
+    box.classList.remove("is-closing");
+    document.body.classList.add("receipt-open");
+    box.innerHTML = `
+      <div class="client-receipt-overlay" role="presentation">
+        <article class="client-receipt-ticket" role="dialog" aria-modal="true" aria-label="${isLocalBill ? "Cuenta actual" : "Cuenta enviada"}" data-receipt-id="${escapeHTML(request.id)}">
+          <div class="receipt-confetti">✓</div>
+          <h2>${isLocalBill ? "Tu cuenta" : request.status === "resolved" ? "Gracias" : "Cuenta lista"}</h2>
+          <p>${isLocalBill ? `Consumos registrados actualmente en ${escapeHTML(tableLabel(state.currentTable))}.` : request.status === "resolved" ? "Tu confirmación fue recibida correctamente." : "El equipo envió el recibo de tu mesa."}</p>
+
+          <div class="receipt-dash"></div>
+
+          <div class="receipt-ticket-grid">
+            <div>
+              <span>Ticket ID</span>
+              <strong>${billTicketId(request)}</strong>
+            </div>
+            <div>
+              <span>${Number(bill.paid || 0) ? "Saldo pendiente" : "Total"}</span>
+              <strong>${money(bill.total, bill.currency)}</strong>
+            </div>
+            <div>
+              <span>Fecha y hora</span>
+              <strong>${sent.date} | ${sent.time}</strong>
+            </div>
+            <div>
+              <span>Mesa</span>
+              <strong>${escapeHTML(bill.table || tableLabel(state.currentTable))}</strong>
+            </div>
+            ${bill.payer_name ? `<div><span>Responsable</span><strong>${escapeHTML(bill.payer_name)}</strong></div>` : ""}
+            ${bill.waiter_name ? `<div><span>Atendido por</span><strong>${escapeHTML(bill.waiter_name)}</strong></div>` : ""}
+          </div>
+
+          <div class="receipt-method">
+            <span>${icon("beer", 20)}</span>
+            <div>
+              <strong>${escapeHTML(bill.business_name || "Restaurante")}</strong>
+              <small>${isLocalBill ? "Cuenta actualizada de tu mesa" : "Recibo enviado por administración"}</small>
+            </div>
+          </div>
+
+          <div class="receipt-lines client-ticket-lines">
+            ${(bill.items || [])
+              .map(
+                (item) => `
+                  <div>
+                    <span>${Number(item.quantity || 0)}x ${escapeHTML(item.name)}</span>
+                    <strong>${money(item.total, bill.currency)}</strong>
+                  </div>
+                `
+              )
+              .join("") || "<small>Sin consumos registrados</small>"}
+            <div><span>Subtotal</span><strong>${money(bill.subtotal, bill.currency)}</strong></div>
+            ${Number(bill.discount || 0) ? `<div><span>Descuento</span><strong>-${money(bill.discount, bill.currency)}</strong></div>` : ""}
+            ${Number(bill.tax || 0) ? `<div><span>Impuestos</span><strong>${money(bill.tax, bill.currency)}</strong></div>` : ""}
+            ${Number(bill.service_fee || 0) ? `<div><span>Servicio</span><strong>${money(bill.service_fee, bill.currency)}</strong></div>` : ""}
+          </div>
+
+          ${Number(bill.paid || 0) ? `<div class="account-abono-summary">Consumo: ${money(bill.consumption_total ?? bill.subtotal, bill.currency)} · Abonos: −${money(bill.paid, bill.currency)}</div>${abonoRowsHtml({ session_payments: bill.payments || [] })}` : ""}
+
+          <div class="receipt-barcode" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span><span></span>
+            <small>${String(request.id || "").replace(/-/g, "").slice(0, 22)}</small>
+          </div>
+
+          ${
+            isLocalBill
+              ? `<button class="primary thank-btn receipt-thanks" data-close-bill>${icon("x", 16)} Cerrar</button>`
+              : request.status === "resolved"
+                ? `<div class="receipt-confirmed">${icon("badge-check", 17)} Confirmado</div>`
+                : `<button class="primary thank-btn receipt-thanks" data-thank-bill="${request.id}">${icon("send", 16)} Gracias</button>`
+          }
+          <div class="receipt-cutout-row" aria-hidden="true"></div>
+        </article>
+      </div>
+    `;
+    refreshIcons();
+    window.requestAnimationFrame(() => box.querySelector(".receipt-thanks")?.focus({ preventScroll: true }));
+  };
+
+  const showCurrentBill = async () => {
+    if (!clientBillEnabled()) return;
+    if (!state.currentTable) {
+      toast("Selecciona tu mesa primero.", "error");
+      return;
+    }
+    const button = document.querySelector('[data-request="bill"]');
+    button?.classList.add("is-pending");
+    try {
+      await hydrateSelectedTable(state.currentTable.id);
+      if (!sessionHasConsumption({ ...state.currentSession, session_items: state.sessionItems })) {
+        toast("Esta mesa está libre y no tiene consumo pendiente.");
+        return;
+      }
+      state.localBillOpen = true;
+      renderBillChat();
+      void refreshClientPosData();
+    } finally {
+      button?.classList.remove("is-pending");
+    }
+  };
+
+  const normalizeText = (text = "") =>
+    String(text)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const escapeHTML = (value = "") =>
+    String(value).replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;"
+    }[char]));
+
+  const readLocalJson = (key, fallback) => {
+    if (checkoutBatch?.has(key)) return checkoutBatch.get(key);
+    try {
+      const revision = Number(localStorage.getItem(localRevisionKey(key)) || 0);
+      if (durableMemory.has(key) && Number(durableMemoryRevision.get(key) || 0) > revision) return durableMemory.get(key);
+      const raw = localStorage.getItem(key);
+      if (raw !== null) return JSON.parse(raw) ?? fallback;
+    } catch (_) { /* Fall back to the durable record hydrated at startup. */ }
+    return durableMemory.has(key) ? durableMemory.get(key) : fallback;
+  };
+
+  function applyBusinessTipSettings() {
+    if (!state.business || !Object.prototype.hasOwnProperty.call(state.business, "tips_enabled")) return false;
+    const percentage = Math.min(100, Math.max(1, Number(state.business.tip_percentage || 10)));
+    state.tipSettings = {
+      enabled: state.business.tips_enabled === true,
+      percentage: Number.isFinite(percentage) ? percentage : 10
+    };
+    try { localStorage.setItem(TIP_SETTINGS_STORAGE_KEY, JSON.stringify(state.tipSettings)); } catch (error) { /* Respaldo local opcional. */ }
+    return true;
+  }
+
+  const productAcronym = (name = "") => normalizeText(name)
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase();
+
+  const loadInventoryStore = () => {
+    state.completeMovementRevision = readLocalJson("donpieros_complete_movement_history_v1", {})?.revision;
+    const stored = readLocalJson(INVENTORY_STORAGE_KEY, {});
+    state.inventoryMeta = stored && typeof stored === "object" && !Array.isArray(stored) ? stored : {};
+    const invoices = readLocalJson(INVOICE_STORAGE_KEY, []);
+    state.invoiceHistory = Array.isArray(invoices) ? invoices : [];
+    const movements = readLocalJson(INVENTORY_MOVEMENTS_STORAGE_KEY, []);
+    if (!state.movementLoaded) state.inventoryMovements = Array.isArray(movements) ? movements : [];
+    const credentialPins = readLocalJson(USER_CREDENTIALS_CACHE_KEY, {});
+    state.userCredentialPins = credentialPins && typeof credentialPins === "object" && !Array.isArray(credentialPins) ? credentialPins : {};
+    const storedTips = readLocalJson(TIP_SETTINGS_STORAGE_KEY, {});
+    const storedPercentage = Math.min(100, Math.max(1, Number(storedTips?.percentage || 10)));
+    state.tipSettings = { enabled: storedTips?.enabled === true, percentage: Number.isFinite(storedPercentage) ? storedPercentage : 10 };
+    applyBusinessTipSettings();
+    state.tipSplitPeople = Math.min(100, Math.max(1, Number(localStorage.getItem(TIP_SPLIT_STORAGE_KEY) || 1)));
+    if (state.page === "admin") loadWalkInDrafts();
+  };
+
+  const isLocalWalkInSession = (session) => session?.sale_channel === "walk_in"
+    && (session?.local_only === true || String(session?.id || "").startsWith("walk-in-"));
+
+  function loadWalkInDrafts() {
+    const stored = readLocalJson(WALK_IN_DRAFTS_STORAGE_KEY, []);
+    const drafts = (Array.isArray(stored) ? stored : [])
+      .filter((session) => isLocalWalkInSession(session) && session.status === "open")
+      .map((session) => ({ ...session, local_only: true, restaurant_tables: null, session_items: Array.isArray(session.session_items) ? session.session_items : [] }));
+    state.sessions = [
+      ...drafts,
+      ...state.sessions.filter((session) => !isLocalWalkInSession(session))
+    ];
+    drafts.forEach((session) => state.optimisticSessionStates.set(session.id, {
+      mode: "upsert",
+      localOnly: true,
+      session
+    }));
+  }
+
+  const persistWalkInDrafts = () => {
+    const drafts = state.sessions
+      .filter((session) => isLocalWalkInSession(session) && session.status === "open")
+      .slice(0, 50);
+    try {
+      localStorage.setItem(WALK_IN_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+    } catch (error) {
+      toast("No se pudo conservar el borrador de la venta individual en este equipo.", "error", "walk-in-storage-failed");
+    }
+  };
+
+  const persistInventoryStore = () => persistDurableJson(INVENTORY_STORAGE_KEY, state.inventoryMeta);
+
+  const persistInvoiceHistory = () => persistDurableJson(INVOICE_STORAGE_KEY, state.invoiceHistory);
+
+  const persistTipSettings = () => {
+    try {
+      localStorage.setItem(TIP_SETTINGS_STORAGE_KEY, JSON.stringify(state.tipSettings));
+    } catch (error) {
+      toast("No se pudo guardar la configuración de propina en este equipo.", "error", "tip-settings-storage-failed");
+    }
+  };
+
+  const persistInventoryMovements = () => persistDurableJson(INVENTORY_MOVEMENTS_STORAGE_KEY, state.inventoryMovements);
+
+  const recordLocalInventoryMovement = ({ eventId = uid(), item, delta, before, after, type, reference = "", occurredAt = new Date().toISOString(), user = "", unitCost, sessionId = "", deferPersist = false, knownMovementIds = null }) => {
+    const numericDelta = Number(delta || 0);
+    const isNewProduct = String(type || "").toUpperCase() === "NUEVO_PRODUCTO";
+    if (!item || !Number.isFinite(numericDelta) || (!numericDelta && !isNewProduct) || (knownMovementIds ? knownMovementIds.has(eventId) : state.inventoryMovements.some((movement) => movement.movementId === eventId))) return null;
+    const movement = {
+      movementId: eventId,
+      sessionId,
+      productId: item.id,
+      code: inventoryFor(item).code,
+      product: item.name || "Producto",
+      type: type || (delta > 0 ? "ENTRADA_MANUAL" : "SALIDA_MANUAL"),
+      delta: numericDelta,
+      before: Number(before || 0),
+      after: Number(after || 0),
+      unitCost: Number.isFinite(Number(unitCost)) ? Math.max(0, Number(unitCost)) : inventoryFor(item).costPrice,
+      reference,
+      date: occurredAt,
+      user: user || state.currentUser?.full_name || state.currentUser?.username || "Sistema"
+    };
+    state.inventoryMovements.push(movement);
+    knownMovementIds?.add(eventId);
+    if (!deferPersist) persistInventoryMovements();
+    if (!deferPersist && state.activeAdminSection === "movements") renderInventoryMovements();
+    return movement;
+  };
+
+  const inventoryFor = (item) => {
+    const meta = state.inventoryMeta[item?.id] || {};
+    return {
+      code: String(meta.code || productAcronym(item?.name)).toUpperCase(),
+      costPrice: Math.max(0, Number(meta.costPrice || 0)),
+      stock: Math.max(0, Number(meta.stock || 0)),
+      minStock: Math.max(0, Number(meta.minStock ?? 5)),
+      unit: meta.unit || "unidad",
+      updatedAt: meta.updatedAt || "",
+      version: meta.version == null ? null : Math.max(0, Number(meta.version || 0))
+    };
+  };
+
+  const inventoryStatus = (item) => {
+    const inventory = inventoryFor(item);
+    if (inventory.stock <= 0) return "out";
+    if (inventory.stock <= inventory.minStock) return "low";
+    return "ok";
+  };
+
+  const productSearchScore = (item, rawQuery = "") => {
+    const query = normalizeText(rawQuery).replace(/\s+/g, "");
+    if (!query) return Number(item.sort_order || 0);
+    const name = normalizeText(item.name || "");
+    const compactName = name.replace(/\s+/g, "");
+    const words = name.split(" ").filter(Boolean);
+    const code = normalizeText(inventoryFor(item).code).replace(/\s+/g, "");
+    const acronym = normalizeText(productAcronym(item.name)).replace(/\s+/g, "");
+    if (query === code || query === acronym) return 0;
+    if (compactName === query) return 1;
+    if (code.startsWith(query) || acronym.startsWith(query)) return 5;
+    if (words.some((word) => word.startsWith(query))) return 10;
+    if (compactName.startsWith(query)) return 15;
+    if (compactName.includes(query) || code.includes(query)) return 25;
+    const initialsMatch = query.split("").every((letter, index) => acronym[index] === letter);
+    return initialsMatch ? 30 : Number.POSITIVE_INFINITY;
+  };
+
+  const matchingProducts = (query = "", { includeUnavailable = false } = {}) => state.items
+    .filter((item) => includeUnavailable || item.is_available !== false)
+    .map((item) => ({ item, score: productSearchScore(item, query) }))
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((left, right) => left.score - right.score || String(left.item.name).localeCompare(String(right.item.name), "es"))
+    .map((entry) => entry.item);
+
+  const paymentMethodLabel = (method) => ({
+    cash: "Efectivo",
+    transfer: "Transferencia",
+    breb: "Bre-B",
+    card: "Tarjeta",
+    mixed: "Pago mixto"
+  }[method] || "Pago");
+
+  const CASH_DRAWER_SETTINGS_KEY = "don-pieros-cash-drawer-printer-v1";
+  const cashDrawerRequest = async (method, body) => {
+    const response = await fetch(location.hostname === "127.0.0.1" ? "/__tienda_napoles_drawer" : "http://127.0.0.1:8766/__tienda_napoles_drawer", {
+      method,
+      cache: "no-store",
+      signal: AbortSignal.timeout(2500),
+      headers: { "X-Tienda-Napoles-Drawer": "1", ...(body ? { "Content-Type": "application/json" } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "No se pudo conectar con el controlador local de caja.");
+    return data;
+  };
+
+  const configureCashDrawer = async () => {
+    const dialog = $("#cashDrawerDialog");
+    const form = $("#cashDrawerForm");
+    if (!dialog || !form) return;
+    try {
+      const data = await cashDrawerRequest("GET");
+      const printers = Array.isArray(data.printers) ? data.printers : [];
+      if (!printers.length) throw new Error("Windows no tiene impresoras instaladas. Instala primero el controlador de la impresora POS.");
+      const printerField = form.elements.namedItem("printer");
+      const pinField = form.elements.namedItem("pin");
+      printerField.innerHTML = printers.map((name) => `<option value="${escapeHTML(name)}">${escapeHTML(name)}</option>`).join("");
+      const saved = JSON.parse(localStorage.getItem(CASH_DRAWER_SETTINGS_KEY) || "null");
+      if (saved && printers.includes(saved.printer)) printerField.value = saved.printer;
+      pinField.value = saved?.pin === 1 ? "1" : "0";
+      dialog.showModal();
+    } catch (error) {
+      toast(String(error.message || error), "error", "cash-drawer-setup-failed");
+    }
+  };
+
+  const sendCashDrawerPulse = async (settings, save = false) => {
+    const button = $("#openCashDrawer");
+    if (button) button.disabled = true;
+    try {
+      await cashDrawerRequest("POST", settings);
+      if (save) {
+        localStorage.setItem(CASH_DRAWER_SETTINGS_KEY, JSON.stringify(settings));
+        drawerReceiverData = null; drawerReceiverCheckedAt = 0; drawerReceiverRegisteredAt = 0;
+        void pollDrawerReceiver();
+      }
+      $("#cashDrawerDialog")?.close();
+      toast("Orden de apertura enviada a la impresora POS.", "ok", "cash-drawer-opened");
+      return true;
+    } catch (error) {
+      toast(String(error.message || error), "error", "cash-drawer-failed");
+      return false;
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+
+  const openLocalCashDrawer = async () => {
+    const bridge = window.posCashDrawer;
+    if (bridge && typeof bridge.open === "function") {
+      try {
+        const result = await bridge.open({ source: "don-pieros-pos", requestedAt: new Date().toISOString() });
+        if (result === false) throw new Error("El controlador rechazó la apertura.");
+        toast("Orden de apertura enviada al cajón.", "ok", "cash-drawer-opened");
+        return true;
+      } catch (error) {
+        toast(String(error?.message || "No se pudo abrir el cajón."), "error", "cash-drawer-failed");
+        return false;
+      }
+    }
+    let settings = null;
+    try { settings = JSON.parse(localStorage.getItem(CASH_DRAWER_SETTINGS_KEY) || "null"); } catch (_) {}
+    if (!settings?.printer) {
+      await configureCashDrawer();
+      return false;
+    }
+    const opened = await sendCashDrawerPulse(settings);
+    if (!opened) await configureCashDrawer();
+    return opened;
+  };
+
+  const canHostCashDrawer = () => !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+  let drawerSignalChannel = null;
+  let drawerSignalReady = null;
+  let drawerSignalAuth = "";
+  const prepareDrawerSignal = () => {
+    if (!state.authToken || !state.sb?.channel) return Promise.resolve(false);
+    if (drawerSignalAuth !== state.authToken) {
+      if (drawerSignalChannel) void state.sb.removeChannel?.(drawerSignalChannel);
+      drawerSignalChannel = null; drawerSignalReady = null; drawerSignalAuth = state.authToken;
+    }
+    if (drawerSignalReady) return drawerSignalReady;
+    drawerSignalReady = new Promise((resolve) => {
+      const timer = window.setTimeout(() => resolve(false), 2000);
+      drawerSignalChannel = state.sb.channel("don-pieros-drawer-control", { config: { broadcast: { self: false } } })
+        .on("broadcast", { event: "wake" }, () => void pollDrawerReceiver({ urgent: true }))
+        .on("broadcast", { event: "open" }, () => void pollDrawerReceiver({ urgent: true }))
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") { window.clearTimeout(timer); resolve(true); }
+          else if (["CHANNEL_ERROR","TIMED_OUT","CLOSED"].includes(status)) { window.clearTimeout(timer); resolve(false); }
+        });
+    });
+    return drawerSignalReady;
+  };
+  let drawerReceiverBusy = false;
+  let drawerReceiverData = null;
+  let drawerReceiverCheckedAt = 0;
+  let drawerReceiverRegisteredAt = 0;
+  let drawerReceiverRegisteredAuth = "";
+  let drawerReceiverQueued = false;
+  let drawerOpenBusy = false;
+  const pollDrawerReceiver = async ({ urgent = false } = {}) => {
+    if (!canHostCashDrawer() || !state.authToken || !state.currentUser || !navigator.onLine || !state.posFeatures?.remote_drawer) return;
+    if (drawerReceiverBusy) { if (urgent) drawerReceiverQueued = true; return; }
+    drawerReceiverBusy = true;
+    void prepareDrawerSignal();
+    const receiverAuth = state.authToken;
+    try {
+      const local = drawerReceiverData?.deviceId && Date.now() - drawerReceiverCheckedAt < 30000
+        ? drawerReceiverData : await cashDrawerRequest("GET");
+      if (!local.settings) { try { local.settings = JSON.parse(localStorage.getItem(CASH_DRAWER_SETTINGS_KEY) || "null"); } catch (_) {} }
+      if (!local.deviceId || !local.secret || !local.settings?.printer || !local.printers?.includes(local.settings.printer)) { drawerReceiverData = null; return; }
+      if (local !== drawerReceiverData) { drawerReceiverCheckedAt = Date.now(); drawerReceiverRegisteredAt = 0; }
+      drawerReceiverData = local;
+      localStorage.setItem(CASH_DRAWER_SETTINGS_KEY, JSON.stringify(local.settings));
+      if (drawerReceiverRegisteredAuth !== receiverAuth || Date.now() - drawerReceiverRegisteredAt >= 4000) {
+        const registered = await dbQuiet(state.sb.rpc("register_pos_drawer", { auth_token: receiverAuth,
+          p_device_id: local.deviceId, p_secret: local.secret, p_label: local.settings.printer }), null);
+        if (!registered?.ok) return;
+        drawerReceiverRegisteredAuth = receiverAuth;
+        drawerReceiverRegisteredAt = Date.now();
+      }
+      const next = await dbQuiet(state.sb.rpc("claim_pos_drawer", { auth_token: state.authToken, p_device_id: local.deviceId, p_secret: local.secret }), null);
+      if (!next?.command?.id) return;
+      if (state.authToken !== receiverAuth || !state.currentUser) return;
+      let accepted = false, error = "";
+      try { await cashDrawerRequest("POST", local.settings); accepted = true; }
+      catch (failure) { error = String(failure.message || "No se pudo enviar la orden a la impresora POS."); }
+      // A claimed command is never pulsed again, even if its acknowledgment is interrupted.
+      await retryQuiet(() => state.sb.rpc("finish_pos_drawer", { auth_token: state.authToken, p_device_id: local.deviceId,
+        p_secret: local.secret, p_command_id: next.command.id, p_accepted: accepted, p_error: error }), 3);
+      if (!accepted) toast(error, "error", "drawer-command:" + next.command.id);
+    } catch (_) { drawerReceiverData = null; }
+    finally {
+      drawerReceiverBusy = false;
+      if (drawerReceiverQueued) { drawerReceiverQueued = false; void pollDrawerReceiver({ urgent: true }); }
+    }
+  };
+  const openRemoteCashDrawer = async () => {
+    const id = uid();
+    const signal = prepareDrawerSignal();
+    const notifyReceiver = (event, payload = {}) => {
+      void signal.then((ready) => ready && drawerSignalChannel?.send({ type: "broadcast", event, payload })).catch(() => {});
+    };
+    notifyReceiver("wake");
+    let data = null, error = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      ({ data, error } = await state.sb.rpc("request_pos_drawer", { auth_token: state.authToken, p_command_id: id, p_device_id: drawerReceiverData?.deviceId || null }));
+      if (data?.command?.id || !/No hay una caja conectada/i.test(error?.message || "")) break;
+      if (!await signal) break;
+      notifyReceiver("wake");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (error || !data?.command?.id) throw new Error(error?.message || "No hay una caja conectada.");
+    notifyReceiver("open", { deviceId: data.command.device_id });
+    toast("Orden enviada a " + (data.device || "la caja conectada") + ". Esperando confirmación…", "ok", "remote-drawer:" + id);
+    for (let attempt = 0; attempt < 16; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, attempt < 5 ? 200 : 650));
+      const result = await dbQuiet(state.sb.rpc("get_pos_drawer_command", { auth_token: state.authToken, p_command_id: id }), null);
+      if (result?.command?.status === "accepted") { toast("El PC de la caja confirmó la orden de apertura.", "ok", "remote-drawer:" + id); return true; }
+      if (["failed","expired"].includes(result?.command?.status)) throw new Error(result.command.error || "La caja no pudo recibir la orden. Comprueba el PC conectado.");
+    }
+    throw new Error("No se recibió confirmación de la caja. Comprueba el PC conectado antes de volver a intentarlo.");
+  };
+  const startDrawerReceiver = () => {
+    window.clearInterval(state.drawerReceiverTimer);
+    state.drawerReceiverTimer = window.setInterval(() => void pollDrawerReceiver(), 1500);
+    void prepareDrawerSignal();
+    void pollDrawerReceiver();
+  };
+
+  const openCashDrawer = async ({ localOnly = false } = {}) => {
+    if (!state.currentUser || !state.authToken || drawerOpenBusy) return false;
+    drawerOpenBusy = true;
+    try {
+      if (window.posCashDrawer?.open) return await openLocalCashDrawer();
+      if (drawerReceiverData?.settings) return await sendCashDrawerPulse(drawerReceiverData.settings);
+      let savedSettings = null;
+      try { savedSettings = JSON.parse(localStorage.getItem(CASH_DRAWER_SETTINGS_KEY) || "null"); } catch (_) {}
+      if (canHostCashDrawer() && savedSettings?.printer) return await sendCashDrawerPulse(savedSettings);
+      let local = null;
+      if (canHostCashDrawer()) { try { local = await cashDrawerRequest("GET"); } catch (_) {} }
+      if (local && !local.settings) { try { local.settings = JSON.parse(localStorage.getItem(CASH_DRAWER_SETTINGS_KEY) || "null"); } catch (_) {} }
+      if (local?.settings?.printer && local.printers?.includes(local.settings.printer)) {
+        drawerReceiverData = local;
+        return await sendCashDrawerPulse(local.settings);
+      }
+      if (localOnly) return false;
+      if (state.posFeatures?.remote_drawer && navigator.onLine) {
+        try { return await openRemoteCashDrawer(); }
+        catch (error) { if (!local?.printers?.length) { toast(error.message, "error", "remote-drawer-failed"); return false; } }
+      }
+      if (local?.printers?.length) { await configureCashDrawer(); return false; }
+      toast("No hay una caja conectada. Abre el offline en el PC de la caja, configura la impresora e inicia sesión.", "error", "cash-drawer-unavailable");
+      return false;
+    } finally { drawerOpenBusy = false; }
+  };
+
+  const getAppsScriptUrl = () => String(window.DON_PIEROS_CONFIG?.appsScriptUrl || APPS_SCRIPT_CONFIG.webAppUrl || "").trim();
+
+  const isAppsScriptConfigured = () => /^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec(?:[?#].*)?$/i.test(getAppsScriptUrl());
+
+  const setInventorySyncStatus = (message, tone = "local", iconName = "hard-drive") => {
+    const badge = $("#inventorySyncStatus");
+    if (!badge) return;
+    badge.className = `inventory-sync-status is-${tone}`;
+    badge.innerHTML = `${icon(iconName, 15)} ${escapeHTML(friendlyMessage(message))}`;
+    refreshIcons();
+  };
+
+  const readAppsScriptOutbox = () => {
+    const stored = readLocalJson(APPS_SCRIPT_OUTBOX_KEY, []);
+    return (Array.isArray(stored) ? stored : []).map((job) => ({
+      ...job,
+      operationId: job.operationId || job.id,
+      destination: "apps-script",
+      status: job.status || "pending",
+      attempts: Number(job.attempts || 0),
+      nextAttemptAt: Number(job.nextAttemptAt || 0),
+      lastError: job.lastError || ""
+    }));
+  };
+
+  const mergeOutboxJobs = (stored, incoming, removed = {}) => {
+    const jobs = new Map((Array.isArray(stored) ? stored : []).filter(job => !removed[job.id]).map(job => [job.id, job]));
+    for (const job of incoming) {
+      if (removed[job.id]) continue;
+      const previous = jobs.get(job.id);
+      if (!previous || String(job.updatedAt || job.createdAt || "") >= String(previous.updatedAt || previous.createdAt || "")) jobs.set(job.id, job);
+    }
+    return [...jobs.values()];
+  };
+
+  const readRemovedOutboxJobs = (store, ids, done) => {
+    const unique = [...new Set(ids)], removed = {};
+    let remaining = unique.length;
+    if (!remaining) { done(removed); return; }
+    unique.forEach(id => {
+      const request = store.get(`${APPS_SCRIPT_OUTBOX_KEY}__removed:${id}`);
+      request.onsuccess = () => {
+        if (request.result?.value) removed[id] = true;
+        if (--remaining === 0) done(removed);
+      };
+    });
+  };
+
+  // Read/merge/write occurs in a single IDB transaction across all tabs.
+  // Removal markers prevent stale tabs from resurrecting acknowledged jobs.
+  const persistAppsScriptOutbox = (incoming, removedIds = []) => {
+    if (checkoutBatch) return persistDurableJson(APPS_SCRIPT_OUTBOX_KEY, incoming);
+    const snapshot = JSON.parse(JSON.stringify(incoming));
+    // Publish the local projection synchronously so a second click sees the
+    // operation queued by the first click before its IndexedDB commit finishes.
+    const projected = mergeOutboxJobs(readLocalJson(APPS_SCRIPT_OUTBOX_KEY, []), snapshot,
+      Object.fromEntries(removedIds.map(id => [id, true])));
+    const projectionRevision = nextDurableRevision();
+    durableMemory.set(APPS_SCRIPT_OUTBOX_KEY, projected);
+    durableMemoryRevision.set(APPS_SCRIPT_OUTBOX_KEY, projectionRevision);
+    const save = async () => {
+      const database = await openLocalDataDb();
+      if (!database) { durableIndexedStatus.set(APPS_SCRIPT_OUTBOX_KEY, false); return false; }
+      let revision = nextDurableRevision();
+      let jobs;
+      const saved = await new Promise(resolve => {
+        try {
+          const tx = database.transaction(LOCAL_DATA_STORE, "readwrite"), store = tx.objectStore(LOCAL_DATA_STORE);
+          const current = store.get(APPS_SCRIPT_OUTBOX_KEY);
+          current.onsuccess = () => {
+            revision = Math.max(revision, Number(current.result?.revision || 0) + 1);
+            readRemovedOutboxJobs(store, [...snapshot.map(job => job.id), ...removedIds], removed => {
+              removedIds.forEach(id => {
+                removed[id] = true;
+                store.put({ key: `${APPS_SCRIPT_OUTBOX_KEY}__removed:${id}`, value: true, revision });
+              });
+              jobs = mergeOutboxJobs(current.result?.value || readLocalJson(APPS_SCRIPT_OUTBOX_KEY, []), snapshot, removed);
+              store.put({ key: APPS_SCRIPT_OUTBOX_KEY, value: jobs, revision });
+            });
+          };
+          tx.oncomplete = () => resolve(true);
+          tx.onabort = tx.onerror = () => resolve(false);
+        } catch (_) { resolve(false); }
+      });
+      durableIndexedStatus.set(APPS_SCRIPT_OUTBOX_KEY, saved);
+      if (saved && Number(durableMemoryRevision.get(APPS_SCRIPT_OUTBOX_KEY) || 0) <= projectionRevision) {
+        durableMemory.set(APPS_SCRIPT_OUTBOX_KEY, jobs);
+        durableMemoryRevision.set(APPS_SCRIPT_OUTBOX_KEY, revision);
+        try {
+          localStorage.setItem(APPS_SCRIPT_OUTBOX_KEY, JSON.stringify(jobs));
+          localStorage.setItem(localRevisionKey(APPS_SCRIPT_OUTBOX_KEY), String(revision));
+        } catch (_) { /* IDB is committed and remains authoritative. */ }
+      }
+      return saved;
+    };
+    durableWriteChain = durableWriteChain.catch(() => undefined).then(save);
+    return durableWriteChain;
+  };
+
+  const writeAppsScriptOutbox = (jobs, removedIds = []) => persistAppsScriptOutbox(jobs, removedIds);
+
+  const initRemoteStorage = () => {
+    if (!isAppsScriptConfigured()) {
+      setInventorySyncStatus("Configura el respaldo remoto", "local", "hard-drive");
+      return false;
+    }
+    setInventorySyncStatus("Conectando respaldo remoto", "pending", "refresh-cw");
+    void bootstrapRemoteStorage();
+    return true;
+  };
+
+  const appsScriptRequest = async (action, payload = {}, timeoutMs = APPS_SCRIPT_TIMEOUT_MS, operationId = "") => {
+    if (!isAppsScriptConfigured()) throw new Error("El respaldo remoto no esta configurado.");
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(getAppsScriptUrl(), {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({
+          action,
+          authToken: state.authToken,
+          origin: location.origin,
+          payload
+        }),
+        redirect: "follow",
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error(`El respaldo remoto respondio con estado ${response.status}.`);
+      const text = await response.text();
+      let result;
+      try { result = JSON.parse(text); } catch (error) {
+        throw transientAppsScriptError("La respuesta del respaldo remoto todavía se está confirmando.");
+      }
+      const batchRequest = action === "sync_sales_batch";
+      const acceptResult = async (action, payload, result, operationId) => {
+        if (result?.ok && ["upsert_inventory", "sync_inventory", "adjust_inventory", "set_inventory_stock", "delete_inventory", "clear_inventory", "update_inventory_movement_cost", "record_sale", "edit_sale", "delete_sale", "clear_inventory_movements", "clear_income"].includes(action)) {
+          window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
+        }
+        if (!batchRequest && result?.ok && action !== "status" && !action.startsWith("get_")) notifyAdminPeers({
+          reports: true,
+          inventory: ["upsert_inventory", "sync_inventory", "adjust_inventory", "set_inventory_stock",
+            "delete_inventory", "clear_inventory", "record_sale", "edit_sale", "delete_sale"].includes(action)
+        });
+        if (typeof queueConfirmedReportChange === "function") await queueConfirmedReportChange(action, payload, result, operationId);
+
+      };
+      if (action === "sync_sales_batch" && Array.isArray(result?.results)) {
+        const inventorySnapshot = result.results.findLast(receipt => Array.isArray(receipt.result?.items))?.result.items;
+        const lastConfirmed = result.results.findLast(receipt => receipt.result?.ok);
+        const inventorySettledOperations = result.results.filter(receipt => receipt.result?.ok).map(receipt => receipt.operationId);
+        reportChangeBatchDepth += 1;
+        try {
+          for (const receipt of result.results) {
+            const operation = payload.operations.find(entry => entry.operationId === receipt.operationId);
+            if (operation) await acceptResult(operation.action, operation.payload,
+              inventorySnapshot ? { ...receipt.result, items: receipt === lastConfirmed ? inventorySnapshot : [], reportBatchInventory: receipt === lastConfirmed, reportInventorySettled: receipt === lastConfirmed ? inventorySettledOperations : [] } : receipt.result,
+              operation.operationId);
+          }
+        } finally {
+          reportChangeBatchDepth -= 1;
+          if (!reportChangeBatchDepth) void flushConfirmedReportChanges();
+        }
+        if (result.results.some(entry => entry.result?.ok)) {
+          if (typeof notifyAdminPeers === "function") notifyAdminPeers({ reports: true, inventory: true });
+          if (typeof appsScriptStatusAt !== "undefined") { appsScriptStatusAt = 0; appsScriptStatusEpoch += 1; appsScriptStatusPromise = null; }
+          window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
+        }
+      } else await acceptResult(action, payload, result, operationId);
+      return result || { ok: false, error: "Respuesta vacia del respaldo remoto." };
+    } catch (error) {
+      if (error?.name === "AbortError") throw transientAppsScriptError("La sincronización remota continúa en segundo plano.");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const inventoryPayload = (item) => {
+    const inventory = inventoryFor(item);
+    return {
+      productId: item.id,
+      code: inventory.code,
+      name: item.name || "",
+      category: item.menu_categories?.name || "",
+      unit: inventory.unit,
+      costPrice: inventory.costPrice,
+      salePrice: Number(item.price || 0),
+      stock: inventory.stock,
+      minStock: inventory.minStock,
+      isAvailable: item.is_available !== false,
+      updatedAt: inventory.updatedAt || new Date().toISOString()
+    };
+  };
+
+  const pendingInventoryIds = (settledJobId = "") => {
+    const pendingIds = new Set();
+    readAppsScriptOutbox().forEach((job) => {
+      if (job.id === settledJobId || ["failed", "conflict"].includes(job.status)) return;
+      if (job.payload?.item?.productId) pendingIds.add(String(job.payload.item.productId));
+      if (job.payload?.adjustment?.productId) pendingIds.add(String(job.payload.adjustment.productId));
+      if (job.payload?.productId) pendingIds.add(String(job.payload.productId));
+      (job.payload?.productIds || []).forEach(id => pendingIds.add(String(id)));
+      (job.payload?.items || []).forEach((item) => { if (item.productId) pendingIds.add(String(item.productId)); });
+      (job.payload?.invoice?.items || []).forEach((line) => { if (line.menu_item_id) pendingIds.add(String(line.menu_item_id)); });
+    });
+    return pendingIds;
+  };
+
+  const applyRemoteInventoryItems = (items = [], baseline = null, settledJobId = "") => {
+    if (!Array.isArray(items)) return;
+    const itemById = new Map(state.items.map((item) => [item.id, item]));
+    const pendingIds = pendingInventoryIds(settledJobId);
+    let changed = false;
+    items.forEach((remote) => {
+      const item = itemById.get(remote.productId);
+      if (!item) return;
+      if (!remote.reportInventoryProjection && Object.values(state.reportMirror?.inventoryEffects || {}).some(effect => Object.prototype.hasOwnProperty.call(effect, String(remote.productId)))) return;
+      if (Number(remote.version || 0) > 0 && Number(remote.version) < Number(state.inventoryMeta[item.id]?.version || 0)) return;
+      if (pendingIds.has(String(item.id))) return;
+      if (baseline && baseline.get(item.id) !== state.inventoryMeta[item.id]?.updatedAt) return;
+      const nextMeta = {
+        code: String(remote.code || productAcronym(item.name)).toUpperCase(),
+        costPrice: Math.max(0, Number(remote.costPrice || 0)),
+        stock: Math.max(0, Number(remote.stock || 0)),
+        minStock: Math.max(0, Number(remote.minStock || 0)),
+        unit: remote.unit || "unidad",
+        updatedAt: remote.updatedAt || new Date().toISOString(),
+        version: Number(remote.version || 0)
+      };
+      if (!remote.reportInventoryProjection && state.reportMirror?.inventoryBase?.[item.id]) {
+        state.reportMirror.inventoryBase[item.id] = { ...remote };
+        void saveReportSyncValue(reportMirrorKey(), state.reportMirror);
+      }
+      if (JSON.stringify(state.inventoryMeta[item.id] || {}) !== JSON.stringify(nextMeta)) {
+        state.inventoryMeta[item.id] = nextMeta;
+        changed = true;
+      }
+      if (typeof remote.name === "string" && remote.name.trim() && item.name !== remote.name) {
+        item.name = remote.name;
+        changed = true;
+      }
+      if (typeof remote.category === "string" && String(item.menu_categories?.name || "") !== remote.category) {
+        const category = state.categories?.find(entry => entry.name === remote.category);
+        if (category) item.category_id = category.id;
+        item.menu_categories = remote.category ? { ...(item.menu_categories || {}), name: remote.category } : null;
+        changed = true;
+      }
+      if (Number.isFinite(Number(remote.salePrice)) && item.price !== Math.max(0, Number(remote.salePrice))) {
+        item.price = Math.max(0, Number(remote.salePrice));
+        changed = true;
+      }
+      if (typeof remote.isAvailable === "boolean" && item.is_available !== remote.isAvailable) {
+        item.is_available = remote.isAvailable;
+        changed = true;
+      }
+    });
+    if (!changed) return;
+    persistInventoryStore();
+    persistBootstrapCache();
+    if (state.activeAdminSection === "inventory") renderInventory();
+    if (state.activeAdminSection === "menu") renderMenuManager();
+    if ($("#consumptionDialog")?.open) renderConsumptionProductOptions($("#consumptionProductSearch")?.value || "");
+  };
+
+  const enqueueAppsScriptJob = (action, payload, dedupeKey = uid()) => {
+    if (["record_sale", "edit_sale", "delete_sale"].includes(action) && typeof saleInventoryDeltas === "function") payload = { ...payload, inventoryDeltas: saleInventoryDeltas(action, payload) };
+    const jobs = readAppsScriptOutbox();
+    const job = {
+      id: uid(),
+      action,
+      payload,
+      dedupeKey,
+      attempts: 0,
+      createdAt: new Date().toISOString()
+    };
+    const stockWrite = ["upsert_inventory", "set_inventory_stock"].includes(action);
+    const existingIndex = stockWrite
+      ? jobs.findLastIndex(entry => entry.dedupeKey === dedupeKey && entry.status !== "syncing" && !Number(entry.attempts || 0))
+      : jobs.findIndex(entry => entry.dedupeKey === dedupeKey);
+    if (existingIndex >= 0 && ["upsert_inventory", "set_inventory_stock", "update_inventory_movement_cost"].includes(action)) {
+      if (stockWrite) {
+        const previous = action === "upsert_inventory" ? jobs[existingIndex].payload.item : jobs[existingIndex].payload;
+        const next = action === "upsert_inventory" ? job.payload.item : job.payload;
+        if (previous?.inventoryDelta !== undefined || next?.inventoryDelta !== undefined) {
+          const combined = { ...next, inventoryDelta: Number(previous?.inventoryDelta || 0) + Number(next?.inventoryDelta || 0) };
+          job.payload = action === "upsert_inventory" ? { ...job.payload, item: combined } : combined;
+        }
+      }
+      jobs[existingIndex] = job;
+    } else if (existingIndex < 0) jobs.push(job);
+    const persisted = writeAppsScriptOutbox(jobs);
+    window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
+    if (isAppsScriptConfigured()) void flushAppsScriptOutbox();
+    else setInventorySyncStatus(`${jobs.length} cambio${jobs.length === 1 ? "" : "s"} en cola local`, "local", "hard-drive");
+    return persisted;
+  };
+
+  const isSupabaseWriteBlockingJob = (job, counts) => {
+    const hasBlockingStatus = ["pending", "syncing", "failed", "conflict"]
+      .some((status) => Number(counts[status] || 0) > 0);
+    if (!hasBlockingStatus) return false;
+    const entities = job.action === "record_sale"
+      ? ["table_sessions", "session_items", "service_requests", "menu_items", "rpc:record_session_payment", "rpc:replay_table_session_change"]
+      : ["menu_items", "menu_categories"];
+    if (!Array.isArray(counts.blockingRecords)) {
+      return entities.some((entity) => (counts.blockingEntities || []).includes(entity))
+        || !Array.isArray(counts.blockingEntities) || !counts.blockingEntities.length;
+    }
+    const sessionId = String(job.payload?.invoice?.sessionId || "");
+    const productIds = new Set((job.payload?.invoice?.items || [])
+      .map((item) => String(item.menu_item_id || "")).filter(Boolean));
+    const inventoryProductId = String(job.payload?.item?.productId || job.payload?.adjustment?.productId || job.payload?.productId || "");
+    if (inventoryProductId) productIds.add(inventoryProductId);
+    return counts.blockingRecords.some((record) => {
+      if (!entities.includes(record.entity)) return false;
+      if (job.action !== "record_sale" && (record.entity !== "menu_items" || !inventoryProductId)) return true;
+      if (["table_sessions", "session_items", "service_requests", "rpc:record_session_payment", "rpc:replay_table_session_change"].includes(record.entity)) {
+        const ids = record.entity === "table_sessions" ? record.recordIds : record.sessionIds;
+        return !sessionId || !Array.isArray(ids) || !ids.length || ids.map(String).includes(sessionId);
+      }
+      if (record.entity === "menu_items") {
+        return !Array.isArray(record.recordIds) || !record.recordIds.length
+          || record.recordIds.some((id) => productIds.has(String(id)));
+      }
+      return true;
+    });
+  };
+
+  const nextReadyAppsScriptJob = (jobs, counts, force, now = Date.now()) => {
+    let skippedSale = false;
+    for (const [index, job] of jobs.entries()) {
+      if (job.status !== "pending" || (!force && Number(job.nextAttemptAt || 0) > now)) continue;
+      const previous = jobs.slice(0, index);
+      const saleId = entry => String(entry.payload?.invoice?.id || entry.payload?.saleId || "");
+      if (previous.some(entry => entry.action === "clear_income"
+        || (job.action !== "record_sale" && !["synced"].includes(entry.status))
+        || (saleId(job) && saleId(entry) === saleId(job)))) continue;
+      if (state.localSupabaseWrites > 0 || isSupabaseWriteBlockingJob(job, counts)) {
+        if (job.action !== "record_sale") return null;
+        skippedSale = true;
+        continue;
+      }
+      if (skippedSale && job.action !== "record_sale") return null;
+      return job;
+    }
+    return null;
+  };
+
+  const isPendingInventoryJob = (job) => ["pending", "syncing"].includes(job.status)
+    && ["upsert_inventory", "set_inventory_stock", "adjust_inventory", "delete_inventory",
+      "sync_inventory", "clear_inventory", "record_sale", "edit_sale", "delete_sale"].includes(job.action);
+
+  const pendingInventoryProductIds = (jobs = readAppsScriptOutbox()) => {
+    const ids = new Set();
+    jobs.filter(isPendingInventoryJob).forEach((job) => {
+      if (["upsert_inventory", "set_inventory_stock", "delete_inventory"].includes(job.action)) {
+        ids.add(String(job.payload?.item?.productId || job.payload?.productId || ""));
+      }
+      if (job.action === "adjust_inventory") ids.add(String(job.payload?.adjustment?.productId || ""));
+      if (job.action === "sync_inventory") (job.payload?.items || []).forEach((item) => ids.add(String(item.productId || "")));
+      if (["record_sale", "edit_sale"].includes(job.action)) (job.payload?.invoice?.items || []).forEach((line) => ids.add(String(line.menu_item_id || "")));
+      (job.payload?.productIds || []).forEach(id => ids.add(String(id)));
+    });
+    ids.delete("");
+    return ids;
+  };
+
+  const getOfflineSyncStatus = async () => ({ pending: 0, syncing: 0, failed: 0, conflict: 0, blockingRecords: [] });
+  const recordSyncEvent = () => {};
+  const updateGlobalSyncStatus = async () => {};
+  const recoverInterruptedAppsScriptJobs = async (retryFailed = false) => {
+    const jobs = readAppsScriptOutbox();
+    let changed = false;
+    const recovered = jobs.map((job) => {
+      if (job.status !== "syncing" && !(retryFailed && ["failed", "conflict"].includes(job.status))) return job;
+      changed = true;
+      return { ...job, status: "pending", nextAttemptAt: 0, updatedAt: new Date().toISOString() };
+    });
+    if (changed) await writeAppsScriptOutbox(recovered);
+  };
+
+  const appsScriptRetryDelay = (attempts) => {
+    const base = Math.min(60_000, 1000 * Math.pow(2, Math.min(Number(attempts || 0), 6)));
+    return Math.round(base * (.75 + Math.random() * .5));
+  };
+
+  const scheduleAppsScriptRetry = (delayMs = 30_000) => {
+    clearTimeout(state.appsScriptOutboxTimer);
+    state.appsScriptOutboxTimer = window.setTimeout(flushAppsScriptOutbox, Math.max(500, delayMs));
+  };
+
+  const runAppsScriptOutbox = async (force = false) => {
+    if (state.appsScriptOutboxBusy || !isAppsScriptConfigured()) return false;
+    await flushDurableWrites();
+    if (state.appsScriptOutboxBusy) return false;
+    state.appsScriptOutboxBusy = true;
+    let activeJob = null;
+    let batchSupported = true;
+    let confirmedInventoryWrite = false;
+    try {
+      let jobs = readAppsScriptOutbox();
+      while (true) {
+        const supabaseStatus = await getOfflineSyncStatus();
+        const now = Date.now();
+        const job = nextReadyAppsScriptJob(jobs, supabaseStatus, force, now);
+        if (!job) {
+          if (jobs.some((entry) => entry.status === "pending" && (force || Number(entry.nextAttemptAt || 0) <= now))) {
+            scheduleAppsScriptRetry(2500);
+            return false;
+          }
+          break;
+        }
+        // Older Offline versions queued an absolute balance without sending it.
+        // Upgrade only untouched jobs; never change an operation already tried.
+        if (job.action === "set_inventory_stock" && !Number(job.attempts || 0) && !job.lastAttemptAt
+          && job.dedupeKey === `inventory-stock:${job.payload?.productId}`
+          && Number.isFinite(Number(job.payload?.inventoryDelta))) {
+          const previous = job.payload, delta = Number(previous.inventoryDelta);
+          job.action = delta ? "adjust_inventory" : "get_inventory";
+          job.payload = delta ? { adjustment: { eventId: `units:${previous.productId}:${job.operationId || job.id}`,
+            productId: previous.productId, delta, movementType: delta > 0 ? "ENTRADA_UNIDADES" : "SALIDA_UNIDADES",
+            reference: "Botón + Unidades", occurredAt: previous.updatedAt || job.createdAt } } : {};
+        }
+        activeJob = job;
+        const startedAt = performance.now();
+        job.status = "syncing";
+        job.updatedAt = new Date().toISOString();
+        await writeAppsScriptOutbox(jobs);
+        const pendingCount = jobs.filter((entry) => ["pending", "syncing"].includes(entry.status)).length;
+        setInventorySyncStatus(`Sincronizando ${pendingCount} pendiente${pendingCount === 1 ? "" : "s"}`, "pending", "refresh-cw");
+        recordSyncEvent("sending", job);
+        let result;
+        {
+          const batch = [job];
+          const salesActions = ["record_sale", "edit_sale", "delete_sale"];
+          let remaining = jobs.filter(entry => entry.id !== job.id);
+          while (batchSupported && salesActions.includes(job.action) && batch.length < 20) {
+            const next = nextReadyAppsScriptJob(remaining, supabaseStatus, force, now);
+            if (!next || !salesActions.includes(next.action)) break;
+            batch.push(next);
+            remaining = remaining.filter(entry => entry.id !== next.id);
+          }
+          if (batch.length > 1) {
+            const reply = await appsScriptRequest("sync_sales_batch", { operations: batch.map(entry => ({
+              operationId: entry.operationId || entry.id, action: entry.action, payload: entry.payload
+            })) }, Math.max(APPS_SCRIPT_TIMEOUT_MS, 90000));
+            if (/accion no permitida:\s*sync_sales_batch/i.test(normalizeText(reply?.error || ""))) {
+              // Compatibility until Code.gs has been deployed.
+              batchSupported = false;
+              result = await appsScriptRequest(job.action, job.payload, APPS_SCRIPT_TIMEOUT_MS, job.operationId || job.id);
+            } else {
+              const receipts = new Map((reply?.results || []).map(entry => [entry.operationId, entry.result]));
+              const confirmed = batch.filter(entry => receipts.get(entry.operationId || entry.id)?.ok === true);
+              const confirmedIds = new Set(confirmed.map(entry => entry.id));
+              const rejected = [];
+              await flushDurableWrites();
+              const latest = readAppsScriptOutbox();
+              const remainingJobs = latest.filter(entry => !confirmedIds.has(entry.id)).map(entry => {
+                const receipt = receipts.get(entry.operationId || entry.id);
+                if (!receipt || receipt.ok === true) return { ...entry, ...(entry.id === job.id ? { status: "pending" } : {}) };
+                const permanent = receipt.retryable === false;
+                const updated = { ...entry, status: permanent ? (receipt.conflict ? "conflict" : "failed") : "pending",
+                  attempts: Number(entry.attempts || 0) + 1, updatedAt: new Date().toISOString(),
+                  lastError: receipt.error || "Lote pendiente de confirmación.",
+                  nextAttemptAt: permanent ? 0 : Date.now() + appsScriptRetryDelay(Number(entry.attempts || 0) + 1) };
+                rejected.push(updated);
+                return updated;
+              });
+              // One durable commit removes exactly the IDs confirmed in this
+              // envelope and merges operations queued while it was in flight.
+              if (!await writeAppsScriptOutbox(remainingJobs, [...confirmedIds])) throw new Error("No se pudo proteger la confirmación local del lote.");
+              const pendingIds = new Set(remainingJobs.flatMap(entry => [
+                entry.payload?.item?.productId, entry.payload?.adjustment?.productId, entry.payload?.productId,
+                ...(entry.payload?.invoice?.items || []).map(line => line.menu_item_id), ...(entry.payload?.productIds || [])
+              ]).filter(Boolean).map(String));
+              const lastReceipt = (reply?.results || []).at(-1)?.result;
+              const freshItems = (lastReceipt?.items || []).filter(item => !pendingIds.has(String(item.productId)));
+              if (freshItems.length) applyRemoteInventoryItems(freshItems);
+              confirmed.forEach(entry => recordSyncEvent("confirmed", { ...entry, status: "synced", durationMs: performance.now() - startedAt }));
+              for (const entry of rejected) {
+                recordSyncEvent(entry.status === "pending" ? "retry" : entry.status, { ...entry, error: entry.lastError });
+                if (entry.status !== "pending") toast(entry.lastError, "error", "inventory-job-rejected:" + entry.id);
+              }
+              activeJob = null;
+              jobs = readAppsScriptOutbox();
+              if (confirmed.length < batch.length) {
+                scheduleAppsScriptRetry(rejected.some(entry => entry.status === "pending") || !confirmed.length ? 1500 : 500);
+                return false;
+              }
+              continue;
+
+            }
+          } else result = await appsScriptRequest(job.action, job.payload, APPS_SCRIPT_TIMEOUT_MS, job.operationId || job.id);
+        }
+        await flushDurableWrites();
+        const queuedAfterRequest = readAppsScriptOutbox();
+        const pendingAfterCurrent = queuedAfterRequest.filter((entry) => entry.id !== job.id);
+        const pendingProductIds = new Set(pendingAfterCurrent.flatMap(entry => [
+          entry.payload?.item?.productId, entry.payload?.adjustment?.productId, entry.payload?.productId,
+          ...(entry.payload?.invoice?.items || []).map(line => line.menu_item_id), ...(entry.payload?.productIds || [])
+        ]).filter(Boolean).map(String));
+        const applyFreshRemoteInventory = () => {
+          const remoteItems = job.action === "upsert_inventory" && result?.item
+            ? [result.item]
+            : result?.items || (result?.item ? [result.item] : []);
+          const freshItems = remoteItems.filter((item) => !pendingProductIds.has(item.productId));
+          if (freshItems.length) applyRemoteInventoryItems(freshItems, null, job.id);
+        };
+        if (!result?.ok) {
+          const legacyInventoryService = job.action === "adjust_inventory"
+            && /accion no permitida:\s*adjust_inventory/i.test(normalizeText(result?.error || ""));
+          if (result?.retryable === false || legacyInventoryService) {
+            if (result.item) applyFreshRemoteInventory();
+            job.status = result?.conflict ? "conflict" : "failed";
+            job.lastError = result?.error || "Operacion rechazada";
+            job.updatedAt = new Date().toISOString();
+            jobs = queuedAfterRequest.map(entry => entry.id === job.id ? job : entry);
+            await writeAppsScriptOutbox(jobs);
+            recordSyncEvent(job.status, {
+              ...job,
+              durationMs: performance.now() - startedAt,
+              error: result?.error || ""
+            });
+            toast(
+              legacyInventoryService
+                ? "Actualiza Apps Script para aceptar movimientos individuales. La operación se conserva para reintentar."
+                : (result.error || "No se pudo aplicar un movimiento de inventario."),
+              "error",
+              legacyInventoryService ? "inventory-service-update-required" : `inventory-job-rejected:${job.id}`
+            );
+            continue;
+          }
+          const currentIndex = queuedAfterRequest.findIndex((entry) => entry.id === job.id);
+          if (currentIndex < 0) {
+            jobs = queuedAfterRequest;
+            continue;
+          }
+          job.attempts = Number(job.attempts || 0) + 1;
+          job.lastError = result?.error || "El respaldo remoto no respondio";
+          job.lastAttemptAt = new Date().toISOString();
+          job.updatedAt = job.lastAttemptAt;
+          job.status = "pending";
+          job.nextAttemptAt = Date.now() + appsScriptRetryDelay(job.attempts);
+          jobs = queuedAfterRequest;
+          jobs[currentIndex] = job;
+          await writeAppsScriptOutbox(jobs);
+          recordSyncEvent("retry", { ...job, durationMs: performance.now() - startedAt, error: job.lastError });
+          setInventorySyncStatus(`${jobs.length} pendiente${jobs.length === 1 ? "" : "s"}; reintento automatico`, "local", "cloud-off");
+          scheduleAppsScriptRetry(job.nextAttemptAt - Date.now());
+          return false;
+        }
+        applyFreshRemoteInventory();
+        if (["adjust_inventory", "upsert_inventory", "sync_inventory", "set_inventory_stock", "delete_inventory", "clear_inventory"].includes(job.action)) confirmedInventoryWrite = true;
+        jobs = pendingAfterCurrent;
+        await writeAppsScriptOutbox(jobs, [job.id]);
+        recordSyncEvent("confirmed", { ...job, status: "synced", durationMs: performance.now() - startedAt });
+        activeJob = null;
+        jobs = readAppsScriptOutbox();
+      }
+      const unresolved = jobs.filter((job) => ["failed", "conflict"].includes(job.status));
+      const delayed = jobs.filter((job) => job.status === "pending");
+      if (unresolved.length) {
+        setInventorySyncStatus(`${unresolved.length} cambio${unresolved.length === 1 ? "" : "s"} requiere${unresolved.length === 1 ? "" : "n"} revisión`, "error", "triangle-alert");
+        return false;
+      }
+      if (delayed.length) {
+        const nextAt = Math.min(...delayed.map((job) => Number(job.nextAttemptAt || Date.now())));
+        scheduleAppsScriptRetry(nextAt - Date.now());
+        return false;
+      }
+      setInventorySyncStatus("Inventario sincronizado", "synced", "cloud-check");
+      return true;
+    } catch (error) {
+      if (activeJob) {
+        const jobs = readAppsScriptOutbox();
+        const index = jobs.findIndex((job) => job.id === activeJob.id);
+        if (index >= 0) {
+          const attempts = Number(activeJob.attempts || 0) + 1;
+          activeJob = {
+            ...activeJob,
+            status: "pending",
+            attempts,
+            lastAttemptAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastError: String(error?.message || error || "Error de red"),
+            nextAttemptAt: Date.now() + appsScriptRetryDelay(attempts)
+          };
+          jobs[index] = activeJob;
+          await writeAppsScriptOutbox(jobs);
+          recordSyncEvent("retry", { ...activeJob, error: activeJob.lastError });
+          scheduleAppsScriptRetry(activeJob.nextAttemptAt - Date.now());
+        }
+      }
+      setInventorySyncStatus("Sin conexion; cambios protegidos localmente", "local", "cloud-off");
+      return false;
+    } finally {
+      state.appsScriptOutboxBusy = false;
+      // Once this queue drains (or is interrupted), read the backend again.
+      // Coalesce the stock read and refresh movements even outside that section.
+      if (confirmedInventoryWrite && typeof navigator !== "undefined" && navigator.onLine) {
+        if (typeof refreshInventoryFromPeer === "function") void refreshInventoryFromPeer();
+        if (typeof loadInventoryMovements === "function") void loadInventoryMovements({ force: true });
+      }
+      void updateGlobalSyncStatus();
+    }
+  };
+
+  const flushAppsScriptOutbox = (force = false, retryFailed = false) => {
+    if (!navigator.locks?.request) return (async () => {
+      if (state.appsScriptOutboxBusy) return false;
+      await recoverInterruptedAppsScriptJobs(retryFailed);
+      return runAppsScriptOutbox(force);
+    })();
+    return navigator.locks.request("don-pieros-appscript-sync", { ifAvailable: true }, (lock) =>
+      lock ? (async () => { await recoverInterruptedAppsScriptJobs(retryFailed); return runAppsScriptOutbox(force); })() : false);
+  };
+
+  const bootstrapRemoteStorage = async () => {
+    if (!isAppsScriptConfigured() || !state.currentUser) return false;
+    if (!isBoss()) {
+      void syncInventoryWithAppsScript();
+      if (!isWaiter()) void flushAppsScriptOutbox();
+      return true;
+    }
+    setInventorySyncStatus("Preparando respaldo remoto", "pending", "refresh-cw");
+    try {
+      const result = await appsScriptRequest("bootstrap", {
+        supabaseUrl: SUPABASE_CONFIG.url,
+        supabaseAnonKey: SUPABASE_CONFIG.anonKey
+      });
+      if (!result?.ok) throw new Error(result?.error || "No fue posible inicializar el respaldo remoto.");
+      if (result.timezone && result.timezone !== state.businessTimeZone) {
+        state.businessTimeZone = result.timezone;
+        if (state.incomeRangePreset !== "custom") {
+          setIncomeRange(state.incomeRangePreset, false);
+          if (state.activeAdminSection === "income") void loadIncomeReport();
+        }
+      }
+      setInventorySyncStatus("Respaldo remoto listo", "synced", "cloud-check");
+      await syncInventoryWithAppsScript();
+      await flushAppsScriptOutbox();
+      return true;
+    } catch (error) {
+      if (isTransientAppsScriptError(error)) {
+        setInventorySyncStatus("Sincronización remota en segundo plano", "pending", "refresh-cw");
+        return false;
+      }
+      setInventorySyncStatus("Respaldo pendiente de configuracion", "error", "cloud-off");
+      toast(String(error?.message || "No fue posible preparar el respaldo remoto."), "error", "remote-bootstrap-failed");
+      return false;
+    }
+  };
+
+  let inventorySyncPromise = null;
+  const syncInventoryWithAppsScript = ({ reconcileDeletions = false } = {}) => {
+    if (!isAppsScriptConfigured() || !state.currentUser) return false;
+    if (inventorySyncPromise) return inventorySyncPromise;
+    inventorySyncPromise = (async () => {
+      const baseline = new Map(Object.entries(state.inventoryMeta).map(([id, meta]) => [id, meta?.updatedAt]));
+      try {
+        const result = await (typeof readCoherentInventorySnapshot === "function" ? readCoherentInventorySnapshot() : appsScriptRequest("get_inventory"));
+        if (!result?.ok) throw new Error(result?.error || "No se pudo consultar el inventario.");
+        if (reconcileDeletions && !Array.isArray(result.items)) throw new Error("El respaldo remoto no devolvió el inventario.");
+        if (Array.isArray(result.items) && result.items.length) {
+          applyRemoteInventoryItems(result.items, baseline);
+        }
+        if (result.everInitialized && (reconcileDeletions || !result.items?.length)) {
+          const remoteIds = new Set((result.items || []).map((item) => String(item.productId || "")).filter(Boolean));
+          const pendingIds = pendingInventoryIds();
+          let changed = false;
+          Object.keys(state.inventoryMeta).forEach((id) => {
+            if (remoteIds.has(String(id)) || pendingIds.has(String(id)) || baseline.get(id) !== state.inventoryMeta[id]?.updatedAt) return;
+            delete state.inventoryMeta[id];
+            if (state.reportMirror?.inventoryBase) delete state.reportMirror.inventoryBase[id];
+            changed = true;
+          });
+          if (changed) {
+            persistInventoryStore();
+            if (state.activeAdminSection === "inventory") renderInventory();
+          }
+        } else if (!result.items?.length) {
+          const localItems = state.items
+            .filter((item) => Object.prototype.hasOwnProperty.call(state.inventoryMeta, item.id))
+            .map(inventoryPayload);
+          if (localItems.length) enqueueAppsScriptJob("sync_inventory", { items: localItems }, "inventory:initial-sync");
+        }
+        setInventorySyncStatus("Inventario sincronizado", "synced", "cloud-check");
+        return true;
+      } catch (error) {
+        setInventorySyncStatus("Usando respaldo local", "local", "cloud-off");
+        return false;
+      }
+    })().finally(() => { inventorySyncPromise = null; });
+    return inventorySyncPromise;
+  };
+
+  let inventoryPeerRefreshPending = false;
+  let inventoryPeerRefreshPromise = null;
+  const refreshInventoryFromPeer = () => {
+    if (!navigator.onLine || !isAppsScriptConfigured() || !state.currentUser) return Promise.resolve(false);
+    inventoryPeerRefreshPending = true;
+    if (inventoryPeerRefreshPromise) return inventoryPeerRefreshPromise;
+    inventoryPeerRefreshPromise = (async () => {
+      const movementRefresh = state.activeAdminSection === "movements"
+        ? loadInventoryMovements({ background: true, force: true }) : Promise.resolve(false);
+      do {
+        inventoryPeerRefreshPending = false;
+        if (inventorySyncPromise) await inventorySyncPromise;
+        // La consulta que sigue ya incluye los avisos recibidos durante la lectura anterior.
+        inventoryPeerRefreshPending = false;
+        await syncInventoryWithAppsScript({ reconcileDeletions: true });
+      } while (inventoryPeerRefreshPending);
+      await movementRefresh;
+      return true;
+    })().finally(() => {
+      inventoryPeerRefreshPromise = null;
+      if (inventoryPeerRefreshPending) void refreshInventoryFromPeer();
+    });
+    return inventoryPeerRefreshPromise;
+  };
+
+  const queueInventoryUpsert = (item, movement = {}) => {
+    if (!item) return;
+    enqueueAppsScriptJob("upsert_inventory", {
+      item: { ...inventoryPayload(item), ...movement }
+    }, `inventory:${item.id}`);
+  };
+
+  const refreshConsumptionInventory = () => {
+    if (!navigator.onLine || !state.currentUser || !isAppsScriptConfigured()) return Promise.resolve(false);
+    return refreshInventoryFromPeer().catch(() => false);
+  };
+
+  const applyConsumptionInventoryDelta = (item, delta, context = {}) => {
+    const change = Number(delta || 0);
+    if (!item || !change || !Object.prototype.hasOwnProperty.call(state.inventoryMeta, item.id)) return null;
+    const current = inventoryFor(item);
+    const nextStock = current.stock + change;
+    if (nextStock < 0) return null;
+    state.inventoryMeta[item.id] = {
+      ...current,
+      stock: nextStock,
+      updatedAt: new Date().toISOString()
+    };
+    persistInventoryStore();
+    const eventId = context.eventId || `consumption-stock:${uid()}`;
+    recordLocalInventoryMovement({
+      eventId,
+      item,
+      delta: change,
+      before: current.stock,
+      after: nextStock,
+      sessionId: context.sessionId || "",
+      type: context.movementType || (change < 0 ? "CONSUMO_MESA" : "DEVOLUCION_CONSUMO"),
+      reference: context.reference || ""
+    });
+    enqueueAppsScriptJob("adjust_inventory", {
+      adjustment: {
+        eventId,
+        productId: item.id,
+        code: current.code,
+        name: item.name || "Producto",
+        delta: change,
+        sessionId: context.sessionId || "",
+        reference: context.reference || "",
+        movementType: context.movementType || "",
+        reversesEventId: context.reversesEventId || "",
+        occurredAt: new Date().toISOString()
+      }
+    }, `inventory-adjust:${eventId}`);
+    if (state.activeAdminSection === "inventory") renderInventory();
+    return { item, delta: change, eventId };
+  };
+
+  const includesAny = (normalized, phrases = []) =>
+    phrases.some((phrase) => normalized.includes(normalizeText(phrase)));
+
+  const assistantUnderstands = (normalized, intent) =>
+    includesAny(normalized, ASSISTANT_INTENTS[intent] || []);
+
+  const sentenceCase = (text = "") => {
+    const clean = String(text).trim().replace(/\s+/g, " ");
+    if (!clean) return "";
+    const sentence = clean.charAt(0).toUpperCase() + clean.slice(1);
+    return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+  };
+
+  const polishGuestText = (text = "") => {
+    const replacements = [
+      [/\bcoctel(es)?\b/gi, (match) => match.toLowerCase().endsWith("es") ? "cócteles" : "cóctel"],
+      [/\bcerbeza(s)?\b/gi, (match) => match.toLowerCase().endsWith("s") ? "cervezas" : "cerveza"],
+      [/\bwhiskey\b/gi, "whisky"],
+      [/\bmenu\b/gi, "menú"],
+      [/\bpor favor\b/gi, "por favor"],
+      [/\bq\b/gi, "que"],
+      [/\bxfa\b/gi, "por favor"]
+    ];
+    const polished = replacements.reduce(
+      (value, [pattern, replacement]) => value.replace(pattern, replacement),
+      String(text).trim().replace(/\s+/g, " ")
+    );
+    return sentenceCase(polished);
+  };
+
+  const assistantMenuSummary = () => {
+    const names = assistantOptions().slice(0, 6).map((item) => item.name);
+    return names.join(", ");
+  };
+
+  const findQuantityWord = (normalized) => {
+    const words = normalized.split(" ");
+    const found = words.find((word) => ASSISTANT_NUMBER_WORDS[word]);
+    return found ? ASSISTANT_NUMBER_WORDS[found] : null;
+  };
+
+  const assistantOptions = () => PIZZERIA_ASSISTANT_OPTIONS;
+
+  const findAssistantItem = (message) => {
+    const normalized = normalizeText(message);
+    let best = null;
+    assistantOptions().forEach((item) => {
+      [item.name, ...(item.aliases || [])].forEach((candidate) => {
+        const normalizedCandidate = normalizeText(candidate);
+        const words = normalizedCandidate.split(" ").filter((word) => word.length > 2);
+        const overlap = words.reduce((sum, word) => sum + (normalized.includes(word) ? 1 : 0), 0) / Math.max(words.length, 1);
+        const score = normalized.includes(normalizedCandidate) ? 1 + words.length / 100 : overlap;
+        if (score >= .6 && (!best || score > best.score)) best = { item, score };
+      });
+    });
+    return best?.item || null;
+  };
+
+  const parseAssistantOrder = (message) => {
+    const item = findAssistantItem(message);
+    if (!item) return null;
+    const normalized = normalizeText(message);
+    const numericQuantity = [...normalized.matchAll(/\b(\d+)\b/g)]
+      .map((match) => Number(match[1]))
+      .find((value) => value >= 1 && value <= 20);
+    const quantity = Math.max(1, Number(numericQuantity || findQuantityWord(normalized) || 1));
+    return { item, quantity };
+  };
+
+  const assistantSay = (role, text) => {
+    const thread = state.assistantThreads[state.assistantMode] || [];
+    const message = { id: uid(), role, text, local: true, created_at: new Date().toISOString() };
+    thread.push(message);
+    state.assistantThreads[state.assistantMode] = thread.slice(-40);
+    state.assistantMessages = state.assistantThreads[state.assistantMode];
+    renderAssistant();
+    return message;
+  };
+
+  const renderAssistant = () => {
+    const chat = $("#assistantChat");
+    const suggestions = $("#assistantSuggestions");
+    if (!chat || !suggestions) return;
+    const songMode = state.assistantMode === "song";
+    const eyebrow = $("#assistantEyebrow");
+    const title = $("#assistantTitle");
+    const modeIcon = $("#assistantModeIcon");
+    const input = $("#assistantInput");
+    const toggle = $("#songModeToggle");
+    if (eyebrow) eyebrow.textContent = songMode ? "Música para tu mesa" : "Agente pizzería";
+    if (title) title.innerHTML = `<span class="assistant-live-dot" aria-hidden="true"></span>${songMode ? "Pide una canción" : "Pide por chat"}`;
+    if (modeIcon) modeIcon.innerHTML = icon(songMode ? "music-2" : "pizza", 24);
+    if (input) input.placeholder = songMode
+      ? "Nombre exacto de la canción y artista"
+      : "Ej: Queremos una pizza hawaiana";
+    if (toggle) {
+      toggle.classList.toggle("is-active", songMode);
+      toggle.innerHTML = songMode ? `${icon("message-circle", 22)}<span>Volver al chat</span>` : `${icon("music-2", 22)}<span>Pedir canción</span>`;
+    }
+    const activeThread = (state.assistantThreads[state.assistantMode] || [])
+      .filter((message) => songMode || !state.adminChatActive || message.role !== "bot");
+    const serverMessages = !songMode ? state.chatMessages.map((message) => ({
+      id: message.id,
+      role: message.sender_type === "client" ? "user" : message.sender_type === "staff" ? "staff" : "system",
+      text: message.body,
+      created_at: activeThread.find((local) => local.id === message.id)?.created_at || message.created_at
+    })) : [];
+    const hasJoinNotice = serverMessages.some((message) => message.role === "system" && normalizeText(message.text).includes("se unio al chat"));
+    const localJoinNotice = !songMode && state.adminChatActive && state.adminChatNotice && !hasJoinNotice
+      ? [{ role: "system", text: state.adminChatNotice, local: true, created_at: new Date().toISOString() }]
+      : [];
+    const messages = [...serverMessages, ...activeThread, ...localJoinNotice]
+      .filter((message) => !message.local || !message.id || !serverMessages.some((candidate) => candidate.id === message.id))
+      .sort((left, right) => (Date.parse(left.created_at) || 0) - (Date.parse(right.created_at) || 0));
+    const visibleMessages = messages.length
+      ? messages
+      : [{
+          role: "bot",
+          text: songMode
+            ? "Escribe el nombre exacto de la canción y, si lo conoces, también el artista. Enviaremos tu solicitud al equipo."
+            : "¡Bienvenido a Don Pieros Pizza! Cuéntame qué deseas pedir o en qué podemos ayudarte. El equipo confirmará contigo los detalles."
+        }];
+    const renderSignature = JSON.stringify([state.assistantMode, visibleMessages.map((message) => [message.id, message.role, message.text])]);
+    if (renderSignature !== state.assistantRenderSignature) {
+      state.assistantRenderSignature = renderSignature;
+      chat.innerHTML = visibleMessages
+        .map((message) => `<div class="assistant-message ${message.role}">${message.role === "staff" ? `<small>Administrador</small>` : ""}${escapeHTML(message.text)}</div>`)
+        .join("");
+      chat.scrollTop = chat.scrollHeight;
+    }
+    if (songMode) {
+      suggestions.innerHTML = `<span class="assistant-song-hint">${icon("music", 16)} Ejemplo: Nombre de la canción — Artista</span>`;
+    } else {
+      const suggestionTexts = ["Quiero una pizza", "Quiero una gaseosa", "Llamar al mesero"];
+      suggestions.innerHTML = suggestionTexts
+        .map((text) => `<button type="button" class="chip" data-assistant-suggest="${escapeHTML(text)}">${escapeHTML(text)}</button>`)
+        .join("");
+    }
+    refreshIcons();
+  };
+
+  const activateSongRequestMode = () => {
+    state.assistantMode = state.assistantMode === "song" ? "bar" : "song";
+    if (state.assistantMode === "song" && !state.assistantThreads.song.length) state.assistantThreads.song = [{ role: "bot", text: "Escribe el nombre exacto de la canción y el artista para solicitarla.", local: true }];
+    state.assistantMessages = state.assistantThreads[state.assistantMode];
+    renderAssistant();
+    $(".assistant-panel")?.scrollIntoView({ block: "center", behavior: "auto" });
+    window.requestAnimationFrame(() => $("#assistantInput")?.focus({ preventScroll: true }));
+  };
+
+  const prettyDateTime = (value) => (prettyDateTime.formatter ||= new Intl.DateTimeFormat("es-CO", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  })).format(new Date(value || Date.now())).replace(".", "");
+
+  const REQUEST_OUTBOX_KEY = "don_pieros_request_outbox_v2";
+
+  const readRequestOutbox = () => {
+    try {
+      const value = JSON.parse(localStorage.getItem(REQUEST_OUTBOX_KEY) || "[]");
+      const stored = Array.isArray(value) ? value : [];
+      const merged = new Map([...state.requestOutboxMemory, ...stored].map((item) => [item.request_id, item]));
+      return Array.from(merged.values()).filter((item) => item.request_type !== "bill");
+    } catch (error) {
+      return state.requestOutboxMemory.filter((item) => item.request_type !== "bill");
+    }
+  };
+
+  const writeRequestOutbox = (items) => {
+    state.requestOutboxMemory = items.slice(-5000);
+    try {
+      localStorage.setItem(REQUEST_OUTBOX_KEY, JSON.stringify(state.requestOutboxMemory));
+    } catch (error) {
+      // La UI permanece operativa; el intento en memoria sigue ejecutandose.
+    }
+  };
+
+  const queueServiceRequest = (event) => {
+    const outbox = readRequestOutbox();
+    if (!outbox.some((item) => item.request_id === event.request_id)) {
+      outbox.push({ ...event, attempts: 0, next_attempt_at: 0 });
+      writeRequestOutbox(outbox);
+    }
+    window.clearTimeout(state.requestOutboxTimer);
+    void flushRequestOutbox();
+  };
+
+  const signalRequestArrival = async (attempt = 0, requestIds = []) => {
+    // El aviso HTTP no depende de que el WebSocket del navegador esté conectado.
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(`${SUPABASE_CONFIG.url}/realtime/v1/api/broadcast`, {
+        method: "POST", cache: "no-store", signal: controller.signal,
+        headers: { apikey: SUPABASE_CONFIG.anonKey, Authorization: `Bearer ${SUPABASE_CONFIG.anonKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ topic: "admin", event: "refresh", payload: {}, private: false }, { topic: "admin", event: "request-arrived", payload: { requestIds }, private: false }] })
+      });
+      if (!response.ok) throw new Error("Aviso pendiente");
+    } catch (_) {
+      if (attempt < 3) window.setTimeout(() => void signalRequestArrival(attempt + 1, requestIds), 1000 * (attempt + 1));
+      // La consulta periódica del admin también recupera las solicitudes ya guardadas.
+    } finally { window.clearTimeout(timeout); }
+  };
+
+  const requestSessionReads = new Map();
+  const prepareRequestSession = event => {
+    const key = String(event.table_id) + ":" + event.table_access_code;
+    if (requestSessionReads.has(key)) return requestSessionReads.get(key);
+    const reading = (async () => {
+      const headers = { apikey: SUPABASE_CONFIG.anonKey, Authorization: "Bearer " + SUPABASE_CONFIG.anonKey,
+        "x-table-id": event.table_id, "x-table-code": event.table_access_code, "Content-Type": "application/json" };
+      const readUrl = new URL("/rest/v1/table_sessions", SUPABASE_CONFIG.url);
+      readUrl.searchParams.set("select", "id,table_id,status"); readUrl.searchParams.set("table_id", "eq." + event.table_id);
+      readUrl.searchParams.set("status", "eq.open"); readUrl.searchParams.set("limit", "1");
+      const send = async (url, options = {}) => {
+        const controller = new AbortController(), timer = window.setTimeout(() => controller.abort(), 5000);
+        try { return await fetch(url, { ...options, headers: { ...headers, ...options.headers }, priority: "high", cache: "no-store", signal: controller.signal }); }
+        finally { window.clearTimeout(timer); }
+      };
+      let response = await send(readUrl.href);
+      if (!response.ok) return null;
+      let rows = await response.json(), session = Array.isArray(rows) ? rows[0] : null;
+      if (!session) {
+        // Solo una solicitud explícita crea el borrador; escanear o consultar sigue siendo de lectura.
+        response = await send(new URL("/rest/v1/table_sessions", SUPABASE_CONFIG.url).href, { method: "POST",
+          headers: { Prefer: "return=representation" }, body: JSON.stringify({ id: uid(), table_id: event.table_id, status: "open" }) });
+        if (response.ok) { rows = await response.json(); session = Array.isArray(rows) ? rows[0] : rows; }
+        else if (response.status === 409) { response = await send(readUrl.href); if(response.ok) { rows=await response.json(); session=Array.isArray(rows)?rows[0]:null; } }
+      }
+      if (!session?.id || String(session.table_id) !== String(event.table_id)) return null;
+      if (state.currentTable?.id === event.table_id && (!state.currentSession || state.currentSession.status !== "open")) {
+        state.currentSession = session; state.clientSnapshotSignature = ""; subscribeClient();
+      }
+      return session;
+    })().catch(() => null).finally(() => requestSessionReads.delete(key));
+    requestSessionReads.set(key, reading); return reading;
+  };
+
+  const flushRequestOutbox = async () => {
+    if (!navigator.onLine) return;
+    state.requestOutboxInFlight ||= new Set();
+    const now = Date.now();
+    const outbox = readRequestOutbox().filter((item) => !item.staff_order_item_ids
+      || (state.page === "admin" && state.currentUser?.role === "waiter" && state.currentUser.id === item.staff_user_id));
+    const due = outbox.filter((item) => !state.requestOutboxInFlight.has(item.request_id) && Number(item.next_attempt_at || 0) <= now).slice(0, 30);
+    if (!due.length) {
+      const next = outbox.filter(item => !state.requestOutboxInFlight.has(item.request_id)).reduce((time, item) => Math.min(time, Number(item.next_attempt_at || Infinity)), Infinity);
+      if (Number.isFinite(next)) {
+        window.clearTimeout(state.requestOutboxTimer);
+        state.requestOutboxTimer = window.setTimeout(flushRequestOutbox, Math.max(250, next - now));
+      }
+      return;
+    }
+
+    due.forEach(item => state.requestOutboxInFlight.add(item.request_id));
+    state.requestOutboxBusy = true;
+    let results = null;
+    try {
+      const prepared = !due.some(event => !event.session_id) ? due : await Promise.all(due.map(async event => {
+        if (event.session_id) return event;
+        const session = await prepareRequestSession(event);
+        return session ? { ...event, session_id: session.id } : event;
+      }));
+      const clientEvents = prepared.filter((event) => !event.staff_order_item_ids);
+      const batch = clientEvents.length ? await readRealtimeData(
+        state.sb.rpc("createServiceRequestsBatch", {
+          requests: clientEvents.map(({ attempts, next_attempt_at, ...event }) => event)
+        })
+      ) : { results: [] };
+      let clientIndex = 0;
+      results = batch?.results ? await Promise.all(prepared.map((event) => event.staff_order_item_ids
+        ? readRealtimeData(state.sb.rpc("dp_notify_waiter_order", { p_request_id: event.request_id,
+            p_session_id: event.session_id, p_item_ids: event.staff_order_item_ids }))
+        : batch.results[clientIndex++])) : null;
+
+      // Compatibilidad mientras se publica el backend por lotes.
+      if (!results) {
+        results = await Promise.all(prepared.map(async (item) => {
+          if (item.staff_order_item_ids) return readRealtimeData(state.sb.rpc("dp_notify_waiter_order", {
+            p_request_id: item.request_id, p_session_id: item.session_id, p_item_ids: item.staff_order_item_ids }));
+          let result = await readRealtimeData(state.sb.rpc("createServiceRequest", item));
+          if (result?.duplicate && result.request?.id !== item.request_id) result = null;
+          if (result) return result;
+          const request = await readRealtimeData(
+            state.sb.from("service_requests").insert({
+              id: item.request_id,
+              table_id: item.table_id,
+              session_id: item.session_id || null,
+              request_type: item.request_type,
+              message: item.message || ""
+            }).select("*").single()
+          );
+          return request ? { request, duplicate: false } : null;
+        }));
+      }
+
+      const succeeded = new Set();
+      (results || []).forEach((result, index) => {
+        const queued = due[index];
+        const request = result?.request || result;
+        if (!queued || request?.id !== queued.request_id || !request.status) return;
+        succeeded.add(queued.request_id);
+        state.clientRequests = [request, ...state.clientRequests.filter((item) => item.id !== queued.request_id && item.id !== request.id)];
+        if (state.page === "admin") receiveAdminRequests([request]);
+      });
+
+      const dueIds = new Set(due.map((item) => item.request_id));
+      const nextOutbox = readRequestOutbox().flatMap((item) => {
+        if (!dueIds.has(item.request_id)) return [item];
+        if (succeeded.has(item.request_id)) return [];
+        const attempts = Number(item.attempts || 0) + 1;
+        const delay = Math.min(30000, 500 * Math.pow(2, Math.min(attempts, 6)));
+        return [{ ...item, attempts, next_attempt_at: Date.now() + delay }];
+      });
+      writeRequestOutbox(nextOutbox);
+      if (succeeded.size) {
+        const requestIds = (results || []).map((result) => (result?.request || result)?.id).filter(Boolean);
+        void signalRequestArrival(0, requestIds);
+        try { Promise.resolve(state.adminBroadcastChannel?.send?.({ type: "broadcast", event: "request-arrived", payload: { requestIds } })).catch(() => undefined); } catch (_) {}
+        try { Promise.resolve(state.adminBroadcastChannel?.send?.({ type: "broadcast", event: "refresh", payload: {} })).catch(() => undefined); } catch (_) {}
+      }
+      renderBillChat();
+    } finally {
+      due.forEach(item => state.requestOutboxInFlight.delete(item.request_id));
+      state.requestOutboxBusy = state.requestOutboxInFlight.size > 0;
+      if (readRequestOutbox().some(item => !state.requestOutboxInFlight.has(item.request_id))) {
+        window.clearTimeout(state.requestOutboxTimer);
+        state.requestOutboxTimer = window.setTimeout(flushRequestOutbox, 0);
+      }
+    }
+  };
+
+  const createServiceNotification = async (type, message) => {
+    if (!state.currentTable) return null;
+    const requestId = uid();
+    const tableId = state.currentTable.id;
+    const sessionId = state.currentSession?.id || null;
+    const request = {
+      id: requestId,
+      request_id: requestId,
+      table_id: tableId,
+      session_id: sessionId,
+      request_type: type,
+      table_access_code: tableCode(state.currentTable),
+      message,
+      status: "sending",
+      created_at: new Date().toISOString()
+    };
+    state.clientRequests = [request, ...state.clientRequests];
+    queueServiceRequest({
+      request_id: requestId,
+      table_id: tableId,
+      session_id: sessionId,
+      request_type: type,
+      table_access_code: tableCode(state.currentTable),
+      message
+    });
+    return request;
+  };
+
+  const mergeChatMessageList = (current = [], messages = []) => {
+    const merged = new Map(current.map((message) => [message.id, message]));
+    messages.forEach((message) => message?.id && merged.set(message.id, message));
+    return Array.from(merged.values()).sort((left, right) => String(left.created_at).localeCompare(String(right.created_at))).slice(-300);
+  };
+
+  const mergeChatMessages = (messages = [], sessionId = state.currentSession?.id) => {
+    if (state.page === "admin") {
+      const chat = state.adminChats.get(String(sessionId || ""));
+      if (chat) chat.messages = mergeChatMessageList(chat.messages, messages);
+      return;
+    }
+    state.chatMessages = mergeChatMessageList(state.chatMessages, messages);
+  };
+
+  const chatRpcPayload = (sessionId = state.currentSession?.id, table = state.currentTable) => ({
+    p_session_id: sessionId || null,
+    p_table_id: table?.id || null,
+    p_table_access_code: table ? tableCode(table) : "",
+    p_auth_token: state.authToken || ""
+  });
+
+  const finishClientChat = () => {
+    state.clientChatRevision = Number(state.clientChatRevision || 0) + 1;
+    state.chatMessages = [];
+    state.clientChatInitialized = true;
+    state.clientStaffMessageSoundIds.clear();
+    state.assistantThreads.bar = [{
+      role: "bot", local: true, created_at: new Date().toISOString(),
+      text: "La conversación ha finalizado. Gracias por comunicarte con nosotros. Puedes iniciar una nueva cuando lo necesites."
+    }];
+    state.assistantMessages = state.assistantThreads[state.assistantMode] || [];
+    state.adminChatActive = false;
+    state.adminChatNotice = "";
+    setPeerTyping(false, "staff");
+    renderAssistant();
+  };
+
+  const fetchChatMessages = async (sessionId, table) => {
+    if (!sessionId) return false;
+    const revision = Number(state.clientChatRevision || 0);
+    const result = await readRealtimeData(state.sb.rpc("listChatMessages", chatRpcPayload(sessionId, table)));
+    if (state.page === "client" && (String(state.currentSession?.id || "") !== String(sessionId) || state.currentTable?.id !== table?.id || revision !== Number(state.clientChatRevision || 0))) return false;
+    const messages = Array.isArray(result) ? result : result?.messages;
+    if (!Array.isArray(messages)) return false;
+    const currentMessages = state.page === "client"
+      ? state.chatMessages
+      : state.adminChats.get(String(sessionId))?.messages || [];
+    if (state.page === "client" && !messages.length && state.adminChatActive && currentMessages.some((message) => !message.pending)) {
+      finishClientChat();
+      return true;
+    }
+    const sortedMessages = mergeChatMessageList(currentMessages, messages);
+    if (state.page === "client") {
+      const currentSessionId = String(sessionId);
+      if (state.clientChatSoundSessionId !== currentSessionId) {
+        state.clientChatSoundSessionId = currentSessionId;
+        state.clientChatInitialized = false;
+        state.clientStaffMessageSoundIds.clear();
+      }
+      const newStaffMessages = sortedMessages.filter((message) => message.sender_type === "staff" && !state.clientStaffMessageSoundIds.has(message.id));
+      sortedMessages.filter((message) => message.sender_type === "staff").forEach((message) => state.clientStaffMessageSoundIds.add(message.id));
+      if (state.clientChatInitialized) {
+        newStaffMessages.forEach((message, index) => {
+          window.setTimeout(() => void playClientChatReceipt(message.id), index * 300);
+        });
+      }
+      state.clientChatInitialized = true;
+      state.chatMessages = sortedMessages;
+      const joinMessage = state.chatMessages.find((message) => message.sender_type === "system" && normalizeText(message.body).includes("se unio al chat"));
+      if (joinMessage) {
+        state.adminChatActive = true;
+        state.adminChatNotice = joinMessage.body;
+        state.assistantThreads.bar = (state.assistantThreads.bar || []).filter((message) => message.role !== "bot");
+      }
+      renderAssistant();
+    } else {
+      const chat = state.adminChats.get(String(sessionId));
+      if (!chat) return false;
+      const knownIds = new Set(currentMessages.map((message) => message.id));
+      const incomingClientMessages = sortedMessages.filter((message) => message.sender_type === "client" && !knownIds.has(message.id));
+      chat.messages = sortedMessages;
+      if (chat.initialized && incomingClientMessages.length) {
+        if (chat.minimized) {
+          if (!chat.unreadBoundaryId) chat.unreadBoundaryId = incomingClientMessages[0].id;
+          chat.unreadCount += incomingClientMessages.length;
+        }
+        void playAdminChatReceipt();
+      }
+      chat.initialized = true;
+      renderAdminChat(sessionId);
+    }
+    return true;
+  };
+
+  const chatReads = new Map();
+  const loadChatMessages = (sessionId = state.currentSession?.id, table = state.currentTable, { periodic = false } = {}) => {
+    if (!sessionId) return Promise.resolve(false);
+    const key = `${state.page}:${table?.id || ""}:${sessionId}`;
+    const scope = state.authToken || table?.qr_code || "";
+    const connected = state.page === "client" ? state.clientRealtimeConnected : state.adminChats.get(String(sessionId))?.connected;
+    const interval = connected && document.hidden ? 5000 : CHAT_SYNC_INTERVAL_MS;
+    if (periodic && state.readBudget?.due("chat:"+key,interval,scope) === false) return Promise.resolve(false);
+    const active = chatReads.get(key);
+    if (active) { if (!periodic) active.pending = true; return active.promise; }
+    state.readBudget?.touch("chat:"+key,scope);
+    const read = { pending: false, promise: null };
+    read.promise = fetchChatMessages(sessionId, table).then(result => {
+      state.readBudget?.settled("chat:"+key,result === true,scope);
+      return result;
+    }).finally(() => {
+      chatReads.delete(key);
+      const stillActive = state.page === "client"
+        ? state.currentSession?.id === sessionId && state.currentTable?.id === table?.id
+        : state.adminChats.has(String(sessionId));
+      if (read.pending && stillActive) window.setTimeout(() => void loadChatMessages(sessionId, table), 0);
+    });
+    chatReads.set(key, read);
+    return read.promise;
+  };
+
+  const persistChatMessage = async (senderType, body, { sessionId = state.currentSession?.id, table = state.currentTable, messageId: localMessageId } = {}) => {
+    const clean = String(body || "").trim().replace(/\s+/g, " ").slice(0, 600);
+    if (!clean || !sessionId) return null;
+    const messageId = localMessageId || uid();
+    const payload = {
+      ...chatRpcPayload(sessionId, table),
+      p_message_id: messageId,
+      p_sender_type: senderType,
+      p_body: clean
+    };
+    mergeChatMessages([{
+      id: messageId,
+      session_id: sessionId,
+      sender_type: senderType,
+      body: clean,
+      created_at: new Date().toISOString(),
+      pending: true
+    }], sessionId);
+    if (state.page === "client") renderAssistant();
+    else renderAdminChat(sessionId);
+    const result = await retryQuiet(() => state.sb.rpc("sendChatMessage", payload), 3);
+    const message = result?.message || result;
+    if (message?.id) {
+      if (state.page === "client") state.chatMessages = state.chatMessages.filter((entry) => entry.id !== messageId);
+      else {
+        const chat = state.adminChats.get(String(sessionId));
+        if (chat) chat.messages = chat.messages.filter((entry) => entry.id !== messageId);
+      }
+      mergeChatMessages([message], sessionId);
+      if (state.page === "client") renderAssistant();
+      else renderAdminChat(sessionId);
+      return message;
+    }
+    await loadChatMessages(sessionId, table);
+    if (state.page === "client") {
+      state.chatMessages = state.chatMessages.filter((entry) => entry.id !== messageId || !entry.pending);
+      renderAssistant();
+    } else {
+      const chat = state.adminChats.get(String(sessionId));
+      if (chat) chat.messages = chat.messages.filter((entry) => entry.id !== messageId || !entry.pending);
+      renderAdminChat(sessionId);
+    }
+    return null;
+  };
+
+  const setPeerTyping = (typing, role, sessionId = "") => {
+    const active = Boolean(typing);
+    if (state.page === "client") state.peerTyping = active;
+    const chat = state.page === "admin" ? state.adminChats.get(String(sessionId)) : null;
+    if (chat) chat.peerTyping = active;
+    const target = state.page === "client" ? $("#clientChatTyping") : chat?.element?.querySelector("[data-admin-chat-typing]");
+    if (target) {
+      target.hidden = !active;
+      const label = target.querySelector("span");
+      if (label) label.textContent = role === "staff" ? "El administrador esta escribiendo" : "El cliente esta escribiendo";
+    }
+  };
+
+  const broadcastChatEvent = (event, payload = {}, sessionId = state.currentSession?.id) => {
+    const targetSessionId = String(sessionId || "");
+    const channel = state.page === "client" ? state.clientChannel : state.adminChats.get(targetSessionId)?.channel;
+    return channel?.send?.({ type: "broadcast", event, payload: { sessionId: targetSessionId, ...payload } });
+  };
+
+  const broadcastTyping = (role, sessionId = state.currentSession?.id) => {
+    const targetSessionId = String(sessionId || "");
+    broadcastChatEvent("typing", { role, typing: true }, targetSessionId);
+    if (state.page === "admin") {
+      window.clearTimeout(state.adminChatTypingTimers.get(targetSessionId));
+      state.adminChatTypingTimers.set(targetSessionId, window.setTimeout(() => {
+        broadcastChatEvent("typing", { role, typing: false }, targetSessionId);
+        state.adminChatTypingTimers.delete(targetSessionId);
+      }, 900));
+      return;
+    }
+    window.clearTimeout(state.chatTypingTimer);
+    state.chatTypingTimer = window.setTimeout(() => broadcastChatEvent("typing", { role, typing: false }, targetSessionId), 900);
+  };
+
+  const renderAdminChat = (sessionId) => {
+    const chat = state.adminChats.get(String(sessionId || ""));
+    const target = chat?.element?.querySelector("[data-admin-chat-messages]");
+    if (!chat || !target) return;
+    target.innerHTML = chat.messages.length ? chat.messages.map((message) => `${message.id === chat.unreadBoundaryId ? `<div class="admin-chat-unread-divider"><span>Mensajes no leídos</span></div>` : ""}<div class="live-chat-message ${escapeHTML(message.sender_type || "system")}${message.pending ? " is-pending" : ""}"><span>${escapeHTML(message.sender_name || (message.sender_type === "staff" ? "Equipo" : message.sender_type === "client" ? "Cliente" : "Sistema"))}</span><p>${escapeHTML(message.body || "")}</p><small>${message.pending ? "Enviando..." : escapeHTML(prettyDateTime(message.created_at))}</small></div>`).join("") : emptyState("Conversacion nueva", "Los mensajes apareceran aqui en tiempo real.", "messages-square");
+    const unreadBadge = chat.element.querySelector("[data-admin-chat-unread]");
+    if (unreadBadge) {
+      unreadBadge.hidden = !chat.unreadCount;
+      unreadBadge.textContent = chat.unreadCount > 99 ? "99+" : String(chat.unreadCount);
+      unreadBadge.setAttribute("aria-label", `${chat.unreadCount} mensaje${chat.unreadCount === 1 ? "" : "s"} no leído${chat.unreadCount === 1 ? "" : "s"}`);
+    }
+    const dot = chat.element.querySelector("[data-admin-chat-online-dot]");
+    const presence = chat.element.querySelector("[data-admin-chat-presence]");
+    dot?.classList.toggle("is-online", Boolean(chat.connected));
+    if (presence) presence.textContent = chat.connected ? "Conectado" : "Conectando...";
+    target.scrollTop = target.scrollHeight;
+    refreshIcons();
+  };
+
+  const createAdminChatWindow = (chat) => {
+    const dock = $("#adminChatDock");
+    if (!dock) return null;
+    const windowElement = document.createElement("article");
+    windowElement.className = "admin-chat-window";
+    windowElement.dataset.adminChatWindow = chat.sessionId;
+    windowElement.innerHTML = `<header class="admin-chat-window-head" data-restore-admin-chat="${escapeHTML(chat.sessionId)}"><div><span class="eyebrow">Conversacion en vivo</span><h2><span class="admin-chat-online-dot" data-admin-chat-online-dot aria-hidden="true"></span>${escapeHTML(tableLabel(chat.table))}<span class="admin-chat-unread-badge" data-admin-chat-unread hidden>0</span></h2><small data-admin-chat-presence>Conectando...</small></div><div class="admin-chat-head-actions"><button class="icon-btn" type="button" data-minimize-admin-chat="${escapeHTML(chat.sessionId)}" aria-label="Minimizar chat" title="Minimizar"><i data-lucide="minus"></i></button><button class="icon-btn" type="button" data-finish-admin-chat="${escapeHTML(chat.sessionId)}" aria-label="Finalizar y borrar chat" title="Finalizar"><i data-lucide="x"></i></button></div></header><div class="live-chat-thread" data-admin-chat-messages></div><div class="typing-indicator" data-admin-chat-typing hidden><i></i><i></i><i></i><span>El cliente esta escribiendo</span></div><form class="admin-chat-form" data-admin-chat-form="${escapeHTML(chat.sessionId)}"><div class="admin-chat-composer"><input name="message" type="text" maxlength="600" autocomplete="off" placeholder="Escribe una respuesta..." required><button class="primary" type="submit" aria-label="Enviar"><i data-lucide="send"></i></button></div></form><button class="ghost danger-text admin-chat-finish" type="button" data-finish-admin-chat="${escapeHTML(chat.sessionId)}"><i data-lucide="log-out"></i> Finalizar y borrar chat</button>`;
+    dock.prepend(windowElement);
+    chat.element = windowElement;
+    refreshIcons();
+    return windowElement;
+  };
+
+  const setAdminChatMinimized = (sessionId, minimized) => {
+    const chat = state.adminChats.get(String(sessionId || ""));
+    if (!chat?.element) return;
+    chat.minimized = Boolean(minimized);
+    if (chat.minimized) {
+      chat.unreadCount = 0;
+      chat.unreadBoundaryId = "";
+    } else {
+      chat.unreadCount = 0;
+    }
+    chat.element.classList.toggle("is-minimized", chat.minimized);
+    if (chat.minimized) {
+      chat.element.setAttribute("role", "button");
+      chat.element.setAttribute("tabindex", "0");
+      chat.element.setAttribute("aria-label", `Abrir chat de ${tableLabel(chat.table)}`);
+    } else {
+      chat.element.removeAttribute("role");
+      chat.element.removeAttribute("tabindex");
+      chat.element.removeAttribute("aria-label");
+    }
+    const button = chat.element.querySelector("[data-minimize-admin-chat]");
+    if (button) {
+      button.innerHTML = icon(chat.minimized ? "maximize-2" : "minus", 18);
+      button.setAttribute("aria-label", chat.minimized ? "Restaurar chat" : "Minimizar chat");
+      button.title = chat.minimized ? "Restaurar" : "Minimizar";
+    }
+    if (!chat.minimized) {
+      renderAdminChat(chat.sessionId);
+      chat.element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      window.requestAnimationFrame(() => chat.element?.querySelector('input[name="message"]')?.focus({ preventScroll: true }));
+    }
+    refreshIcons();
+  };
+
+  const subscribeAdminChat = (chat, joinNotice) => {
+    chat.channel = state.sb.channel(`table:${chat.tableId}`, { config: { broadcast: { self: false }, private: false } })
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        if (String(payload?.sessionId) === chat.sessionId && payload?.role === "client") setPeerTyping(payload.typing, "client", chat.sessionId);
+      })
+      .on("broadcast", { event: "chat-refresh" }, ({ payload }) => {
+        if (!payload?.sessionId || String(payload.sessionId) === chat.sessionId) void loadChatMessages(chat.sessionId, chat.table);
+      })
+      .subscribe((status) => {
+        chat.connected = status === "SUBSCRIBED";
+        renderAdminChat(chat.sessionId);
+        if (chat.connected) {
+          broadcastChatEvent("admin-presence", { active: true, role: "staff", notice: joinNotice }, chat.sessionId);
+          void loadChatMessages(chat.sessionId, chat.table);
+        }
+      });
+    window.clearInterval(chat.pollTimer);
+    chat.pollTimer = window.setInterval(() => void loadChatMessages(chat.sessionId, chat.table,{periodic:true}), CHAT_SYNC_INTERVAL_MS);
+  };
+
+  const openAdminChat = async (requestIds) => {
+    const ids = String(requestIds || "").split(",").filter(Boolean);
+    const request = state.requests.find((entry) => ids.includes(entry.id));
+    if (!request?.session_id) {
+      toast("Esta solicitud aun no tiene una sesion de chat disponible.", "error", "chat-session-missing");
+      return;
+    }
+    const table = state.tables.find((entry) => String(entry.id) === String(request.table_id));
+    const sessionId = String(request.session_id);
+    let chat = state.adminChats.get(sessionId);
+    if (chat) {
+      ids.forEach((id) => chat.requestIds.add(id));
+      setAdminChatMinimized(sessionId, false);
+      chat.element?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+      chat.element?.querySelector('input[name="message"]')?.focus();
+      await loadChatMessages(sessionId, chat.table);
+      return true;
+    }
+    chat = { sessionId, tableId: request.table_id, table, requestIds: new Set(ids), messages: [], channel: null, pollTimer: null, element: null, connected: false, peerTyping: false, closing: false, confirming: false, minimized: false, initialized: false, unreadCount: 0, unreadBoundaryId: "" };
+    state.adminChats.set(sessionId, chat);
+    createAdminChatWindow(chat);
+    renderAdminChat(sessionId);
+    const joinNotice = "El administrador se unió al chat.";
+    subscribeAdminChat(chat, joinNotice);
+    await loadChatMessages(sessionId, table);
+    const joinAlreadyRegistered = chat.messages.some((message) => message.sender_type === "system" && normalizeText(message.body).includes("se unio al chat"));
+    if (!joinAlreadyRegistered) void persistChatMessage("system", joinNotice, { sessionId: request.session_id, table });
+    chat.element?.querySelector('input[name="message"]')?.focus();
+    return true;
+  };
+
+  const finishAdminChat = async (sessionId) => {
+    const targetSessionId = String(sessionId || "");
+    const chat = state.adminChats.get(targetSessionId);
+    if (!chat || chat.closing) return;
+    const closeButtons = Array.from(chat.element?.querySelectorAll("[data-finish-admin-chat]") || []);
+    chat.closing = true;
+    closeButtons.forEach((button) => { button.disabled = true; });
+    try {
+      const result = await retryQuiet(() => state.sb.rpc("closeChatSession", { p_session_id: targetSessionId, p_auth_token: state.authToken }), 3);
+      if (!result) {
+        toast("No se pudo finalizar el chat. Intenta nuevamente.", "error", `chat-close:${targetSessionId}`);
+        return;
+      }
+      const knownRequests = new Map([...readPendingAdminRequests(), ...state.requests].map((request) => [request.id, request]));
+      const requestIds = [...chat.requestIds].filter((id) => {
+        const request = knownRequests.get(id);
+        return request && String(request.session_id || "") === targetSessionId && requestKind(request) === "chat";
+      });
+      await broadcastChatEvent("chat-closed", {}, targetSessionId);
+      state.requests = state.requests.map((request) => requestIds.includes(request.id) ? { ...request, status: "resolved" } : request);
+      rememberCompletedAdminRequests(requestIds);
+      persistPendingAdminRequests([...readPendingAdminRequests(), ...state.requests]);
+      renderAdminLive();
+      if (chat.channel) state.sb.removeChannel(chat.channel);
+      window.clearInterval(chat.pollTimer);
+      window.clearTimeout(state.adminChatTypingTimers.get(targetSessionId));
+      state.adminChatTypingTimers.delete(targetSessionId);
+      chat.element?.remove();
+      state.adminChats.delete(targetSessionId);
+      toast("Chat finalizado y mensajes eliminados.", "ok", `chat-finished:${targetSessionId}`);
+      if (requestIds.length) {
+        void dbQuiet(state.sb.from("service_requests").update({ status: "resolved" }).in("id", requestIds), null)
+          .then(() => refreshAdminNow());
+      } else {
+        void refreshAdminNow();
+      }
+    } finally {
+      chat.closing = false;
+      closeButtons.forEach((button) => { button.disabled = false; });
+    }
+  };
+
+  const requestFinishAdminChat = async (sessionId) => {
+    const targetSessionId = String(sessionId || "");
+    const chat = state.adminChats.get(targetSessionId);
+    if (!chat || chat.closing || chat.confirming) return;
+    chat.confirming = true;
+    const confirmed = await askForConfirmation({
+      eyebrow: "Cerrar conversación",
+      title: `¿Cerrar el chat de ${tableLabel(chat.table)}?`,
+      message: "La conversación se cerrará y sus mensajes se borrarán. Confirma solo si ya terminaste de atenderla.",
+      accept: "Sí, cerrar chat",
+      cancel: "Seguir conversando"
+    });
+    chat.confirming = false;
+    if (confirmed) await finishAdminChat(targetSessionId);
+  };
+
+  const describeAssistantItem = (item) =>
+    `${item.name}: ${item.detail}`;
+
+  const addAssistantOrder = async (order) => {
+    if (!state.currentTable) {
+      assistantSay("bot", "Primero selecciona tu mesa para poder enviar el pedido correctamente.");
+      return;
+    }
+    await ensureOpenSession(state.currentTable.id);
+    assistantSay("bot", `Perfecto. Ya envié tu solicitud de ${order.quantity} x ${order.item.name}. El mesero te atenderá para confirmar los detalles.`);
+  };
+
+  const songTurnCount = () => {
+    const tableId = String(state.currentTable?.id || "");
+    if (!tableId) return 0;
+    const pending = new Set();
+    [...state.clientRequests, ...readRequestOutbox()]
+      .filter((row) => String(row.table_id) === tableId && isSongRequest(row)
+        && ["sending", "pending", undefined].includes(row.status))
+      .forEach((row) => pending.add(String(row.id || row.request_id)));
+    (state.clientQueuePositions || []).filter((row) => row.kind === "song")
+      .forEach((row) => pending.add(String(row.id)));
+    return pending.size;
+  };
+
+  const showSongLimitNotice = () => {
+    const notice = $("#songLimitNotice");
+    if (!notice) return;
+    notice.hidden = false;
+    notice.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+
+  const handleAssistantMessage = async (message) => {
+    const text = message.trim();
+    if (!text) return;
+    if (!state.pizzeriaService && songTurnCount() >= 5) { showSongLimitNotice(); return; }
+    const localMessage = assistantSay("user", text);
+    if (state.currentTable) {
+      const session = state.currentSession || await ensureOpenSession(state.currentTable.id);
+      if (session) {
+        void persistChatMessage("client", text, { sessionId: session.id, table: state.currentTable, messageId: localMessage?.id }).then((saved) => {
+          if (saved) broadcastChatEvent("chat-refresh");
+        });
+        await createServiceNotification(
+          "other",
+          `${tableLabel(state.currentTable)} escribió en el chat: ${polishGuestText(text)}`
+        );
+      }
+    }
+    if (state.adminChatActive) return;
+    const normalized = normalizeText(text);
+    const item = findAssistantItem(text);
+    const asksCapabilities = includesAny(normalized, [
+      "en que me puedes ayudar",
+      "como me puedes ayudar",
+      "me puedes ayudar",
+      "que puedes hacer",
+      "que haces",
+      "hola",
+      "buenas"
+    ]) || normalized === "ayuda";
+    const asksMenu = assistantUnderstands(normalized, "menu");
+    const asksInquiry = assistantUnderstands(normalized, "inquiry");
+    const asksBill = assistantUnderstands(normalized, "bill");
+    const asksWaiter = assistantUnderstands(normalized, "waiter");
+    const wantsOrder = assistantUnderstands(normalized, "order") || Boolean(item && !asksInquiry);
+
+    if (asksCapabilities && !wantsOrder && !asksMenu && !asksBill && !asksWaiter) {
+      assistantSay("bot", "Puedo ayudarte a pedir pizzas, pizzetas, porciones, lasañas, panzerotti y bebidas, consultar tu cuenta o llamar al mesero. El equipo confirmará tu pedido contigo.");
+      return;
+    }
+    if (asksMenu && !item) {
+      const summary = assistantMenuSummary();
+      assistantSay("bot", summary
+        ? `Puedo ayudarte con opciones como ${summary}. Dime cuál deseas y la cantidad; el mesero confirmará los detalles.`
+        : "Dime qué deseas pedir y enviaré la solicitud al mesero.");
+      return;
+    }
+    const genericOrderRequest = ["quiero pedir", "quiero ordenar", "voy a pedir", "voy a ordenar"]
+      .includes(normalized);
+    if (wantsOrder && !item && genericOrderRequest) {
+      const summary = assistantMenuSummary();
+      assistantSay("bot", summary
+        ? `Claro. Puedes pedir opciones como ${summary}. Escríbeme el producto, el tamaño y la cantidad.`
+        : "Dime qué deseas pedir, el tamaño y la cantidad. Lo enviaré al equipo para confirmación.");
+      return;
+    }
+    if (item && (asksInquiry || asksMenu) && !assistantUnderstands(normalized, "order")) {
+      assistantSay("bot", describeAssistantItem(item));
+      return;
+    }
+    if (!state.currentTable) {
+      assistantSay("bot", "Primero selecciona tu mesa arriba para poder enviar pedidos o avisos correctamente.");
+      return;
+    }
+    if (asksBill) {
+      await showCurrentBill();
+      assistantSay("bot", "Te mostré la cuenta actual de tu mesa. Puedes consultarla nuevamente cuando quieras.");
+      return;
+    }
+    if (asksWaiter) {
+      void createRequest("waiter");
+      assistantSay("bot", "Ya llamamos al mesero. Te atenderán en breve.");
+      return;
+    }
+    const order = parseAssistantOrder(text);
+    if (order) {
+      assistantSay("bot", "Recibido. Estoy registrando el pedido para tu mesa.");
+      void addAssistantOrder(order);
+      return;
+    }
+    assistantSay("bot", "Entendido. Ya envié tu solicitud para que el mesero te atienda y confirme los detalles.");
+  };
+
+  const handleSongRequest = async (message) => {
+    const song = String(message || "").trim().replace(/\s+/g, " ").slice(0, 180);
+    if (!song) return;
+    if (!state.currentTable) {
+      assistantSay("bot", "Primero selecciona tu mesa para poder enviar la canción.");
+      return;
+    }
+    if (songTurnCount() >= 5) { showSongLimitNotice(); return; }
+    assistantSay("user", song);
+    const request = await createServiceNotification(
+      "other",
+      `${tableLabel(state.currentTable)} solicita la canción: ${song}`
+    );
+    if (request) { assistantSay("bot", `La canción “${song}” fue solicitada. Puedes pedir máximo 5 por turno; tu posición aparecerá al confirmarse el envío.`); if (songTurnCount() >= 5) showSongLimitNotice(); void refreshClientPosData(); }
+  };
+
+  const addItemToSession = async (itemId) => {
+    if (!state.currentTable) {
+      toast("Selecciona tu mesa primero.", "error");
+      return;
+    }
+    const session = await ensureOpenSession(state.currentTable.id);
+    if (!session) return;
+    const item = state.items.find((entry) => entry.id === itemId);
+    if (!item) return;
+    const payload = {
+      session_id: session.id,
+      table_id: state.currentTable.id,
+      menu_item_id: item.id,
+      item_name: item.name,
+      quantity: 1,
+      unit_price: item.price,
+      status: "pending"
+    };
+    const saved = await db(state.sb.from("session_items").insert(payload).select("*").single(), null);
+    if (saved) {
+      toast(`${item.name} agregado a la cuenta.`);
+      await loadClientSessionItems();
+      renderAccount();
+    }
+  };
+
+  const createRequest = (type, message = "") => {
+    if (type === "bill") return showCurrentBill();
+    if (!state.currentTable) {
+      toast("Selecciona tu mesa primero.", "error");
+      return null;
+    }
+    const requestId = uid();
+    const tableId = state.currentTable.id;
+    const sessionId = state.currentSession?.id || null;
+    const now = new Date().toISOString();
+    const optimisticRequest = {
+      id: requestId,
+      table_id: tableId,
+      session_id: sessionId,
+      request_type: type,
+      message,
+      status: "sending",
+      created_at: now,
+      updated_at: now
+    };
+    state.clientRequests = [optimisticRequest, ...state.clientRequests];
+    if (type === "bill") rememberPendingBill(requestId);
+
+    const button = document.querySelector(`[data-request="${type}"]`);
+    if (button) {
+      button.classList.add("is-pending");
+      window.setTimeout(() => button.classList.remove("is-pending"), 260);
+    }
+    toast(`${REQUEST_LABELS[type]} enviada. El equipo la recibira en segundos.`, "ok", `request-sent:${type}`);
+    queueServiceRequest({
+      request_id: requestId,
+      table_id: tableId,
+      session_id: sessionId,
+      request_type: type,
+      table_access_code: tableCode(state.currentTable),
+      message
+    });
+    return optimisticRequest;
+  };
+
+  const thankBill = (id) => {
+    const box = $("#billChat");
+    if (!id || box?.classList.contains("is-closing")) return;
+    clearPendingBill(id);
+    state.clientRequests = state.clientRequests.map((request) => request.id === id
+      ? { ...request, status: "resolved", resolved_at: new Date().toISOString() }
+      : request);
+    queueBillResolution(id);
+    box?.classList.add("is-closing");
+    window.setTimeout(() => {
+      if (!box) return;
+      box.hidden = true;
+      box.innerHTML = "";
+      box.classList.remove("is-closing");
+      document.body.classList.remove("receipt-open");
+      document.querySelector('[data-request="bill"]')?.focus({ preventScroll: true });
+    }, 320);
+  };
+
+  const closeCurrentBill = () => {
+    const box = $("#billChat");
+    if (!state.localBillOpen || box?.classList.contains("is-closing")) return;
+    state.localBillOpen = false;
+    box?.classList.add("is-closing");
+    window.setTimeout(() => {
+      if (!box) return;
+      box.hidden = true;
+      box.innerHTML = "";
+      box.classList.remove("is-closing");
+      document.body.classList.remove("receipt-open");
+      document.querySelector('[data-request="bill"]')?.focus({ preventScroll: true });
+    }, 320);
+  };
+
+  const bindClient = () => {
+    document.addEventListener("click", async (event) => {
+      if (event.target.closest("[data-focus-chat]")) {
+        $(".assistant-panel")?.scrollIntoView({ block: "center", behavior: "auto" });
+        // Synchronous focus keeps the mobile keyboard tied to the user's tap.
+        $("#assistantInput")?.focus({ preventScroll: true });
+        return;
+      }
+      const category = event.target.closest("[data-category]");
+      const add = event.target.closest("[data-add-item]");
+      const request = event.target.closest("[data-request]");
+      const songRequest = event.target.closest("[data-song-request]");
+      const thanks = event.target.closest("[data-thank-bill]");
+      const closeBill = event.target.closest("[data-close-bill]");
+      const change = event.target.closest("[data-action='change-table']");
+      const suggestion = event.target.closest("[data-assistant-suggest]");
+
+      if (category) {
+        state.activeCategory = category.dataset.category;
+        renderMenu();
+      }
+      if (add) await addItemToSession(add.dataset.addItem);
+      if (request) await createRequest(request.dataset.request);
+      if (songRequest) activateSongRequestMode();
+      if (thanks) thankBill(thanks.dataset.thankBill);
+      if (closeBill) closeCurrentBill();
+      if (suggestion) await handleAssistantMessage(suggestion.dataset.assistantSuggest);
+      if (change && !state.tableLocked) {
+        clearInterval(state.clientPollTimer);
+        state.clientHydrationToken += 1;
+        state.localBillOpen = false;
+        state.currentTable = null;
+        state.currentSession = null;
+        state.tableAccountStatus = "idle";
+        state.tableAccountTotal = 0;
+        state.qrLocked = false;
+        state.tableLocked = false;
+        state.sessionItems = [];
+        state.clientRequests = [];
+        state.clientQueuePositions = [];
+        if ($("#songLimitNotice")) $("#songLimitNotice").hidden = true;
+        state.sb.setTableAccess("", "");
+        renderTablePicker();
+        renderAccount();
+        renderBillChat();
+      }
+    });
+
+    document.addEventListener("change", async (event) => {
+      if (event.target.id === "tableSelect") {
+        state.localBillOpen = false;
+        state.currentTable = state.tables.find((table) => table.id === event.target.value) || null;
+        if (state.currentTable) {
+          state.sb.setTableAccess(state.currentTable.id, tableCode(state.currentTable));
+          void flushBillResolutionOutbox();
+          state.currentSession = null;
+          state.sessionItems = [];
+          state.clientRequests = [];
+          state.clientQueuePositions = [];
+          if ($("#songLimitNotice")) $("#songLimitNotice").hidden = true;
+          state.clientSnapshotSignature = "";
+          state.tableAccountStatus = "checking";
+          state.tableAccountTotal = 0;
+          state.tableLocked = false;
+          renderAccount();
+          renderBillChat();
+          renderTablePicker();
+          void hydrateSelectedTable(state.currentTable.id);
+        }
+        renderTablePicker();
+        renderAccount();
+        renderBillChat();
+      }
+    });
+
+    $("#assistantForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = event.currentTarget.message;
+      const message = input.value;
+      input.value = "";
+      if (state.assistantMode === "song") await handleSongRequest(message);
+      else await handleAssistantMessage(message);
+    });
+    $("#assistantInput")?.addEventListener("input", () => {
+      if (state.currentSession && state.assistantMode === "bar") broadcastTyping("client");
+    });
+  };
+
+  const subscribeClient = () => {
+    if (!state.currentTable || !state.currentSession) {
+      clearInterval(state.clientPollTimer);
+      clearInterval(state.chatPollTimer);
+      window.clearTimeout(state.clientReconnectTimer);
+      const previous = state.clientChannel;
+      state.clientChannel = null;
+      state.clientRealtimeConnected = false;
+      state.clientSubscribedTableId = "";
+      state.clientLiveRefresh = null;
+      if (previous) state.sb.removeChannel(previous);
+      const tableId = state.currentTable?.id;
+      if (tableId) {
+        const refresh = async () => {
+          if (state.currentTable?.id !== tableId || state.currentSession || state.clientSyncBusy) return;
+          state.clientSyncBusy = true;
+          try { await hydrateSelectedTable(tableId, { background: true }); } finally { state.clientSyncBusy = false; }
+        };
+        state.clientLiveRefresh = refresh;
+        state.clientPollTimer = setInterval(refresh, SYNC_INTERVAL_MS);
+      }
+      return;
+    }
+    const tableId = state.currentTable.id;
+    const sessionId = String(state.currentSession.id);
+    if (state.clientChatSoundSessionId !== sessionId) {
+      state.clientChatSoundSessionId = sessionId;
+      state.clientChatInitialized = false;
+      state.clientStaffMessageSoundIds.clear();
+    }
+    if (state.clientChannel && state.clientSubscribedTableId === tableId && !state.clientRealtimeNeedsReconnect) return;
+    clearInterval(state.clientPollTimer);
+    window.clearTimeout(state.clientReconnectTimer);
+    const previous = state.clientChannel;
+    state.clientChannel = null;
+      state.clientRealtimeConnected = false;
+    if (previous) state.sb.removeChannel(previous);
+    clearInterval(state.chatPollTimer);
+    let refreshPending = false;
+    const refresh = async ({ periodic = false } = {}) => {
+      if (state.currentTable?.id !== tableId || !state.currentSession) return;
+      void loadChatMessages(undefined,undefined,{periodic});
+      const scope = state.authToken || state.currentTable?.qr_code || "";
+      const interval = state.clientRealtimeConnected && document.hidden ? 5000 : SYNC_INTERVAL_MS;
+      if (periodic && state.readBudget?.due("client-snapshot:"+tableId,interval,scope) === false) return;
+      if (state.clientSyncBusy) { if (!periodic) refreshPending = true; return; }
+      state.clientSyncBusy = true;
+      state.readBudget?.touch("client-snapshot:"+tableId,scope);
+      try {
+        await hydrateSelectedTable(tableId, { background: true });
+      } finally {
+        state.clientSyncBusy = false;
+        if (refreshPending) { refreshPending = false; window.setTimeout(() => void refresh(), 0); }
+      }
+    };
+    state.clientLiveRefresh = refresh;
+    if (state.clientSubscribedTableId !== tableId) state.clientReconnectAttempts = 0;
+    state.clientSubscribedTableId = tableId;
+    state.clientRealtimeNeedsReconnect = false;
+    const channel = state.sb
+      .channel(`table:${tableId}`, { config: { broadcast: { self: false }, private: false } })
+      .on("broadcast", { event: "refresh" }, refresh)
+      .on("broadcast", { event: "chat-refresh" }, () => void loadChatMessages())
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        if (String(payload?.sessionId) === String(state.currentSession?.id) && payload?.role === "staff") setPeerTyping(payload.typing, "staff");
+      })
+      .on("broadcast", { event: "admin-presence" }, ({ payload }) => {
+        if (payload?.sessionId && String(payload.sessionId) !== String(state.currentSession?.id)) return;
+        if (payload?.active) {
+          state.adminChatActive = true;
+          state.adminChatNotice = payload.notice || "El administrador se unió al chat.";
+          state.assistantThreads.bar = (state.assistantThreads.bar || []).filter((message) => message.role !== "bot");
+          state.assistantMessages = state.assistantThreads[state.assistantMode] || [];
+          renderAssistant();
+        }
+      })
+      .on("broadcast", { event: "chat-closed" }, ({ payload } = {}) => {
+        if (payload?.sessionId && String(payload.sessionId) !== String(state.currentSession?.id)) return;
+        finishClientChat();
+      });
+    state.clientChannel = channel;
+    channel.subscribe((status) => {
+      if (state.clientChannel !== channel || state.currentTable?.id !== tableId) return;
+      state.clientRealtimeConnected = status === "SUBSCRIBED";
+      if (status === "SUBSCRIBED") {
+        state.clientRealtimeNeedsReconnect = false;
+        state.clientReconnectAttempts = 0;
+        window.clearTimeout(state.clientReconnectTimer);
+        void refresh();
+      } else if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        state.clientRealtimeNeedsReconnect = true;
+        window.clearTimeout(state.clientReconnectTimer);
+        state.clientReconnectTimer = window.setTimeout(() => {
+          if (state.clientChannel === channel && state.currentTable?.id === tableId) subscribeClient();
+        }, Math.min(30000,3000*2**Math.min((state.clientReconnectAttempts=(state.clientReconnectAttempts || 0)+1)-1,4)));
+      }
+    });
+    state.clientPollTimer = setInterval(() => void refresh({periodic:true}), SYNC_INTERVAL_MS);
+    state.chatPollTimer = setInterval(() => void loadChatMessages(undefined,undefined,{periodic:true}), CHAT_SYNC_INTERVAL_MS);
+    void loadChatMessages();
+  };
+
+  const initClient = async () => {
+    setLoading(true);
+    const nativeScanValue = tableValueFromUrl();
+    if (nativeScanValue && localStorage.getItem("don_pieros_admin_token")) {
+      const adminUrl = new URL("admin.html", location.href);
+      adminUrl.searchParams.set("scan", nativeScanValue);
+      adminUrl.hash = "service";
+      location.replace(adminUrl.href);
+      return;
+    }
+    await loadBootstrap();
+    renderBrand();
+    state.currentTable = findTableFromUrl();
+    if (state.currentTable) {
+      const adminLink = $(".admin-link");
+      if (adminLink) {
+        const adminUrl = new URL("admin.html", location.href);
+        adminUrl.searchParams.set("scan", tableCode(state.currentTable));
+        adminUrl.hash = "service";
+        adminLink.href = adminUrl.href;
+        adminLink.title = "Atender esta mesa desde el panel";
+      }
+      state.sb.setTableAccess(state.currentTable.id, tableCode(state.currentTable));
+      state.tableAccountStatus = "checking";
+      void flushBillResolutionOutbox();
+    }
+    renderTablePicker();
+    renderMenu();
+    renderAccount();
+    renderBillChat();
+    renderAssistant();
+    bindClient();
+    state.adminBroadcastChannel = state.sb.channel("admin", { config: { broadcast: { self:false }, private:false } }).on("broadcast", {event:"refresh"}, () => { void state.clientLiveRefresh?.(); void refreshClientPosData(); }).on("broadcast", {event:"core-refresh"}, () => void refreshCoreNow()).subscribe();
+    subscribeClient();
+    setLoading(false);
+    // La pantalla queda usable tras el bootstrap; la cuenta se hidrata en segundo plano.
+    if (state.currentTable) {
+      void hydrateSelectedTable(state.currentTable.id);
+    }
+  };
+
+  const mergeOptimisticRequests = (requests = []) => requests.map((request) => {
+    const optimistic = state.optimisticRequestStates.get(request.id);
+    if (optimistic && (request.status === "acknowledged" || request.acknowledged_at)) {
+      state.optimisticRequestStates.delete(request.id);
+      return request;
+    }
+    return optimistic ? { ...request, ...optimistic } : request;
+  });
+
+  const sessionItemMatches = (serverItem, expectedItem) =>
+    serverItem && expectedItem &&
+    String(serverItem.id) === String(expectedItem.id) &&
+    String(serverItem.item_name || "") === String(expectedItem.item_name || "") &&
+    Number(serverItem.quantity || 0) === Number(expectedItem.quantity || 0) &&
+    Number(serverItem.unit_price || 0) === Number(expectedItem.unit_price || 0) &&
+    String(serverItem.notes || "") === String(expectedItem.notes || "") &&
+    String(serverItem.status || "") === String(expectedItem.status || "");
+
+  const mergeOptimisticSessions = (serverSessions = [], { readStartedAt = 0 } = {}) => {
+    const merged = new Map(serverSessions.map((session) => [session.id, session]));
+    state.optimisticSessionStates.forEach((overlay, sessionId) => {
+      const now = Date.now();
+      const serverSession = merged.get(sessionId);
+      if (overlay.mode === "remove") {
+        merged.delete(sessionId);
+        if (!serverSession && Date.now() >= Number(overlay.retainUntil || 0)) {
+          state.optimisticSessionStates.delete(sessionId);
+        }
+        return;
+      }
+      const expectedItems = overlay.expectedItems || (overlay.expectedItem ? [overlay.expectedItem] : []);
+      const receipts = expectedItems.map(item => state.confirmedRemoteRows?.get("session_items:" + item.id));
+      const sessionReceipt = state.confirmedRemoteRows?.get("table_sessions:" + sessionId);
+      const itemProof = !expectedItems.length || expectedItems.every((item,index) => receipts[index] && sessionItemMatches(receipts[index].row,item));
+      const sessionProof = !overlay.expectedSession || (sessionReceipt && Object.keys(overlay.expectedSession).every(field =>
+        String(sessionReceipt.row[field] || "") === String(overlay.expectedSession[field] || "")));
+      const proofAt = Math.max(0,...receipts.map(receipt => receipt?.at || 0),overlay.expectedSession ? sessionReceipt?.at || 0 : 0);
+      if (!overlay.localOnly && readStartedAt && ((overlay.confirmedAt && readStartedAt > overlay.confirmedAt)
+        || (itemProof && sessionProof && proofAt >= Number(overlay.mutationStartedAt || 0) && readStartedAt >= proofAt))) {
+        state.optimisticSessionStates.delete(sessionId); return;
+      }
+      const expectedItemConfirmed = !expectedItems.length || expectedItems.every((expectedItem) =>
+        (serverSession?.session_items || []).some((item) => sessionItemMatches(item, expectedItem))
+      );
+      const expectedSessionConfirmed = !overlay.expectedSession || (
+        String(serverSession?.payer_name || "") === String(overlay.expectedSession.payer_name || "") &&
+        String(serverSession?.assigned_waiter_id || "") === String(overlay.expectedSession.assigned_waiter_id || "")
+      );
+      if (serverSession && expectedItemConfirmed && expectedSessionConfirmed) {
+        const confirmedAt = Number(overlay.confirmedAt || now);
+        if (now - confirmedAt >= REMOTE_CONFIRMATION_HOLD_MS) {
+          state.optimisticSessionStates.delete(sessionId);
+        } else {
+          state.optimisticSessionStates.set(sessionId, { ...overlay, session: serverSession, confirmedAt });
+        }
+        merged.set(sessionId, serverSession);
+      } else {
+        if (!serverSession || overlay.localOnly) { merged.set(sessionId, overlay.session); return; }
+        const items = new Map((serverSession.session_items || []).map((item) => [item.id,item]));
+        expectedItems.forEach((item) => items.set(item.id,item));
+        const pending = { ...serverSession, session_items: [...items.values()] };
+        Object.keys(overlay.expectedSession || {}).forEach((field) => {
+          if (Object.prototype.hasOwnProperty.call(overlay.session || {},field)) pending[field] = overlay.session[field];
+        });
+        if (overlay.expectedSession && Object.prototype.hasOwnProperty.call(overlay.expectedSession,'assigned_waiter_id')) pending.assigned_waiter = overlay.session?.assigned_waiter;
+        merged.set(sessionId,pending);
+      }
+    });
+    return Array.from(merged.values());
+  };
+
+  const isSongRequest = (request) => request.request_source !== "waiter" && request.request_type === "other"
+    && normalizeText(request.message || "").includes("solicita la cancion");
+
+  const requestKind = (request) => {
+    if (isSongRequest(request)) return "song";
+    return request.request_type === "other" && String(request.message || "").trim() ? "chat" : request.request_type;
+  };
+
+  const activeRequests = () => state.requests.filter((request) => request.status === "pending");
+
+  const hasOpenAdminChatForRequest = (request) => {
+    if (requestKind(request) !== "chat") return false;
+    const sessionId = String(request.session_id || "");
+    if (sessionId && state.adminChats.has(sessionId)) return true;
+    return Array.from(state.adminChats.values()).some((chat) => String(chat.tableId) === String(request.table_id));
+  };
+
+  const requestSignature = () => activeRequests().map((request) => request.id).join("|");
+
+  const updateAlarmButton = () => {
+    const button = $("#enableSound");
+    if (!button) return;
+    button.classList.toggle("sound-active", state.soundEnabled);
+    button.classList.toggle("needs-sound", !state.soundEnabled);
+    button.innerHTML = state.soundEnabled
+      ? `${icon("volume-2", 18)} Alarma activa`
+      : `${icon("volume-x", 18)} Activar alarma`;
+    const hint = $("#soundHint");
+    if (hint) {
+      hint.textContent = state.soundEnabled
+        ? (state.soundPrimed
+          ? "Alarma y avisos por voz activos en este equipo."
+          : "Alarma guardada. Se reanuda con el proximo gesto en esta pantalla.")
+        : "Activa el sonido para escuchar la alarma y el motivo de cada solicitud.";
+    }
+    refreshIcons();
+  };
+
+  const getAlarmAudio = () => {
+    const audio = $("#alarmAudio");
+    if (!audio) return null;
+    audio.volume = 1;
+    return audio;
+  };
+
+  const requestTableName = (request) => tableLabel(
+    request.restaurant_tables || state.tables.find((table) => String(table.id) === String(request.table_id))
+  );
+
+  const requestVoiceText = (request) => {
+    const table = requestTableName(request);
+    const message = String(request.message || "").replace(/\s+/g, " ").trim().slice(0, 320);
+    const origin = requestOrigin(request);
+    if (origin.kind === "waiter") return `${table}. Pedido tomado por ${origin.name}. ${requestBody(request).slice(0, 240)}`;
+    if (request.request_type === "waiter") return `${table} solicita al mesero.`;
+    if (request.request_type === "bill") return `${table} solicita la cuenta.`;
+    if (!message) return `${table} necesita ayuda.`;
+    if (isSongRequest(request)) {
+      const song = message.includes(":") ? message.split(":").slice(1).join(":").trim() : message;
+      return `${table} solicita la canción ${song.replace(/[.!?]+$/, "")}.`;
+    }
+    const order = message.match(/solicita\s+atenci[oó]n\s+para\s+pedir\s+([\d.,]+)\s*x\s+(.+?)(?:\.\s*Mensaje\s+del\s+cliente:|$)/i);
+    const clientMessage = message.match(/Mensaje\s+del\s+cliente:\s*(.+)$/i);
+    if (order) {
+      const extra = clientMessage?.[1]?.trim();
+      return `${table} está pidiendo ${order[1]} unidades de ${order[2].trim()}.${extra ? ` El cliente dice: ${extra}.` : ""}`;
+    }
+    if (normalizeText(message).startsWith(normalizeText(table))) return `${message}.`;
+    return `${table} informa: ${message}.`;
+  };
+
+  const speakAlertRequests = (requests) => new Promise((resolve) => {
+    if (!("speechSynthesis" in window) || typeof window.SpeechSynthesisUtterance !== "function" || !requests.length) {
+      resolve();
+      return;
+    }
+    const speech = requests.map(requestVoiceText).join(" ").slice(0, 900);
+    const utterance = new SpeechSynthesisUtterance(speech);
+    const voices = window.speechSynthesis.getVoices();
+    utterance.voice = voices.find((voice) => /^es[-_]CO$/i.test(voice.lang))
+      || voices.find((voice) => /^es/i.test(voice.lang))
+      || null;
+    utterance.lang = utterance.voice?.lang || "es-CO";
+    utterance.rate = 0.94;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      state.speechFinish = null;
+      resolve();
+    };
+    state.speechFinish = finish;
+    utterance.onend = finish;
+    utterance.onerror = finish;
+    window.speechSynthesis.speak(utterance);
+    window.setTimeout(finish, Math.min(22000, Math.max(6000, speech.length * 85)));
+  });
+
+  const playAlarmToneOnce = () => new Promise((resolve) => {
+    const audio = getAlarmAudio();
+    if (!audio) {
+      resolve(true);
+      return;
+    }
+    window.clearTimeout(state.alarmStopTimer);
+    window.clearTimeout(state.alarmUnlockTimer);
+    audio.pause();
+    audio.loop = false;
+    audio.currentTime = 0;
+    let settled = false;
+    const finish = (played = true) => {
+      if (settled) return;
+      settled = true;
+      audio.removeEventListener("ended", finish);
+      audio.pause();
+      audio.currentTime = 0;
+      state.alarmToneFinish = null;
+      resolve(played);
+    };
+    state.alarmToneFinish = finish;
+    audio.addEventListener("ended", finish, { once: true });
+    state.alarmStopTimer = window.setTimeout(finish, 5500);
+    audio.play().catch(() => {
+      state.soundPrimed = false;
+      updateAlarmButton();
+      finish(false);
+    });
+  });
+
+  const drainAlertAnnouncements = async () => {
+    if (state.alertAnnouncementBusy || !state.soundEnabled || !state.soundPrimed) return;
+    state.alertAnnouncementBusy = true;
+    try {
+      while (state.alertAnnouncementQueue.length && state.soundEnabled && state.soundPrimed) {
+        const activeIds = new Set(activeRequests().map((request) => request.id));
+        const batch = state.alertAnnouncementQueue.splice(0).filter((request) => activeIds.has(request.id));
+        if (!batch.length) continue;
+        if (!await playAlarmToneOnce()) {
+          state.alertAnnouncementQueue.unshift(...batch);
+          break;
+        }
+        const voiceBatch = batch.filter((request) => !hasOpenAdminChatForRequest(request));
+        if (state.soundEnabled && voiceBatch.length) await speakAlertRequests(voiceBatch);
+      }
+    } finally {
+      state.alertAnnouncementBusy = false;
+      if (state.alertAnnouncementQueue.length && state.soundEnabled && state.soundPrimed) void drainAlertAnnouncements();
+    }
+  };
+
+  const playAlarm = (requests = activeRequests()) => {
+    if (!state.soundEnabled) return;
+    const unseen = requests.filter((request) => !state.announcedRequestIds.has(request.id));
+    unseen.forEach((request) => state.announcedRequestIds.add(request.id));
+    state.alertAnnouncementQueue.push(...unseen);
+    void drainAlertAnnouncements();
+  };
+
+  const stopAlarm = () => {
+    window.clearTimeout(state.alarmStopTimer);
+    window.clearTimeout(state.alarmUnlockTimer);
+    state.alertAnnouncementQueue = [];
+    state.alarmToneFinish?.();
+    state.speechFinish?.();
+    window.speechSynthesis?.cancel();
+    const audio = getAlarmAudio();
+    if (!audio) return;
+    audio.pause();
+    audio.loop = false;
+    audio.currentTime = 0;
+  };
+
+  const disableAlarm = () => {
+    stopAlarm();
+    state.soundEnabled = false;
+    state.soundPrimed = false;
+    localStorage.setItem("waiter_alarm_enabled", "0");
+    updateAlarmButton();
+    toast("Alarma desactivada en este equipo.", "ok", "alarm-disabled");
+  };
+
+  const confirmDisableAlarm = () => {
+    const dialog = $("#alarmConfirmDialog");
+    if (!dialog) return Promise.resolve(false);
+    dialog.returnValue = "";
+    dialog.showModal();
+    refreshIcons();
+    return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true }));
+  };
+
+  const askForConfirmation = ({ eyebrow = "Confirmación", title = "¿Continuar?", message = "", accept = "Sí, continuar", cancel = "Cancelar" } = {}) => {
+    const dialog = $("#actionConfirmDialog");
+    if (!dialog) return Promise.resolve(false);
+    $("#actionConfirmEyebrow").textContent = eyebrow;
+    $("#actionConfirmTitle").textContent = title;
+    $("#actionConfirmMessage").textContent = message;
+    $("#actionConfirmAccept").textContent = accept;
+    $("#actionConfirmCancel").textContent = cancel;
+    dialog.returnValue = "";
+    dialog.showModal();
+    refreshIcons();
+    return new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true }));
+  };
+
+  const primeAlertVoice = () => {
+    if (state.speechPrimed || !window.speechSynthesis || typeof window.SpeechSynthesisUtterance !== "function") return;
+    try {
+      window.speechSynthesis.resume();
+      const utterance = new window.SpeechSynthesisUtterance(".");
+      utterance.lang = "es-CO"; utterance.volume = 0;
+      utterance.onerror = () => { state.speechPrimed = false; };
+      state.speechPrimed = true;
+      // Se invoca dentro del gesto, antes de esperar la promesa del audio.
+      window.speechSynthesis.speak(utterance);
+    } catch (_) { state.speechPrimed = false; }
+  };
+
+  const unlockAlarm = async ({ silent = false } = {}) => {
+    const audio = getAlarmAudio();
+    if (!audio) {
+      if (!silent) toast("No se encontro el sonido de alarma.", "error", "alarm-audio-missing");
+      return;
+    }
+
+    try {
+      primeAlertVoice();
+      primeReceiptAudio();
+      state.soundEnabled = true;
+      localStorage.setItem("waiter_alarm_enabled", "1");
+      updateAlarmButton();
+      audio.currentTime = 0;
+      audio.loop = false;
+      await audio.play();
+      state.soundPrimed = true;
+      updateAlarmButton();
+      if (!silent) toast("Alarma activada.", "ok", "alarm-enabled");
+
+      window.clearTimeout(state.alarmUnlockTimer);
+      state.alarmUnlockTimer = window.setTimeout(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        if (activeRequests().length) playAlarm(activeRequests());
+      }, activeRequests().length ? 450 : 1100);
+    } catch (error) {
+      state.soundPrimed = false;
+      updateAlarmButton();
+      if (!silent) toast("El navegador bloqueo el audio. Toca Activar alarma otra vez.", "error", "alarm-permission");
+    }
+  };
+
+  const armAlarmOnFirstGesture = () => {
+    const prime = async (fromMouseMove = false) => {
+      if (!fromMouseMove && state.soundEnabled) { primeAlertVoice(); primeReceiptAudio(); }
+      if (!state.soundEnabled || state.soundPrimed || state.soundPriming) return;
+      if (fromMouseMove) {
+        if (Date.now() - Number(state.mousePrimeAttempted || 0) < 1500) return;
+        state.mousePrimeAttempted = Date.now();
+      }
+      state.soundPriming = true;
+      try {
+        await unlockAlarm({ silent: true });
+      } finally {
+        state.soundPriming = false;
+      }
+    };
+    // Al terminar el toque o deslizamiento el navegador puede autorizar audio y voz.
+    document.addEventListener("mousemove", () => prime(true), { passive: true });
+    ["pointerdown", "pointerup", "touchstart", "touchend", "click", "keydown"].forEach((eventName) => {
+      document.addEventListener(eventName, (event) => {
+        if (event?.target?.closest?.("#enableSound")) return;
+        return prime(false);
+      }, { passive: true, capture: true });
+    });
+  };
+
+  const startAlarmLoop = () => {
+    clearInterval(state.alarmTimer);
+    state.alarmTimer = setInterval(() => {
+      if (!activeRequests().length) {
+        const audio = getAlarmAudio();
+        if (audio) {
+          audio.pause();
+          audio.loop = false;
+          audio.currentTime = 0;
+        }
+      }
+    }, 12000);
+  };
+
+  const pendingPeerRefreshes = new Set();
+  let peerRefreshSending = false;
+  let peerRefreshRetryTimer = null;
+  const flushPeerRefreshes = async () => {
+    if (peerRefreshSending || !navigator.onLine || !state.authToken || !state.currentUser || !pendingPeerRefreshes.size) return;
+    peerRefreshSending = true;
+    const events = [...pendingPeerRefreshes];
+    events.forEach((event) => pendingPeerRefreshes.delete(event));
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 2500);
+    let delivered = false;
+    try {
+      // La entrega HTTP confirma que Realtime recibió el aviso, incluso si el
+      // socket de este equipo se está reconectando. Solo transmite invalidaciones.
+      const response = await fetch(`${SUPABASE_CONFIG.url}/realtime/v1/api/broadcast`, {
+        method: "POST",
+        headers: { apikey: SUPABASE_CONFIG.anonKey, Authorization: `Bearer ${SUPABASE_CONFIG.anonKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: events.map((event) => ({ topic: "admin", event, payload: {}, private: false })) }),
+        signal: controller.signal
+      });
+      if (!response.ok) throw new Error("Aviso pendiente de entrega");
+      delivered = true;
+    } catch (_) {
+      events.forEach((event) => pendingPeerRefreshes.add(event));
+    } finally {
+      window.clearTimeout(timer);
+      peerRefreshSending = false;
+      if (pendingPeerRefreshes.size && navigator.onLine) {
+        window.clearTimeout(peerRefreshRetryTimer);
+        peerRefreshRetryTimer = window.setTimeout(() => void flushPeerRefreshes(), delivered ? 0 : 1000);
+      }
+    }
+  };
+
+  const notifyAdminPeers = (detail = {}) => {
+    if (!state.authToken || !state.currentUser) return;
+    for (const [enabled,event] of [[detail.operational,"refresh"],[detail.core,"core-refresh"],[detail.reports,"reports-refresh"],[detail.inventory,"inventory-refresh"],[detail.users,"users-refresh"]]) {
+      if (enabled) pendingPeerRefreshes.add(event);
+    }
+    void flushPeerRefreshes();
+  };
+
+  const receiveAdminRequests = (rows) => {
+    const incoming = (Array.isArray(rows) ? rows : []).filter((row) => row?.id && row.table_id && row.status);
+    if (!incoming.length) return;
+    const completed = rememberCompletedAdminRequests(incoming.filter((row) => ["acknowledged", "resolved"].includes(row.status) || row.acknowledged_at).map((row) => row.id));
+    const before = JSON.stringify(state.requests);
+    const requests = new Map(state.requests.map((row) => [row.id, row]));
+    incoming.forEach((row) => {
+      if (row.status === "pending" && completed.has(row.id)) return;
+      requests.set(row.id, { ...requests.get(row.id), ...row,
+        restaurant_tables: row.restaurant_tables || requests.get(row.id)?.restaurant_tables || state.tables.find((table) => String(table.id) === String(row.table_id)) });
+    });
+    state.requests = mergeOptimisticRequests([...requests.values()].sort(compareRequestArrival));
+    if (JSON.stringify(state.requests) === before) return;
+    persistPendingAdminRequests(state.requests);
+    state.adminSnapshotSignature = "";
+    renderAdminLive();
+  };
+
+  const refreshAdminRequests = async (requestIds = []) => {
+    const ids = [...new Set(Array.isArray(requestIds) ? requestIds : [])].filter((id) => typeof id === "string").slice(0, 30);
+    if (!state.authToken || !ids.length) return;
+    // El aviso solo lleva IDs: la notificación se confirma leyendo Supabase.
+    const rows = await readRealtimeData(state.sb.from("service_requests").select("*").in("id", ids));
+    receiveAdminRequests(rows);
+  };
+
+  let adminRequestPollBusy = false;
+  const pollAdminRequests = async () => {
+    if (!state.authToken || state.page !== "admin" || adminRequestPollBusy || !navigator.onLine) return false;
+    adminRequestPollBusy = true;
+    const token = state.authToken;
+    const knownPending = state.requests.filter(row => row.status === "pending").map(row => row.id);
+    try {
+      const rows = await readRealtimeData(state.sb.from("service_requests").select("*")
+        .eq("status", "pending").order("created_at", { ascending: true }), 2500);
+      if (state.authToken !== token || !Array.isArray(rows)) return false;
+      receiveAdminRequests(rows);
+      const returned = new Set(rows.map(row => row.id));
+      const missing = knownPending.filter(id => !returned.has(id));
+      // Aceptaciones y cierres se verifican aparte; no retrasan solicitudes nuevas.
+      for (let offset = 0; offset < missing.length; offset += 30) void refreshAdminRequests(missing.slice(offset, offset + 30));
+      return true;
+    } finally { adminRequestPollBusy = false; }
+  };
+
+  let adminRefreshPending = false;
+  const refreshAdminNow = async ({ periodic = false } = {}) => {
+    if (state.adminSyncBusy) { if (!periodic) adminRefreshPending = true; return false; }
+    state.adminSyncBusy = true;
+    try {
+      const changed = await loadAdminData();
+      if (changed) renderAdminLive();
+      void refreshBackgroundReports();
+      return changed;
+    } finally {
+      state.adminSyncBusy = false;
+      if (adminRefreshPending) { adminRefreshPending = false; window.setTimeout(() => void refreshAdminNow(),0); }
+    }
+  };
+
+  const startAdminPolling = () => {
+    clearInterval(state.adminRequestPollTimer);
+    void pollAdminRequests();
+    state.adminRequestPollTimer = setInterval(() => void pollAdminRequests(), 1000);
+    clearInterval(state.adminPollTimer);
+    state.adminPollTimer = setInterval(() => {
+      const healthy = state.adminDataConnected === true && state.adminBroadcastConnected === true;
+      const scope = state.authToken || "";
+      const snapshotInterval = healthy ? (document.hidden ? 15000 : 5000) : SYNC_INTERVAL_MS;
+      if (navigator.onLine && state.readBudget?.due("admin-snapshot",snapshotInterval,scope) !== false) {
+        void refreshAdminNow({periodic:true});
+      }
+      const coreInterval = healthy ? (document.hidden ? 60000 : 15000) : 5000;
+      if (navigator.onLine && Date.now()-Number(state.coreRefreshedAt || 0) >= coreInterval
+          && state.readBudget?.due("core",coreInterval,scope) !== false) {
+        void refreshCoreNow({periodic:true});
+        if (isBoss()) void loadUsers();
+      }
+    }, Math.min(SYNC_INTERVAL_MS, 1500));
+  };
+
+  const pendingAdminRequestsStorageKey = () => `donpieros_pending_admin_requests_v1:${SUPABASE_CONFIG.url}`;
+
+  const rememberCompletedAdminRequests = (ids = []) => {
+    const completed = state.completedAdminRequestIds ||= new Set();
+    const key = `${pendingAdminRequestsStorageKey()}:completed`;
+    try {
+      const stored = JSON.parse(localStorage.getItem(key) || "[]");
+      if (Array.isArray(stored)) stored.filter((id) => typeof id === "string").forEach((id) => completed.add(id));
+    } catch (_) { /* La memoria conserva las confirmaciones de esta pantalla. */ }
+    let changed = false;
+    ids.forEach((id) => {
+      if (!completed.has(id)) { completed.add(id); changed = true; }
+    });
+    if (changed) {
+      try { localStorage.setItem(key, JSON.stringify([...completed])); } catch (_) { /* La confirmación remota sigue siendo válida. */ }
+    }
+    return completed;
+  };
+
+  const readPendingAdminRequests = () => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(pendingAdminRequestsStorageKey()) || "[]");
+      const completed = rememberCompletedAdminRequests();
+      return Array.isArray(stored) ? stored.filter((request) => request?.id && request.status === "pending" && !completed.has(request.id)) : [];
+    } catch (_) { return []; }
+  };
+
+  const persistPendingAdminRequests = (requests) => {
+    try {
+      const unique = [...new Map(requests.map((request) => [request.id, request])).values()];
+      const completed = rememberCompletedAdminRequests();
+      localStorage.setItem(pendingAdminRequestsStorageKey(), JSON.stringify(unique.filter((request) => request.status === "pending" && !completed.has(request.id))));
+    } catch (_) { /* La cola del servidor y la memoria siguen conservando las solicitudes. */ }
+  };
+
+  const compareRequestArrival = (a, b) =>
+    (Date.parse(a.created_at) || 0) - (Date.parse(b.created_at) || 0) || String(a.id).localeCompare(String(b.id));
+
+  const loadAdminData = async () => {
+    const readStartedAt = Date.now();
+    const readScope = state.authToken || "";
+    state.readBudget?.touch("admin-snapshot",readScope);
+    const snapshot = await readRealtimeData(state.sb.rpc("getAdminSnapshot", { auth_token: state.authToken }));
+    state.readBudget?.settled("admin-snapshot",Boolean(snapshot && Array.isArray(snapshot.requests) && Array.isArray(snapshot.sessions)),readScope);
+    if (snapshot?.pos_features) { state.posFeatures = snapshot.pos_features; if (!state.drawerReceiverTimer) startDrawerReceiver(); }
+    else if (!navigator.onLine && typeof readOfflineAdminSnapshot === "function") state.posFeatures = readOfflineAdminSnapshot()?.posFeatures || {};
+    if (!snapshot) return false;
+    if (!Array.isArray(snapshot.requests) || !Array.isArray(snapshot.sessions)) return false;
+    if (typeof receiveAdminRequests === "function") receiveAdminRequests(snapshot.requests);
+    const livePending = new Set(state.requests.filter((request) => request.status === "pending").map((request) => request.id));
+    const knownPending = new Map([...readPendingAdminRequests(), ...state.requests.filter((request) => request.status === "pending")].map((request) => [request.id, request]));
+    const incoming = new Map(snapshot.requests.map((request) => [request.id, request]));
+    // Una omisión del snapshot no confirma que alguien haya aceptado la solicitud.
+    const missingIds = [...knownPending.keys()].filter((id) => !incoming.has(id) || !livePending.has(id));
+    for (let offset = 0; offset < missingIds.length; offset += 100) {
+      const confirmed = await readRealtimeData(state.sb.from("service_requests").select("*").in("id", missingIds.slice(offset, offset + 100)));
+      if (Array.isArray(confirmed)) confirmed.forEach((request) => incoming.set(request.id, request));
+    }
+    // Al recargar, la caché sola no prueba que una solicitud siga pendiente.
+    knownPending.forEach((request, id) => {
+      if (!livePending.has(id) && !incoming.has(id)) knownPending.delete(id);
+    });
+    const completed = rememberCompletedAdminRequests([...incoming.values()].filter((request) => ["acknowledged", "resolved"].includes(request.status) || request.acknowledged_at).map((request) => request.id));
+    completed.forEach((id) => knownPending.delete(id));
+    incoming.forEach((request, id) => {
+      if (request.status === "pending" && completed.has(id)) return;
+      const previous = knownPending.get(id);
+      const accepted = ["acknowledged", "resolved"].includes(request.status) || Boolean(request.acknowledged_at);
+      knownPending.set(id, {
+        ...previous, ...request,
+        restaurant_tables: request.restaurant_tables || previous?.restaurant_tables,
+        status: previous && !accepted ? "pending" : request.status
+      });
+    });
+    const merged = [...knownPending.values()].sort(compareRequestArrival);
+    const requests = mergeOptimisticRequests(merged);
+    const inFlightPending = merged.filter((request) => request.status === "pending" && state.optimisticRequestStates.has(request.id));
+    persistPendingAdminRequests([...requests, ...inFlightPending]);
+    const sessions = mergeOptimisticSessions(snapshot.sessions || [], { readStartedAt });
+    const signature = JSON.stringify([requests,sessions]);
+    if (signature === state.adminSnapshotSignature) return false;
+    state.adminSnapshotSignature = signature;
+    state.requests = requests;
+    state.sessions = sessions;
+    return true;
+  };
+
+  const mergePendingCoreData = (remote,queue) => {
+    const records = queue?.blockingRecords || [];
+    const result = { ...remote };
+    for (const [entity,key] of [['restaurant_tables','tables'],['menu_categories','categories'],['menu_items','items']]) {
+      const pending = records.filter((record) => record.entity === entity);
+      const rows = new Map((remote[key] || []).map((row) => [row.id,row]));
+      const local = state[key] || [];
+      pending.forEach((record) => {
+        const ids = record.recordIds || [];
+        if (!ids.length) { local.forEach((row) => rows.set(row.id,row)); return; }
+        ids.forEach((id) => {
+          if (record.method === 'DELETE') { rows.delete(id); return; }
+          const saved = local.find((row) => row.id === id);
+          if (!saved) return;
+          if (!rows.has(id) || !Array.isArray(record.changedFields)) { rows.set(id,saved); return; }
+          if (record.method === 'POST') return;
+          const row = { ...rows.get(id) };
+          record.changedFields.filter((field) => field !== 'id').forEach((field) => { if (Object.prototype.hasOwnProperty.call(saved,field)) row[field] = saved[field]; });
+          rows.set(id,row);
+        });
+      });
+      if (entity === 'restaurant_tables' && records.some((record) => record.entity === 'rpc:save_table_zones')) {
+        local.forEach((row) => { if (rows.has(row.id)) rows.set(row.id,{...rows.get(row.id),is_outdoor:row.is_outdoor}); });
+      }
+      result[key] = [...rows.values()];
+    }
+    const businessChanges = records.filter((record) => record.entity === 'business_settings');
+    businessChanges.forEach((record) => {
+      if (!state.business) return;
+      if (!Array.isArray(record.changedFields)) { result.business = state.business; return; }
+      result.business = { ...result.business };
+      record.changedFields.filter((field) => field !== 'id').forEach((field) => { if (Object.prototype.hasOwnProperty.call(state.business,field)) result.business[field] = state.business[field]; });
+    });
+    return result;
+  };
+
+  let coreRefreshPromise = null;
+  let coreRefreshPending = false;
+  const refreshCoreNow = ({ periodic = false } = {}) => {
+    if (coreRefreshPromise) { if (!periodic) coreRefreshPending = true; return coreRefreshPromise; }
+    state.coreSyncBusy = true;
+    coreRefreshPromise = (async () => {
+      const readScope = state.authToken || "";
+      state.readBudget?.touch("core",readScope);
+      const queue = typeof getOfflineSyncStatus === 'function' ? await getOfflineSyncStatus() : {blockingRecords:[]};
+      if (typeof setScopedCoreRead === 'function') await setScopedCoreRead(Array.isArray(queue.blockingRecords));
+      const params = new URLSearchParams(location.search);
+      const data = await dbQuiet(state.sb.rpc('getBootstrapData',{
+        auth_token:state.authToken || '',
+        table_access_code:state.currentTable ? tableCode(state.currentTable) : params.get('mesa') || params.get('table') || params.get('t') || params.get('qr') || ''
+      }),null);
+      const businessLoaded = Boolean(data?.business);
+      state.readBudget?.settled("core",Boolean(data?.business && Array.isArray(data?.tables) && Array.isArray(data?.categories) && Array.isArray(data?.items)),readScope);
+      const coreLoaded = Array.isArray(data?.tables) && Array.isArray(data?.categories) && Array.isArray(data?.items);
+      state.syncFresh ||= {};
+      if (businessLoaded && coreLoaded) {
+        const fresh = mergePendingCoreData(data,queue);
+        state.business = fresh.business; state.tables = fresh.tables; state.categories = fresh.categories; state.items = fresh.items;
+        state.coreRefreshedAt = Date.now();
+      }
+      if (businessLoaded && coreLoaded) state.coreDirectReadSucceeded = true;
+      state.syncFresh.core = Boolean(businessLoaded && coreLoaded);
+      applyBusinessTipSettings();
+      if (!state.outdoorTableDraftDirty) state.outdoorTableDraftIds = null;
+      if (businessLoaded && coreLoaded) persistBootstrapCache();
+      if (state.page === "admin") {
+        renderBrand();
+        syncTipFeatureVisibility();
+        renderTables();
+        renderServiceTables();
+        renderTableManager();
+        renderMenuManager();
+        renderInventory();
+        if (state.activeAdminSection === "brand" && !state.outdoorTableDraftDirty) renderBusinessForm();
+      }
+      else {
+        renderBrand();
+        renderMenu();
+      }
+      return businessLoaded && coreLoaded;
+    })().finally(() => {
+      state.coreSyncBusy = false;
+      coreRefreshPromise = null;
+      if (coreRefreshPending) { coreRefreshPending = false; window.setTimeout(() => void refreshCoreNow(),0); }
+      if (typeof updateGlobalSyncStatus === 'function') void updateGlobalSyncStatus();
+    });
+    return coreRefreshPromise;
+  };
+
+  const updateNavRequestBadge = () => {
+    const badge = $("#navRequestBadge");
+    if (!badge) return;
+    const count = activeRequests().length;
+    badge.hidden = count === 0;
+    badge.textContent = count > 99 ? "99+" : String(count);
+    badge.setAttribute("aria-label", `${count} solicitud${count === 1 ? "" : "es"} pendiente${count === 1 ? "" : "s"}`);
+    if (count > state.lastRequestBadgeCount) {
+      badge.classList.remove("is-inflating");
+      void badge.offsetWidth;
+      badge.classList.add("is-inflating");
+      window.setTimeout(() => badge.classList.remove("is-inflating"), 650);
+    }
+    state.lastRequestBadgeCount = count;
+  };
+
+  const OPEN_BALANCE_PRIVACY_KEY = "don_pieros_open_balance_hidden_v1";
+  let openBalanceHidden = false;
+  try { openBalanceHidden = localStorage.getItem(OPEN_BALANCE_PRIVACY_KEY) === "1"; } catch (_) { /* La preferencia funciona en memoria si no hay almacenamiento. */ }
+  let openBalanceValue = 0;
+  const renderOpenBalance = (amount = openBalanceValue) => {
+    openBalanceValue = amount;
+    const value = $("#metricSales"), button = $("#toggleOpenBalance");
+    if (!value || !button) return;
+    value.textContent = openBalanceHidden ? "******" : money(amount);
+    value.setAttribute("aria-label", openBalanceHidden ? "Saldo abierto oculto" : "Saldo abierto: " + money(amount));
+    value.closest(".metric-open-balance")?.classList.toggle("is-balance-hidden", openBalanceHidden);
+    const label = openBalanceHidden ? "Mostrar saldo abierto" : "Ocultar saldo abierto";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.setAttribute("aria-pressed", String(openBalanceHidden));
+    button.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${openBalanceHidden
+      ? '<path d="m3 3 18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A11.2 11.2 0 0 1 12 5c6.4 0 10 7 10 7a19 19 0 0 1-3.2 4.1M6.2 6.2A20 20 0 0 0 2 12s3.6 7 10 7a11 11 0 0 0 5.8-1.8"/>'
+      : '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>'}</svg>`;
+  };
+
+  const renderAdminShell = () => {
+    renderBrand();
+    syncTipFeatureVisibility();
+    const tableSessions = state.sessions.filter((session) => !isLocalWalkInSession(session) && sessionHasConsumption(session));
+    const totals = {
+      tables: normalTables().filter((table) => table.is_active).length,
+      alerts: activeRequests().length,
+      open: tableSessions.length,
+      sales: tableSessions.reduce((sum, session) => sum + sessionTotal(session), 0)
+    };
+    $("#metricTables").textContent = totals.tables;
+    $("#metricAlerts").textContent = totals.alerts;
+    $("#metricOpen").textContent = totals.open;
+    renderOpenBalance(totals.sales);
+    updateNavRequestBadge();
+  };
+
+  const integerMoney = (value) => Math.max(0, Math.round(Number(value || 0)));
+
+  const tipsEnabled = () => state.tipSettings?.enabled === true
+    && Number(state.tipSettings?.percentage) >= 1
+    && Number(state.tipSettings?.percentage) <= 100;
+
+  const tipAmountFor = (baseTotal, percentage = state.tipSettings?.percentage) =>
+    integerMoney(Number(baseTotal || 0) * Number(percentage || 0) / 100);
+
+  const localDateKey = (value) => {
+    const date = new Date(value || Date.now());
+    if (Number.isNaN(date.getTime())) return "";
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+
+  const syncTipFeatureVisibility = () => {
+    const enabled = tipsEnabled();
+    $$('[data-tip-feature]').forEach((element) => {
+      const section = element.dataset.adminSection || element.getAttribute("href")?.replace("#", "") || "tips";
+      element.hidden = !enabled || !canAccessAdminSection(section);
+    });
+  };
+
+  const sessionTotals = (session) => {
+    const subtotal = (session?.session_items || [])
+      .filter((item) => item.status !== "cancelled")
+      .reduce((sum, item) => sum + integerMoney(item.unit_price) * Math.max(0, Number(item.quantity || 0)), 0);
+    const total = integerMoney(subtotal);
+    return { subtotal: total, discount: 0, tax: 0, serviceFee: 0, total };
+  };
+
+  const sessionTotal = (session) => sessionTotals(session).total;
+
+  const sessionPayments = (session) => [...new Map((session?.session_payments || []).map((row) => [row.id, row])).values()];
+  const sessionPaid = (session) => sessionPayments(session).reduce((sum, row) => sum + integerMoney(row.amount), 0);
+  const sessionHasConsumption = (session) => {
+    if (!session || session.status !== "open") return false;
+    if (sessionPaid(session) > 0) return true;
+    if (Array.isArray(session.session_items)) return session.session_items.some(item => (item.status === "served" || !item.status) && Number(item.quantity || 0) > 0);
+    // Una lectura parcial no debe ocultar una cuenta real ya confirmada.
+    return Number(session.subtotal || 0) > 0 || Number(session.total || 0) > 0;
+  };
+  const sessionBalance = (session) => Math.max(0, sessionTotal(session) - sessionPaid(session));
+
+  const consumptionChangeAllowed = (session, itemId, replacement) => {
+    const projected = { ...session, session_items: (session?.session_items || []).map((item) =>
+      item.id === itemId ? { ...item, ...replacement } : item) };
+    const total = sessionTotal(projected);
+    return total === 0 || total >= sessionPaid(session);
+  };
+
+  const clearPaymentsWithoutConsumption = (session) => sessionTotal(session) === 0
+    ? { ...session, session_payments: [] } : session;
+
+  const aggregateAccountPayments = (session, finalPayments) => {
+    const totals = new Map();
+    [...sessionPayments(session).map((row) => ({ method: row.payment_method, amount: row.amount })), ...finalPayments]
+      .forEach((row) => totals.set(row.method, (totals.get(row.method) || 0) + integerMoney(row.amount)));
+    return [...totals].filter(([, amount]) => amount > 0).map(([method, amount]) => ({ method, amount }));
+  };
+  const abonoRowsHtml = (session) => (Array.isArray(session?.session_items) && sessionTotal(session) === 0 ? [] : sessionPayments(session)).sort((a,b) => String(b.created_at).localeCompare(String(a.created_at)))
+    .map((row) => '<div class="account-abono-line"><div><strong>Abono · ' + escapeHTML(paymentMethodLabel(row.payment_method)) + '</strong><small>'
+      + escapeHTML(new Date(row.created_at).toLocaleString("es-CO", { dateStyle: "short", timeStyle: "medium" }))
+      + (row.reference ? ' · ' + escapeHTML(row.reference) : '') + (row._offline_pending ? ' · Pendiente de sincronizar' : '')
+      + '</small></div><strong>−' + money(row.amount) + '</strong></div>').join('');
+
+  const openAbonoDialog = (sessionId) => {
+    const session = state.sessions.find((row) => row.id === sessionId);
+    const form = $("#abonoForm"), dialog = $("#abonoDialog");
+    if (!session || !form || !dialog) return;
+    if (!state.posFeatures?.abonos) { toast("Los abonos aún no están habilitados. Contacta al responsable del negocio.", "error", "abonos-backend"); return; }
+    if (sessionBalance(session) <= 0) { toast("Esta cuenta no tiene saldo pendiente.", "error"); return; }
+    form.reset(); form.session_id.value = session.id;
+    $("#abonoTitle").textContent = "Abonar a " + sessionLabel(session);
+    $("#abonoBalance").textContent = "Saldo pendiente: " + money(sessionBalance(session));
+    dialog.showModal(); setTimeout(() => form.amount.focus(), 0);
+  };
+  const recordAbono = async (form) => {
+    if (form.dataset.saving === "1") return;
+    let session = state.sessions.find((row) => row.id === form.session_id.value);
+    const amount = currencyInputNumber(form.amount);
+    if (!session || amount <= 0 || amount > sessionBalance(session)) { toast("El abono debe ser mayor a cero y no superar el saldo pendiente.", "error"); return; }
+    const id = form.dataset.paymentId || uid(); form.dataset.paymentId = id;
+    form.dataset.saving = "1"; const button = form.querySelector('[type="submit"]'); button.disabled = true;
+    try {
+      const { data, error } = await state.sb.rpc("record_session_payment", { auth_token: state.authToken, payment_id: id,
+        p_session_id: session.id, p_amount: amount, p_method: form.payment_method.value, p_reference: form.reference.value.trim(), p_created_at: new Date().toISOString() });
+      if (error || !data?.payment) { toast(error?.message || "El abono no pudo guardarse. La cuenta conserva su saldo.", "error", "abono-failed"); return; }
+      // The account list may have refreshed while the payment was in flight.
+      session = state.sessions.find(row => row.id === session.id) || session;
+      session.session_payments = [...sessionPayments(session).filter(row => row.id !== id), data.payment];
+      if (typeof persistOfflineAdminSnapshot === "function") {
+        persistOfflineAdminSnapshot();
+        if (typeof flushDurableWrites === "function" && typeof OFFLINE_ADMIN_SNAPSHOT_KEY !== "undefined")
+          await flushDurableWrites([OFFLINE_ADMIN_SNAPSHOT_KEY]);
+      }
+      if (form.payment_method.value === "cash" && !data.duplicate) void openCashDrawer({ localOnly: true });
+      delete form.dataset.paymentId; $("#abonoDialog")?.close();
+      state.accountsRenderSignature = ""; state.adminSnapshotSignature = "";
+      if (!data.payment._offline_pending) notifyAdminPeers({ operational:true });
+      renderAdminLive(); renderAccountDetail();
+      if ($("#consumptionDialog")?.open && $("#consumptionForm")?.session_id?.value === session.id) {
+        const wasVisible = !$("#tableConsumptionPreview")?.hidden;
+        renderTableConsumptionPreview(session);
+        if (wasVisible) setTableConsumptionPreviewVisible(true);
+      }
+      toast("Abono guardado: " + money(amount) + ". Saldo: " + money(sessionBalance(session)), "ok", "abono:" + id);
+    } catch (error) {
+      toast(error?.message || "No se pudo confirmar el abono. Revisa el registro antes de volver a intentarlo.", "error", "abono-failed");
+    } finally { delete form.dataset.saving; button.disabled = false; }
+  };
+  let clientPosReadPending = null;
+  let clientPosReadKey = "";
+  const refreshClientPosData = () => {
+    if (!state.currentTable) return Promise.resolve(false);
+    const table = state.currentTable, sessionId = state.currentSession?.id || "";
+    const key = table.id + ":" + sessionId + ":" + tableCode(table);
+    if (clientPosReadPending && clientPosReadKey === key) return clientPosReadPending;
+    clientPosReadKey = key;
+    const read = (async () => {
+      const [queue, payments] = await Promise.all([
+        dbQuiet(state.sb.rpc("get_service_request_queue", { p_table_id: table.id, p_table_access_code: tableCode(table) }), null),
+        sessionId ? dbQuiet(state.sb.rpc("get_session_payments", { p_session_id: sessionId,
+          p_table_id: table.id, p_table_access_code: tableCode(table), auth_token: "" }), null) : null
+      ]);
+      if (state.currentTable?.id !== table.id || (state.currentSession?.id || "") !== sessionId) return false;
+      if (Array.isArray(queue?.requests)) { state.clientQueuePositions = queue.requests; renderClientQueue(); if (songTurnCount() < 5 && $("#songLimitNotice")) $("#songLimitNotice").hidden = true; }
+      if (!Array.isArray(payments?.payments)) return false;
+      const changed = JSON.stringify(state.currentSession.session_payments) !== JSON.stringify(payments.payments);
+      state.currentSession.session_payments = payments.payments;
+      if (changed) { renderAccount(); renderBillChat(); }
+      return changed;
+    })().finally(() => { if (clientPosReadPending === read) clientPosReadPending = null; });
+    clientPosReadPending = read;
+    return read;
+  };
+  const renderClientQueue = () => {
+    const box = $("#clientQueueStatus"); if (!box) return;
+    const now = Date.now();
+    const scope = JSON.stringify([state.currentTable?.id || "", state.currentSession?.id || ""]);
+    const storageKey = "donpieros_client_notices:" + scope;
+    if (state.clientNoticeScope !== scope) {
+      window.clearTimeout(state.clientNoticeTimer);
+      state.clientNoticeScope = scope;
+      state.clientNotices = new Map();
+      state.clientNoticeStatuses = new Map();
+      let seen = [];
+      try { seen = JSON.parse(sessionStorage.getItem(storageKey) || "[]"); } catch (_) { /* Memoria disponible sin almacenamiento. */ }
+      state.clientNoticeSeen = new Set(Array.isArray(seen) ? seen : []);
+    }
+    const notices = state.clientNotices;
+    const seen = state.clientNoticeSeen;
+    const rows = (state.clientQueuePositions || []).filter((row) => !state.pizzeriaService || row.kind !== "song");
+    const groups = new Map();
+    rows.forEach((row) => {
+      if (!groups.has(row.kind)) groups.set(row.kind, []);
+      groups.get(row.kind).push(row);
+    });
+    const requests = (state.clientRequests || []).filter((request) =>
+      request.table_id === state.currentTable?.id && request.session_id === state.currentSession?.id
+      && (!state.pizzeriaService || !isSongRequest(request)));
+    const attending = requests.filter((request) => request.status === "acknowledged");
+    const newKinds = new Map();
+    attending.forEach((request) => {
+      const token = "accepted:" + request.id;
+      if (seen.has(token)) return;
+      seen.add(token);
+      const acknowledgedAt = Date.parse(request.acknowledged_at || request.updated_at || "");
+      const previousStatus = state.clientNoticeStatuses.get(request.id);
+      if (previousStatus !== "pending" && previousStatus !== "sending"
+        && Number.isFinite(acknowledgedAt) && now - acknowledgedAt >= 5000) return;
+      const kind = requestKind(request);
+      newKinds.set(kind, request.id);
+      if (kind === "chat") return; // El chat conserva su aviso de conexion.
+      const key = "attending:" + kind;
+      const notice = notices.get(key) || { kind, requestIds: new Set() };
+      notice.requestIds.add(request.id);
+      notice.expiresAt = now + 5000;
+      notices.set(key, notice);
+    });
+    requests.forEach((request) => state.clientNoticeStatuses.set(request.id, request.status));
+    newKinds.forEach((id) => void playClientChatReceipt(id));
+    try { sessionStorage.setItem(storageKey, JSON.stringify([...seen].slice(-500))); } catch (_) { /* Evita repetir avisos en memoria. */ }
+    const attendingIds = new Set(attending.map((request) => request.id));
+    notices.forEach((notice, key) => {
+      if (notice.requestIds) {
+        notice.requestIds = new Set([...notice.requestIds].filter((id) => attendingIds.has(id)));
+      }
+      if (notice.expiresAt <= now || (notice.requestIds && !notice.requestIds.size)
+        || (!notice.requestIds && !groups.has(notice.kind))) notices.delete(key);
+    });
+    const labels = { waiter: "de mesero", song: "de canción", bill: "de cuenta", other: "de atención" };
+    const songCount = songTurnCount();
+    const songPosition = groups.get("song")?.[0]?.position;
+    const turnDetail = (position) => Number(position) === 1
+      ? "Tu mesa es la siguiente en el orden de llegada."
+      : "Hay " + (Number(position) - 1) + " turno(s) antes del tuyo.";
+    const badges = [...groups].filter(([kind]) => kind !== "song").map(([kind, entries]) =>
+      '<div class="client-queue-badge" data-queue-kind="' + escapeHTML(kind) + '"><div class="client-queue-badge-head"><span>Atención · ' + entries.length + ' solicitud(es)</span><strong>Turno <b>' + Number(entries[0].position) + '</b></strong></div><small>' + turnDetail(entries[0].position) + '</small></div>');
+    if (state.currentTable && !state.pizzeriaService) badges.unshift('<div class="client-queue-badge is-song" data-queue-kind="song"><div class="client-queue-badge-head"><span>♫ Música</span>'
+      + (songPosition ? '<strong>Turno <b>' + Number(songPosition) + '</b></strong>' : '<strong>Tu mesa</strong>')
+      + '</div><div class="client-queue-badge-stats"><span><b>' + songCount + '/5</b> canciones</span><span><b>' + Math.max(0, 5 - songCount) + '</b> disponibles</span></div><small>'
+      + (songPosition ? turnDetail(songPosition) : songCount ? 'Tu posición aparecerá al confirmarse el envío.' : 'Puedes solicitar hasta 5 canciones por turno.') + '</small></div>');
+    const markup = badges.join('') + [...notices.values()].map((notice) => {
+      if (notice.requestIds) {
+        const ids = [...notice.requestIds];
+        return `<div class="client-notification" data-attending-request="${escapeHTML(ids[0])}"><strong>Te estamos atendiendo${ids.length > 1 ? " (" + ids.length + ")" : ""}</strong><small>Tu solicitud ${labels[notice.kind] || "de atención"} está siendo atendida en este momento.</small></div>`;
+      }
+      return '';
+    }).join('');
+    box.hidden = !markup;
+    if (state.clientNoticeMarkup !== markup) { state.clientNoticeMarkup = markup; box.innerHTML = markup; }
+    window.clearTimeout(state.clientNoticeTimer);
+    if (notices.size) state.clientNoticeTimer = window.setTimeout(renderClientQueue,
+      Math.max(1, Math.min(...[...notices.values()].map((notice) => notice.expiresAt)) - now));
+  };
+
+  const bindAccountFeatures = () => {
+    $("#abonoForm")?.addEventListener("submit", (event) => { event.preventDefault(); void recordAbono(event.currentTarget); });
+    document.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-abono-session]"); if (button) openAbonoDialog(button.dataset.abonoSession);
+      if (event.target.closest("#abonoTableAccount")) openAbonoDialog($("#consumptionForm")?.session_id?.value || "");
+    });
+    let lastNumpadZero = 0;
+    document.addEventListener("keydown", (event) => {
+      if (event.code !== "Numpad0" || event.key !== "0" || event.repeat || event.ctrlKey || event.altKey || event.metaKey
+        || document.querySelector("dialog[open], [aria-modal='true']")
+        || event.target.closest?.("input,textarea,select,[contenteditable]")
+        || document.activeElement?.closest?.("input,textarea,select,[contenteditable]")) { lastNumpadZero = 0; return; }
+      const now = Date.now();
+      if (lastNumpadZero && now-lastNumpadZero <= 450) { lastNumpadZero = 0; event.preventDefault(); void openCashDrawer(); }
+      else lastNumpadZero = now;
+    });
+    document.addEventListener("focusin", () => { lastNumpadZero = 0; });
+  };
+
+  const newestSessionItems = (session) => [...(session?.session_items || [])]
+    .filter((item) => item.status !== "cancelled")
+    .sort((left, right) => {
+      const leftTime = new Date(left.created_at || left.updated_at || 0).getTime();
+      const rightTime = new Date(right.created_at || right.updated_at || 0).getTime();
+      return rightTime - leftTime;
+    });
+
+  const tablesSignature = () =>
+    JSON.stringify({
+      tables: state.tables.map((table) => [
+        table.id,
+        table.table_number,
+        table.table_name,
+        table.qr_code,
+        table.is_active
+      ]),
+      sessions: state.sessions.map((session) => [
+        session.id,
+        session.table_id,
+        session.status,
+        sessionTotal(session),
+        (session.session_items || []).length
+      ]),
+      requests: activeRequests().map((request) => [request.id, request.table_id, request.request_type, request.status]),
+      filters: [state.dashboardTableGroupFilter, $("#dashboardTableSearch")?.value || ""]
+    });
+
+  const groupedActiveRequests = () => {
+    const groups = new Map();
+    [...activeRequests()].sort((left, right) => compareRequestArrival(right, left)).forEach((request) => {
+      const kind = requestKind(request);
+      const origin = requestOrigin(request);
+      const key = JSON.stringify([request.table_id, kind, origin.kind, origin.name]);
+      const group = groups.get(key);
+      if (group) {
+        group.request_ids.push(request.id);
+        group.entries.push(request);
+        group.count += 1;
+      } else {
+        groups.set(key, { ...request, kind, request_ids: [request.id], entries: [request], count: 1, latest_message: request.message || "" });
+      }
+    });
+    return [...groups.values()];
+  };
+
+  const requestOrigin = (request) => {
+    return request.request_source === "waiter" ? { kind: "waiter", name: String(request.requested_by_name || "Mesero") }
+      : { kind: "client", name: "" };
+  };
+
+  const requestBody = (request) => String(request.message || "");
+
+  const requestGroupDetailsHtml = (request) => {
+    if (!["song", "chat"].includes(request.kind) || request.count < 2) return "";
+    const origin = requestOrigin(request);
+    const key = JSON.stringify([request.table_id, request.kind, origin.kind, origin.name]);
+    const entries = [...request.entries].reverse();
+    return `<details class="alert-request-details" data-request-group="${escapeHTML(key)}"><summary>Ver desglose (${request.count})</summary><ol class="alert-request-list">${entries.map((entry) => `<li data-request-entry="${escapeHTML(entry.id)}"><p>${escapeHTML(requestBody(entry) || "Sin mensaje")}</p><time datetime="${escapeHTML(entry.created_at || "")}">${escapeHTML(prettyDateTime(entry.created_at))}</time></li>`).join("")}</ol></details>`;
+  };
+
+  const renderAlerts = () => {
+    const box = $("#alertsPanel");
+    if (!box) return;
+    const alerts = groupedActiveRequests();
+    const visibleAlerts = state.alertFilter === "all"
+      ? alerts
+      : alerts.filter((request) => request.kind === state.alertFilter);
+    const renderSignature = JSON.stringify([state.alertFilter, visibleAlerts.map((request) =>
+      [request.kind, request.request_ids, requestOrigin(request), request.entries.map((entry) => [entry.id, entry.message, entry.created_at])])]);
+    box.classList.toggle("has-alerts", alerts.length > 0);
+    const alertCards = visibleAlerts
+      .map(
+        (request) => `
+              <article class="alert-card alert-${request.kind}" data-alert-card="${request.id}">
+                <div class="alert-icon">
+                  ${
+                    request.kind === "song"
+                      ? icon("music-2", 22)
+                      : REQUEST_IMAGES[request.request_type]
+                        ? `<img class="alert-image" src="${REQUEST_IMAGES[request.request_type]}" alt="">`
+                        : icon(REQUEST_ICONS[request.request_type] || "bell", 22)
+                  }
+                </div>
+                <div>
+                  <span>${request.kind === "song" ? "Canción solicitada" : request.kind === "chat" ? "Chat / pedido" : (REQUEST_LABELS[request.request_type] || request.request_type)}</span>
+                  <h3><mark class="alert-table-name">${escapeHTML(tableLabel(request.restaurant_tables))}</mark></h3>
+                  ${request.kind === "chat" ? `<small class="alert-origin${requestOrigin(request).kind === "waiter" ? " is-waiter" : ""}">${requestOrigin(request).kind === "waiter" ? `Pedido de mesero · ${escapeHTML(requestOrigin(request).name)}` : "Cliente · En línea"}</small>` : ""}
+                  ${request.message && !parseBillMessage(request.message) ? `<p>${escapeHTML(requestBody(request))}</p>` : ""}
+                  <p>${prettyDateTime(request.created_at)}</p>
+                  ${requestGroupDetailsHtml(request)}
+                </div>
+                ${request.count > 1 ? `<strong class="alert-count" aria-label="${request.count} llamados">${request.count}</strong>` : ""}
+                <button class="primary" data-accept-request="${request.request_ids.join(",")}">${icon("check", 17)} Aceptar</button>
+              </article>
+            `
+      )
+      .join("");
+
+    $("#floatingAlerts")?.remove();
+    if (renderSignature !== state.alertRenderSignature) {
+      const expanded = new Map([...(box.querySelectorAll?.(".alert-request-details[open]") || [])]
+        .map((details) => [details.dataset.requestGroup, details.querySelector(".alert-request-list")?.scrollTop || 0]));
+      state.alertRenderSignature = renderSignature;
+      box.innerHTML = visibleAlerts.length
+        ? alertCards
+        : emptyState("Sin solicitudes en este filtro", "Las nuevas solicitudes se acumularan aqui.", "bell");
+      (box.querySelectorAll?.(".alert-request-details") || []).forEach((details) => {
+        if (!expanded.has(details.dataset.requestGroup)) return;
+        details.open = true;
+        const list = details.querySelector(".alert-request-list");
+        if (list) list.scrollTop = expanded.get(details.dataset.requestGroup);
+      });
+    }
+
+    const signature = requestSignature();
+    if (signature && signature !== state.lastAlertSignature) {
+      state.lastAlertSignature = signature;
+      playAlarm(activeRequests());
+    }
+    refreshIcons();
+  };
+
+  const compactTableTiles = (groupFilter = "all", query = "") => normalTables()
+    .filter((table) => table.is_active !== false)
+    .filter((table) => tableMatchesGroup(table, groupFilter) && tableMatchesSearch(table, query))
+    .map((table) => {
+      const session = state.sessions.find((entry) => entry.table_id === table.id && sessionHasConsumption(entry));
+      const pending = state.requests.filter((request) => request.table_id === table.id && request.status === "pending").length;
+      const occupied = Boolean(session);
+      return `<button class="compact-table-tile ${occupied ? "occupied" : "free"} ${isTerraceTable(table) ? "terrace" : ""} ${pending ? "needs-attention" : ""}" type="button" data-open-table="${escapeHTML(table.id)}" title="Agregar consumo en ${escapeHTML(tableLabel(table))}"><span class="table-furniture-icon">${icon("armchair", 23)}</span><strong>M${escapeHTML(table.table_number)}</strong>${occupied ? `<small>${money(sessionTotal(session))}</small>` : "<small>Libre</small>"}${pending ? `<em>${pending}</em>` : ""}</button>`;
+    }).join("");
+
+  const renderTables = () => {
+    const box = $("#tablesGrid");
+    if (!box) return;
+    state.tableRenderSignature = tablesSignature();
+    box.classList.add("compact-tables-grid");
+    state.dashboardTableGroupFilter = syncTableGroupOptions($("#dashboardTableGroupFilter"), state.dashboardTableGroupFilter);
+    const emptyText = normalTables().some((table) => table.is_active !== false)
+      ? "No hay mesas que coincidan con este filtro."
+      : "Crea las mesas del negocio para comenzar.";
+    box.innerHTML = `<button class="compact-table-tile walk-in-table" id="newWalkInSale" type="button" data-manager-only aria-label="Nueva venta individual"><span class="table-furniture-icon">${icon("plus", 23)}</span><small>Venta individual</small></button>` + (compactTableTiles(state.dashboardTableGroupFilter, $("#dashboardTableSearch")?.value || "") || emptyState("Sin mesas", emptyText, "layout-grid"));
+    refreshIcons();
+  };
+
+  const renderServiceTables = () => {
+    const box = $("#waiterTablesGrid");
+    if (!box) return;
+    box.innerHTML = compactTableTiles() || emptyState("Sin mesas", "Crea una mesa activa para atenderla.", "armchair");
+    renderServicePoints();
+    refreshIcons();
+  };
+
+  const renderServicePoints = () => {
+    const box = $("#servicePointsGrid");
+    if (!box) return;
+    const otherZone = state.activeServiceZone === "bar" ? "planter" : "bar";
+    const hasActivePoints = state.tables.some((table) => table.is_active !== false && servicePointKind(table) === state.activeServiceZone);
+    const hasOtherPoints = state.tables.some((table) => table.is_active !== false && servicePointKind(table) === otherZone);
+    if (!hasActivePoints && hasOtherPoints) {
+      state.activeServiceZone = otherZone;
+      localStorage.setItem(SERVICE_ZONE_STORAGE_KEY, state.activeServiceZone);
+    }
+    $$('[data-service-zone]').forEach((button) => {
+      const active = button.dataset.serviceZone === state.activeServiceZone;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", String(active));
+    });
+    const points = state.tables
+      .filter((table) => table.is_active !== false && servicePointKind(table) === state.activeServiceZone)
+      .sort((left, right) => Number(left.table_number || 0) - Number(right.table_number || 0));
+    const kindLabel = state.activeServiceZone === "bar" ? "terraza" : "matera";
+    box.innerHTML = points.length ? points.map((table) => {
+      const displayLabel = state.activeServiceZone === "bar" ? tableLabel(table).replace(/^Barra\b/i, "Terraza") : tableLabel(table);
+      const session = state.sessions.find((entry) => String(entry.table_id) === String(table.id) && sessionHasConsumption(entry));
+      const occupied = Boolean(session);
+      return `<article class="service-point-tile ${occupied ? "occupied" : "free"}">
+        <button type="button" data-open-table="${escapeHTML(table.id)}" title="Atender ${escapeHTML(displayLabel)}">
+          ${icon(state.activeServiceZone === "bar" ? "wine" : "flower-2", 22)}
+          <span><strong>${escapeHTML(displayLabel)}</strong><small>${occupied ? money(sessionTotal(session)) : "Libre"}</small></span>
+        </button>
+        ${isBoss() ? `<button class="icon-btn danger" type="button" data-delete-service-point="${escapeHTML(table.id)}" data-boss-only aria-label="Eliminar ${escapeHTML(tableLabel(table))}">${icon("trash-2", 15)}</button>` : ""}
+      </article>`;
+    }).join("") : emptyState(`Sin ${kindLabel}s`, `Agrega un puesto de ${kindLabel} para atender clientes aquí.`, state.activeServiceZone === "bar" ? "wine" : "flower-2");
+    const addButton = $("#addServicePoint");
+    if (addButton) addButton.innerHTML = `${icon("plus", 17)} Agregar ${kindLabel}`;
+    refreshIcons();
+  };
+
+  const addServicePoint = () => {
+    if (isWaiter() || !canAccessAdminSection("service")) return;
+    const kind = state.activeServiceZone;
+    const sameKind = state.tables.filter((table) => servicePointKind(table) === kind);
+    const sequence = sameKind.reduce((largest, table) => {
+      const match = String(table.table_name || "").match(/(\d+)$/);
+      return Math.max(largest, Number(match?.[1] || 0));
+    }, 0) + 1;
+    const id = uid();
+    const tableNumber = state.tables.reduce((largest, table) => Math.max(largest, Number(table.table_number || 0)), 0) + 1;
+    const label = kind === "bar" ? `Terraza ${sequence}` : `Matera ${sequence}`;
+    const point = { id, table_number: tableNumber, table_name: label, qr_code: `interno-${kind}-${id.slice(0, 8)}`, qr_image_url: null, is_active: true };
+    const original = [...state.tables];
+    state.tables = [...state.tables, point].sort((left, right) => Number(left.table_number || 0) - Number(right.table_number || 0));
+    persistBootstrapCache();
+    renderServicePoints();
+    toast(`${label} lista para atender.`, "ok", `service-point:${id}`);
+    void (async () => {
+      const saved = await retryQuiet(() => state.sb.from("restaurant_tables").insert(point).select("*").single(), 4);
+      if (saved) {
+        state.tables = state.tables.map((table) => table.id === id ? saved : table);
+        persistBootstrapCache();
+        return;
+      }
+      state.tables = original;
+      persistBootstrapCache();
+      renderServicePoints();
+      toast(`No se pudo guardar ${label}. Se retiró del listado.`, "error", `service-point-failed:${id}`);
+    })();
+  };
+
+  const renderOutdoorTableConfigurator = () => {
+    const selector = $("#outdoorTableSelector");
+    const from = $("#outdoorTableFrom");
+    const to = $("#outdoorTableTo");
+    if (!selector || !from || !to) return;
+    const tables = normalTables()
+      .filter((table) => table.is_active !== false)
+      .sort((left, right) => Number(left.table_number || 0) - Number(right.table_number || 0));
+    const validIds = new Set(tables.map((table) => String(table.id)));
+    if (!(state.outdoorTableDraftIds instanceof Set)) {
+      state.outdoorTableDraftIds = new Set(tables.filter(isOutdoorTable).map((table) => String(table.id)));
+    } else {
+      state.outdoorTableDraftIds = new Set([...state.outdoorTableDraftIds].filter((id) => validIds.has(String(id))));
+    }
+    const options = tables.map((table) => `<option value="${escapeHTML(table.id)}">M${escapeHTML(table.table_number)} · ${escapeHTML(table.table_name || "Mesa")}</option>`).join("");
+    const previousFrom = from.value;
+    const previousTo = to.value;
+    from.innerHTML = options || '<option value="">Sin mesas</option>';
+    to.innerHTML = options || '<option value="">Sin mesas</option>';
+    if (validIds.has(previousFrom)) from.value = previousFrom;
+    if (validIds.has(previousTo)) to.value = previousTo;
+    else if (tables.length) to.value = String(tables[tables.length - 1].id);
+    selector.innerHTML = tables.length
+      ? tables.map((table) => `
+          <label class="outdoor-table-option">
+            <input type="checkbox" data-outdoor-table="${escapeHTML(table.id)}" ${state.outdoorTableDraftIds.has(String(table.id)) ? "checked" : ""}>
+            <span>${icon("armchair", 16)} M${escapeHTML(table.table_number)}</span>
+          </label>`).join("")
+      : emptyState("Sin mesas", "Crea una mesa para poder asignar su ubicación.", "armchair");
+    const status = $("#tableZoneSettingStatus");
+    if (status) {
+      const count = state.outdoorTableDraftIds.size;
+      status.textContent = count
+        ? `${count} mesa${count === 1 ? "" : "s"} marcada${count === 1 ? "" : "s"} como afuera. Las demás se consideran de adentro.`
+        : "Todas las mesas están configuradas como mesas de adentro.";
+    }
+    refreshIcons();
+  };
+
+  const saveOutdoorChoice = async () => {
+    const ids = state.outdoorTableDraftIds || new Set(normalTables().filter(isOutdoorTable).map((table) => String(table.id)));
+    const changed = normalTables().filter((table) => isOutdoorTable(table) !== ids.has(String(table.id)));
+    for (const table of changed) {
+      const saved = await retryQuiet(() => state.sb.from("restaurant_tables").update({ is_outdoor: ids.has(String(table.id)), qr_image_url: outdoorQrImageValue(table, ids.has(String(table.id))) }).eq("id", table.id).select("*").single(), 3);
+      if (!saved) { toast("No se pudo guardar la ubicación de " + tableLabel(table) + ". Intenta nuevamente.", "error"); return false; }
+      state.tables = state.tables.map((row) => row.id === table.id ? saved : row);
+    }
+    state.outdoorTableDraftDirty = false;
+    renderTables(); renderServiceTables(); renderOutdoorTableConfigurator();
+    return true;
+  };
+
+  const renderBrandAssetFields = (form) => {
+    ["logo_url", "cover_url"].forEach((field) => {
+      const draft = state.brandAssetDrafts?.[field];
+      form[field].value = draft ?? state.business?.[field] ?? "";
+      const status = $(`[data-upload-status="${field}"]`);
+      const box = $(`[data-upload-box="${field}"]`);
+      const uploading = state.brandAssetUploads?.has(field);
+      if (status) status.textContent = uploading ? "Subiendo..." : draft ? "Imagen cargada. Guarda para aplicar." : form[field].value ? "Imagen cargada" : "Seleccionar imagen";
+      box?.classList.toggle("has-file", Boolean(form[field].value));
+      box?.classList.toggle("is-uploading", Boolean(uploading));
+      if (!box) return;
+      let preview = box.querySelector(".brand-asset-preview");
+      if (!form[field].value) { preview?.remove(); return; }
+      if (!preview) {
+        preview = document.createElement("img");
+        preview.className = "brand-asset-preview";
+        preview.alt = field === "logo_url" ? "Vista previa del logo" : "Vista previa de la portada";
+        box.appendChild(preview);
+      }
+      if (preview.getAttribute("src") !== form[field].value) preview.src = form[field].value;
+    });
+  };
+
+  const clearSavedBrandAssetDrafts = (saved) => {
+    ["logo_url", "cover_url"].forEach((field) => {
+      if (state.brandAssetDrafts && state.brandAssetDrafts[field] === saved?.[field]) delete state.brandAssetDrafts[field];
+    });
+  };
+
+  const renderBusinessForm = () => {
+    const form = $("#businessForm");
+    if (!form) return;
+    Object.values(CLIENT_ACTION_FIELDS).forEach((field) => {
+      const input = form.elements.namedItem(field); if (!input) return;
+      input.checked = state.business?.[field] !== false;
+      input.disabled = !Object.prototype.hasOwnProperty.call(state.business || {}, field) || Boolean(state.clientActionSaves?.has(field));
+    });
+    const actionStatus = $("#clientActionsSettingStatus");
+    if (actionStatus) actionStatus.textContent = state.clientActionSaves?.size ? "Guardando opciones…"
+      : Object.values(CLIENT_ACTION_FIELDS).some(field => !Object.prototype.hasOwnProperty.call(state.business || {}, field))
+        ? "Falta activar la actualización de opciones para usar todos los controles." : "Los cambios se comparten con las mesas del negocio.";
+    if (form.client_bill_enabled) {
+      form.client_bill_enabled.checked = clientBillEnabled();
+      form.client_bill_enabled.disabled = !Object.prototype.hasOwnProperty.call(state.business || {}, "client_bill_enabled") || Boolean(state.clientActionSaves?.has("client_bill_enabled"));
+      const status = $("#clientBillSettingStatus");
+      if (status) status.textContent = form.client_bill_enabled.disabled ? "Esta opción aún no está habilitada." : clientBillEnabled() ? "Los clientes pueden consultar su cuenta." : "Oculto para los clientes. Puedes llevar las cuentas en tarjetas físicas.";
+    }
+    if (!state.businessFormDirty) {
+      form.business_name.value = state.business?.business_name || "";
+      form.subtitle.value = state.business?.subtitle || "";
+      form.accent_color.value = state.business?.accent_color || "#f05a28";
+    }
+    form.currency.value = DEFAULT_CURRENCY;
+    renderOutdoorTableConfigurator();
+    form.tips_enabled.checked = tipsEnabled();
+    form.qr_regeneration_enabled.checked = qrRegenerationEnabled();
+    form.tip_percentage.value = String(state.tipSettings?.percentage || 10);
+    form.tip_percentage.readOnly = tipsEnabled();
+    form.tip_percentage.closest(".tip-percentage-field")?.classList.toggle("is-locked", tipsEnabled());
+    const tipStatus = $("#tipSettingStatus");
+    if (tipStatus) tipStatus.textContent = tipsEnabled()
+      ? `Activa: ${state.tipSettings.percentage}% de propina voluntaria. Apágala para cambiar el porcentaje.`
+      : "Configura el porcentaje y enciende el switch para aplicarlo.";
+    renderBrandAssetFields(form);
+  };
+
+  const visibleManagerTables = () => normalTables()
+    .filter((table) => tableMatchesGroup(table, state.tableManagerGroupFilter))
+    .filter((table) => tableMatchesSearch(table, $("#tableManagerSearch")?.value || ""));
+
+  const renderTableManager = () => {
+    const list = $("#tableManagerList");
+    if (!list) return;
+    const qrTables = normalTables();
+    state.tableManagerGroupFilter = syncTableGroupOptions($("#tableManagerGroupFilter"), state.tableManagerGroupFilter);
+    const visibleTables = visibleManagerTables();
+    const validIds = new Set(visibleTables.map((table) => String(table.id)));
+    state.selectedTableQrIds = new Set(
+      [...state.selectedTableQrIds].filter((id) => validIds.has(String(id)))
+    );
+    const renderSignature = JSON.stringify({
+      query: $("#tableManagerSearch")?.value || "",
+      group: state.tableManagerGroupFilter,
+      qrRegenerationEnabled: qrRegenerationEnabled(),
+      selected: [...state.selectedTableQrIds].sort(),
+      tables: qrTables.map((table) => [table.id, table.table_number, table.table_name, table.is_active, table.qr_code, table.qr_image_url])
+    });
+    if (renderSignature === state.tableManagerRenderSignature) return;
+    state.tableManagerRenderSignature = renderSignature;
+    list.innerHTML = visibleTables.length
+      ? visibleTables
+          .map(
+            (table) => `
+              <div class="manager-row table-manager-row${state.selectedTableQrIds.has(String(table.id)) ? " is-selected" : ""}${isOutdoorTable(table) ? " is-outdoor" : ""}${isTerraceTable(table) ? " is-terrace" : ""}">
+                <label class="qr-table-checkbox" title="Seleccionar ${escapeHTML(tableLabel(table))}">
+                  <input type="checkbox" data-select-table-qr="${table.id}" ${state.selectedTableQrIds.has(String(table.id)) ? "checked" : ""}>
+                  <span>${icon("check", 16)}</span>
+                </label>
+                <div class="qr-mini" data-table-qr="${table.id}"></div>
+                <div class="table-manager-copy">
+                  <strong>${escapeHTML(tableLabel(table))}${isTerraceTable(table) ? ' <span class="table-terrace-badge">TERRAZA</span>' : ""}${isOutdoorTable(table) ? ' <span class="table-outdoor-badge">Exterior</span>' : ""}</strong>
+                  <span>${qrTextForTable(table)}</span>
+                </div>
+                <div class="row-actions">
+                  <button class="icon-btn" data-edit-table="${table.id}" title="Editar" aria-label="Editar mesa">${icon("pencil", 17)}</button>
+                  <button class="icon-btn" data-download-qr="${table.id}" title="Descargar" aria-label="Descargar QR en PDF de 9 por 9 centimetros">${icon("file-down", 17)}</button>
+                  <button class="icon-btn" data-regenerate-qr="${table.id}" title="${qrRegenerationEnabled() ? "Regenerar QR" : "Habilita la regeneración en Marca"}" aria-label="Rehacer QR" ${qrRegenerationEnabled() ? "" : "disabled"}>${icon("refresh-cw", 17)}</button>
+                  <button class="icon-btn danger" data-delete-table="${table.id}" data-boss-only title="Eliminar" aria-label="Eliminar mesa">${icon("trash-2", 17)}</button>
+                </div>
+              </div>
+            `
+          )
+          .join("")
+      : emptyState(qrTables.length ? "Sin coincidencias" : "Sin mesas", qrTables.length ? "Prueba con otro numero o nombre." : "Agrega una mesa para generar su QR.", "qr-code");
+    renderQrBatchControls();
+    refreshIcons();
+    renderGeneratedTableQrs();
+  };
+
+  const renderQrBatchControls = () => {
+    const count = state.selectedTableQrIds.size;
+    const countLabel = $("#qrSelectionCount");
+    const downloadButton = $("#downloadSelectedQrs");
+    const selectAllButton = $("#selectAllTableQrs");
+    const clearButton = $("#clearTableQrs");
+    if (countLabel) countLabel.textContent = `${count} ${count === 1 ? "seleccionada" : "seleccionadas"}`;
+    if (downloadButton) {
+      downloadButton.disabled = count === 0;
+      downloadButton.innerHTML = `${icon("file-down", 18)} Descargar PDF${count ? ` (${count})` : ""}`;
+    }
+    const qrTableCount = visibleManagerTables().length;
+    if (selectAllButton) selectAllButton.disabled = !qrTableCount || count === qrTableCount;
+    if (clearButton) clearButton.disabled = count === 0;
+    refreshIcons();
+  };
+
+  const setAllQrSelections = (selected) => {
+    const ids = visibleManagerTables().map((table) => String(table.id));
+    state.selectedTableQrIds = selected ? new Set(ids) : new Set();
+    $$('[data-select-table-qr]').forEach((checkbox) => {
+      checkbox.checked = selected;
+      checkbox.closest(".table-manager-row")?.classList.toggle("is-selected", selected);
+    });
+    renderQrBatchControls();
+  };
+
+  const normalizeTableLookup = (value = "") =>
+    normalizeText(value).replace(/mesa/g, "").replace(/\s+/g, "");
+
+  const waiterTableSearchScore = (table, query) => {
+    if (!query) return Number(table.table_number || 0);
+    const tableNumber = String(table.table_number || "").replace(/\s+/g, "");
+    const tableName = normalizeTableLookup(table.table_name || "");
+    const fullLabel = normalizeTableLookup(`${table.table_name || ""} mesa ${table.table_number || ""}`);
+    if (query === tableNumber) return 0;
+    if (query === tableName || query === fullLabel) return 1;
+    if (tableNumber.startsWith(query)) return 10 + tableNumber.length;
+    if (tableName.startsWith(query) || fullLabel.startsWith(query)) return 20;
+    if (tableNumber.includes(query)) return 30 + tableNumber.length;
+    if (tableName.includes(query) || fullLabel.includes(query)) return 40;
+    return Number.POSITIVE_INFINITY;
+  };
+
+  const renderWaiterTableSelect = (searchValue) => {
+    const combobox = $("#waiterTableCombobox");
+    const options = $("#waiterTableOptions");
+    if (!combobox || !options) return;
+    const search = $("#waiterTableSearch");
+    const status = $("#waiterTableSearchStatus");
+    const query = normalizeTableLookup(searchValue === undefined ? search?.value : searchValue);
+    const scoredTables = normalTables()
+      .filter((table) => table.is_active !== false)
+      .map((table) => ({ table, score: waiterTableSearchScore(table, query) }))
+      .filter((entry) => Number.isFinite(entry.score));
+    const exactMatches = query ? scoredTables.filter((entry) => entry.score <= 1) : [];
+    const activeTables = (exactMatches.length ? exactMatches : scoredTables)
+      .sort((a, b) => a.score - b.score || Number(a.table.table_number || 0) - Number(b.table.table_number || 0))
+      .map((entry) => entry.table);
+    const allActiveCount = normalTables().filter((table) => table.is_active !== false).length;
+    const autoSelectedTable = query && (exactMatches.length === 1 || activeTables.length === 1)
+      ? (exactMatches[0]?.table || activeTables[0])
+      : null;
+    combobox.dataset.selectedId = autoSelectedTable?.id || "";
+    combobox.dataset.activeIndex = autoSelectedTable ? String(activeTables.indexOf(autoSelectedTable)) : "-1";
+    options.innerHTML = activeTables.length
+      ? activeTables.map((table, index) => {
+          const defaultName = `Mesa ${table.table_number}`;
+          const name = String(table.table_name || "").trim();
+          const hasCustomName = name && name.toLowerCase() !== defaultName.toLowerCase();
+          const label = hasCustomName ? name : defaultName;
+          const selected = table.id === autoSelectedTable?.id;
+          return `
+            <button type="button" id="waiter-table-option-${index}" class="smart-table-option${selected ? " is-selected" : ""}"
+              data-waiter-table="${escapeHTML(table.id)}" role="option" aria-selected="${selected}">
+              <span class="smart-table-option-icon">${icon("map-pin", 18)}</span>
+              <span class="smart-table-option-copy">
+                <strong>${escapeHTML(label)}</strong>
+                <small>${escapeHTML(hasCustomName ? defaultName : `Numero ${table.table_number}`)}</small>
+              </span>
+              ${selected ? icon("check", 18) : ""}
+            </button>`;
+        }).join("")
+      : `<div class="smart-table-empty">${allActiveCount ? "No encontramos esa mesa" : "No hay mesas activas"}</div>`;
+    search?.setAttribute("aria-activedescendant", autoSelectedTable ? `waiter-table-option-${activeTables.indexOf(autoSelectedTable)}` : "");
+    if (status) {
+      status.classList.toggle("no-results", Boolean(query && !activeTables.length));
+      status.textContent = !allActiveCount
+        ? "No hay mesas activas."
+        : query
+          ? activeTables.length
+            ? autoSelectedTable
+              ? `${tableLabel(autoSelectedTable)} seleccionada. Presiona Enter para abrirla.`
+              : `${activeTables.length} mesas coinciden. Toca la que necesitas.`
+            : `Ninguna mesa coincide con "${String(searchValue === undefined ? search?.value || "" : searchValue).trim()}".`
+          : `${allActiveCount} mesas disponibles.`;
+    }
+    refreshIcons();
+  };
+
+  const showWaiterTableOptions = () => {
+    const combobox = $("#waiterTableCombobox");
+    const options = $("#waiterTableOptions");
+    const search = $("#waiterTableSearch");
+    if (!combobox || !options || !search) return;
+    options.hidden = false;
+    combobox.classList.add("is-open");
+    search.setAttribute("aria-expanded", "true");
+  };
+
+  const closeWaiterTableOptions = () => {
+    const combobox = $("#waiterTableCombobox");
+    const options = $("#waiterTableOptions");
+    const search = $("#waiterTableSearch");
+    if (!combobox || !options || !search) return;
+    options.hidden = true;
+    combobox.classList.remove("is-open");
+    search.setAttribute("aria-expanded", "false");
+  };
+
+  const setWaiterTableActiveIndex = (requestedIndex) => {
+    const combobox = $("#waiterTableCombobox");
+    const options = $("#waiterTableOptions");
+    const search = $("#waiterTableSearch");
+    const buttons = $$('[data-waiter-table]', options);
+    if (!combobox || !search || !buttons.length) return null;
+    const index = (requestedIndex + buttons.length) % buttons.length;
+    buttons.forEach((button, buttonIndex) => {
+      const selected = buttonIndex === index;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    const selectedButton = buttons[index];
+    combobox.dataset.activeIndex = String(index);
+    combobox.dataset.selectedId = selectedButton.dataset.waiterTable || "";
+    search.setAttribute("aria-activedescendant", selectedButton.id);
+    selectedButton.scrollIntoView({ block: "nearest" });
+    return selectedButton;
+  };
+
+  const openWaiterTableChoice = async (tableId) => {
+    const combobox = $("#waiterTableCombobox");
+    if (!tableId || !combobox || combobox.dataset.busy === "true") return;
+    combobox.dataset.busy = "true";
+    $$('[data-waiter-table]', combobox).forEach((button) => { button.disabled = true; });
+    closeWaiterTableOptions();
+    try {
+      await openScannedTable(tableId);
+    } finally {
+      const search = $("#waiterTableSearch");
+      if (search) search.value = "";
+      combobox.dataset.busy = "false";
+      renderWaiterTableSelect();
+    }
+  };
+
+  const openCompactTable = async (tableId) => {
+    await openScannedTable(tableId);
+  };
+
+  const createWalkInSale = async () => {
+    const button = $("#newWalkInSale");
+    if (button) button.disabled = true;
+    try {
+      const existing = state.sessions.find((session) => isLocalWalkInSession(session) && session.status === "open");
+      if (existing) {
+        openPaymentDialog(existing.id);
+        return;
+      }
+      const openedAt = new Date().toISOString();
+      const session = {
+        id: uid(),
+        local_only: true,
+        table_id: null,
+        status: "open",
+        sale_channel: "walk_in",
+        payer_name: "Cliente individual",
+        assigned_waiter_id: state.currentUser?.id || null,
+        assigned_waiter: state.currentUser,
+        restaurant_tables: null,
+        session_items: [],
+        opened_at: openedAt,
+        created_at: openedAt,
+        updated_at: openedAt
+      };
+      state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
+      state.optimisticSessionStates.set(session.id, { mode: "upsert", localOnly: true, session });
+      persistWalkInDrafts();
+      renderAdminLive();
+      openPaymentDialog(session.id);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+
+  // Los avisos públicos no llevan cuentas ni importes. La lectura requiere el token del empleado.
+  const reportMirrorKey = () => `donpieros_report_mirror_v1:${SUPABASE_CONFIG.url}:${state.currentUser?.id || ""}`;
+  const reportChangeOutboxKey = "donpieros_report_change_outbox_v1";
+  const publishedCheckoutKey = "donpieros_report_published_checkouts_v1";
+  const saveReportSyncValue = async (key, value) => {
+    if (typeof persistDurableJson === "function") return persistDurableJson(key, value);
+    try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch (_) { return false; }
+  };
+  const reportMirror = () => {
+    if (state.reportMirrorUser !== state.currentUser?.id) {
+      state.reportMirrorUser = state.currentUser?.id;
+      state.reportMirror = readLocalJson(reportMirrorKey(), { cursor: 0, sales: {}, deleted: {}, movements: {}, clearedSales: false, clearedMovements: false });
+    }
+    return state.reportMirror;
+  };
+  const saleInventoryDeltas = (action, payload) => {
+    if (payload.inventoryDeltas) return payload.inventoryDeltas;
+    const deltas = {};
+    const add = (lines, sign) => (lines || []).forEach(line => {
+      const id = String(line.menu_item_id || line.menuItemId || "");
+      if (id) deltas[id] = Number(deltas[id] || 0) + sign * Number(line.quantity || 0);
+    });
+    if (action !== "record_sale") add(payload.previousRecord?.items, 1);
+    if (action !== "delete_sale") add(payload.invoice?.items, -1);
+    if (action === "record_sale" && payload.invoice?.sessionId) {
+      (state.inventoryMovements || []).filter(row => String(row.sessionId) === String(payload.invoice.sessionId)
+        && ["CONSUMO_MESA", "DEVOLUCION_CONSUMO"].includes(row.type)).forEach(row => {
+        const id = String(row.productId || "");
+        if (id && Object.prototype.hasOwnProperty.call(deltas, id)) deltas[id] -= Number(row.delta || 0);
+      });
+    }
+    return deltas;
+  };
+  let inventorySnapshotProofPromise = null;
+  const readCoherentInventorySnapshot = () => {
+    if (inventorySnapshotProofPromise) return inventorySnapshotProofPromise;
+    inventorySnapshotProofPromise = (async () => {
+      const token = state.authToken, mirror = reportMirror();
+      const active = Object.keys(mirror.inventoryEffects || {});
+      if (!active.length) return appsScriptRequest("get_inventory");
+      const fingerprint = () => JSON.stringify([mirror.inventoryEffects, mirror.inventorySettled, mirror.inventoryBase]);
+      const before = fingerprint();
+      const links = { ...(mirror.inventoryOperations || {}) };
+      if (active.some(id => !links[id])) {
+        let cursor = 0;
+        do {
+          const { data, error } = await state.sb.rpc("get_report_changes", { auth_token: token, p_after: cursor });
+          if (error || !data?.ok || !Array.isArray(data.changes)) throw transientAppsScriptError("Falta verificar el inventario guardado.");
+          for (const change of data.changes) {
+            const payload = change.payload || {}, id = payload.inventoryEffect?.operationId;
+            if (id && active.includes(id)) links[id] = inventoryOperationLink(change.action, payload);
+          }
+          if (!data.hasMore) break;
+          const next = Number(data.changes.at(-1)?.sequence);
+          if (next <= cursor) throw transientAppsScriptError("El inventario guardado no pudo verificarse completo.");
+          cursor = next;
+        } while (true);
+        if (active.some(id => !links[id]?.saleId)) throw transientAppsScriptError("Falta la referencia de un ajuste pendiente.");
+      }
+      let proof = mirror.inventoryCanonicalProof, snapshot, after;
+      if (proof && active.every(id => Object.prototype.hasOwnProperty.call(proof.applied, id))) {
+        snapshot = await appsScriptRequest("get_inventory");
+        after = await appsScriptRequest("status");
+        const affected = new Set(active.flatMap(id => Object.keys(mirror.inventoryEffects[id])));
+        if (!after?.ok || after.historyRevision !== proof.revision || snapshot.items?.some(item => affected.has(String(item.productId))
+          && proof.inventoryVersions?.[item.productId] !== JSON.stringify([item.version, item.stock]))) proof = null;
+      } else proof = null;
+      if (!proof) {
+        const filters = { dateFrom: "2000-01-01", dateTo: "2099-12-31", limit: 500 };
+        const report = await appsScriptRequest("get_income_report", { filters });
+        if (!report?.ok || report.stale || !Array.isArray(report.recordRows) || !Array.isArray(report.records)) throw transientAppsScriptError("Falta confirmar que ajustes de inventario ya se aplicaron.");
+        const ids = new Set(report.recordRows.map(row => String(row.saleId)));
+        const records = new Map(report.records.map(row => [String(row.saleId), row]));
+        const missing = report.recordRows.filter(row => active.some(id => links[id].action === "edit_sale" && links[id].saleId === String(row.saleId)) && !records.has(String(row.saleId)));
+        for (let offset = 0; offset < missing.length; offset += 300) {
+          const page = await appsScriptRequest("get_income_report", { filters: { ...filters, revision: report.revision, pageRows: missing.slice(offset, offset + 300) } });
+          if (!page?.ok || page.stale || !Array.isArray(page.records)) throw transientAppsScriptError("La verificacion del inventario cambio durante la lectura.");
+          page.records.forEach(row => records.set(String(row.saleId), row));
+        }
+        const applied = {};
+        for (const id of active) {
+          const link = links[id], exists = ids.has(link.saleId);
+          applied[id] = link.action === "record_sale" ? exists : link.action === "delete_sale" ? !exists
+            : !exists || JSON.stringify(inventoryQuantities(records.get(link.saleId)?.items)) === JSON.stringify(link.quantities);
+        }
+        proof = { revision: report.revision, applied };
+        snapshot = await appsScriptRequest("get_inventory");
+        after = await appsScriptRequest("status");
+      }
+      // Read stock after checking the operations, then verify that no sale
+      // committed between those reads. A failed check leaves the cache intact.
+      if (!snapshot?.ok || !Array.isArray(snapshot.items) || !after?.ok || after.historyRevision !== proof.revision
+        || state.authToken !== token || fingerprint() !== before) throw transientAppsScriptError("El inventario se esta actualizando; se verificara otra vez.");
+      proof = { ...proof, inventoryVersions: Object.fromEntries(snapshot.items.map(item => [String(item.productId), JSON.stringify([item.version, item.stock])])) };
+      const effects = { ...mirror.inventoryEffects }, settled = { ...mirror.inventorySettled };
+      for (const id of active) if (proof.applied[id]) { delete effects[id]; settled[id] = true; }
+      const base = Object.fromEntries(snapshot.items.map(item => [String(item.productId), item]));
+      const projected = Object.fromEntries(snapshot.items.map(item => [String(item.productId), Number(item.stock || 0)
+        + Object.values(effects).reduce((sum, effect) => sum + Number(effect[item.productId] || 0), 0)]));
+      const fields = { inventoryBase: base, inventoryProjected: projected, inventoryEffects: effects,
+        inventorySettled: settled, inventoryOperations: links, inventoryCanonicalProof: proof };
+      if (!await saveReportSyncValue(reportMirrorKey(), { ...mirror, ...fields })) throw transientAppsScriptError("Falta guardar el inventario conciliado.");
+      if (state.authToken !== token || fingerprint() !== before) throw transientAppsScriptError("Hay nuevos ajustes de inventario por verificar.");
+      Object.assign(mirror, fields);
+      return { ...snapshot, items: reportInventoryItems(mirror) };
+    })().finally(() => { inventorySnapshotProofPromise = null; });
+    return inventorySnapshotProofPromise;
+  };
+  const inventoryQuantities = items => Object.entries((items || []).reduce((totals, line) => {
+    const id = String(line.menu_item_id || line.menuItemId || "");
+    if (id) totals[id] = Number(totals[id] || 0) + Number(line.quantity || 0);
+    return totals;
+  }, {})).sort(([left], [right]) => left.localeCompare(right));
+  const inventoryOperationLink = (action, payload) => ({ action,
+    saleId: String(payload.saleId || payload.invoice?.id || payload.invoice?.sessionId || ""),
+    ...(action === "edit_sale" ? { quantities: inventoryQuantities(payload.invoice?.items) } : {}) });
+  const reportInventoryItems = mirror => Object.values(mirror.inventoryBase || {}).map(item => ({ ...item,
+    stock: Math.max(0, Object.values(mirror.inventoryEffects || {}).some(effect => Object.prototype.hasOwnProperty.call(effect, item.productId))
+      ? Number(mirror.inventoryProjected?.[item.productId] ?? item.stock ?? 0) : Number(item.stock || 0)),
+    reportInventoryProjection: true }));
+  const reconcileReportInventory = (mirror, payload, action) => {
+    mirror.inventoryBase ||= {}; mirror.inventoryEffects ||= {}; mirror.inventorySettled ||= {}; mirror.inventoryProjected ||= {};
+    if (action === "clear_inventory") { mirror.inventoryBase = {}; mirror.inventoryEffects = {}; }
+    if (action === "delete_inventory" && payload.productId) {
+      delete mirror.inventoryBase[payload.productId];
+      Object.values(mirror.inventoryEffects).forEach(effect => { delete effect[payload.productId]; });
+    }
+    const rejected = payload.inventoryRejectedOperation || (payload.invoice?.reportRejected ? payload.mutationId : "");
+    if (rejected) {
+      Object.entries(mirror.inventoryEffects[rejected] || {}).forEach(([id, delta]) => { mirror.inventoryProjected[id] = Number(mirror.inventoryProjected[id] || 0) - Number(delta); });
+      delete mirror.inventoryEffects[rejected]; mirror.inventorySettled[rejected] = true;
+    }
+    const stockChange = payload.inventoryStockChange;
+    if (stockChange && !mirror.inventorySettled[stockChange.operationId]) {
+      const id = String(stockChange.productId);
+      if (Object.values(mirror.inventoryEffects).some(effect => Object.prototype.hasOwnProperty.call(effect, id)))
+        mirror.inventoryProjected[id] = Number(mirror.inventoryProjected[id] ?? mirror.inventoryBase[id]?.stock ?? 0) + Number(stockChange.delta || 0);
+      mirror.inventorySettled[stockChange.operationId] = true;
+    }
+    const effect = payload.inventoryEffect;
+    if (effect) { mirror.inventoryOperations ||= {}; mirror.inventoryOperations[effect.operationId] = inventoryOperationLink(action, payload); }
+    if (effect && !mirror.inventorySettled[effect.operationId] && !mirror.inventoryEffects[effect.operationId]) {
+      const inventoryJobs = readAppsScriptOutbox();
+      const ownJobs = inventoryJobs.filter(job => ["record_sale", "edit_sale", "delete_sale"].includes(job.action));
+      for (const id of Object.keys(effect.deltas)) {
+        if (!Object.values(mirror.inventoryEffects).some(value => Object.prototype.hasOwnProperty.call(value, id))) {
+          const current = state.inventoryMeta?.[id];
+          if (!current) continue;
+          const ownDelta = ownJobs.reduce((sum, job) => sum + Number(saleInventoryDeltas(job.action, job.payload)[id] || 0), 0);
+          // Local stock already includes these edits. Their later receipts add
+          // them once, so exclude them from the confirmed starting balance.
+          const pendingAdjustment = inventoryJobs.reduce((sum, job) => {
+            if (["failed", "conflict"].includes(job.status) || mirror.inventorySettled[job.operationId || job.id]) return sum;
+            const item = job.action === "adjust_inventory" ? job.payload?.adjustment
+              : job.action === "upsert_inventory" ? job.payload?.item : job.action === "set_inventory_stock" ? job.payload : null;
+            return sum + (String(item?.productId || "") === id ? Number(job.action === "adjust_inventory" ? item.delta : item.inventoryDelta || 0) : 0);
+          }, 0);
+          const previous = mirror.inventoryBase[id];
+          if (!previous || Number(current.version || 0) >= Number(previous.version || 0))
+            mirror.inventoryBase[id] = { ...current, productId: id, stock: Number(current.stock || 0) - ownDelta - pendingAdjustment };
+          mirror.inventoryProjected[id] = Number(mirror.inventoryBase[id]?.stock || 0);
+        }
+      }
+      Object.entries(effect.deltas).forEach(([id, delta]) => { mirror.inventoryProjected[id] = Number(mirror.inventoryProjected[id] || 0) + Number(delta); });
+      mirror.inventoryEffects[effect.operationId] = effect.deltas;
+    }
+    // Partial receipts may describe stock that already includes another device.
+    // Keep the accepted burst steady until all its effects on that product settle.
+    for (const id of payload.inventorySettledOperations || []) {
+      delete mirror.inventoryEffects[id]; mirror.inventorySettled[id] = true;
+    }
+    for (const item of payload.items || []) {
+      const manualChange = ["adjust_inventory", "upsert_inventory", "set_inventory_stock"].includes(action);
+      if (!manualChange && !mirror.inventoryBase[item.productId] && !Object.values(mirror.inventoryEffects).some(effect => Object.prototype.hasOwnProperty.call(effect, String(item.productId)))) continue;
+      if (Number(item.version || 0) >= Number(mirror.inventoryBase[item.productId]?.version || 0)) mirror.inventoryBase[item.productId] = item;
+    }
+  };
+  let reportChangeBatchDepth = 0;
+  const queueConfirmedReportChange = async (action, payload, result, operationId = "") => {
+    const supported = ["record_sale","edit_sale","delete_sale","clear_income","adjust_inventory","upsert_inventory","set_inventory_stock","delete_inventory","clear_inventory","update_inventory_movement_cost","clear_inventory_movements"];
+    if (action === "sync_inventory") {
+      // Share the confirmed bulk snapshot through the existing inventory notice.
+      action = "upsert_inventory";
+    }
+    if (!supported.includes(action)) return;
+    if (!result?.ok) {
+      const previewId = "mutation:" + operationId;
+      const published = readLocalJson(publishedCheckoutKey, []).includes(previewId)
+        || readLocalJson(reportChangeOutboxKey, []).some(change => change.operationId === previewId);
+      if (result?.retryable === false && operationId && ["edit_sale", "delete_sale"].includes(action) && published) {
+        // A rejected Google write must also withdraw its fast report projection.
+        const saleId = String(payload.invoice?.id || payload.saleId || "");
+        const snapshot = await appsScriptRequest("get_income_report", { filters: { dateFrom: "2000-01-01", dateTo: "2099-12-31", query: saleId } });
+        if (!snapshot?.ok || snapshot.stale || !Array.isArray(snapshot.records)) throw transientAppsScriptError("Falta conciliar la operacion rechazada.");
+        const record = snapshot.records.find(row => String(row.saleId) === saleId);
+        const invoice = record ? { id: record.saleId, sessionId: record.sessionId, number: record.invoice, table: record.table,
+          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, reference: record.reference,
+          payments: record.payments, paymentMethod: record.isMixed ? "mixed" : record.payments?.[0]?.method,
+          totals: { total: record.total, subtotal: record.subtotal, discount: record.discount, tax: record.tax, serviceFee: record.service },
+          items: (record.items || []).map(line => ({ id: line.lineId, menu_item_id: line.menuItemId, item_name: line.name,
+            quantity: line.quantity, unit_price: line.unitPrice, unit_cost: Number(line.cost || 0) / Math.max(1, Number(line.quantity || 1)) })),
+          reportRejected: true, reportMovementSettled: true } : { id: saleId, reportRejected: true };
+        await queueConfirmedReportChange(record ? "edit_sale" : "delete_sale", { invoice, mutationId: operationId,
+          ...(payload.saleLink ? { saleLink: payload.saleLink } : {}) }, { ok: true }, "mutation-rejected:" + operationId);
+      }
+      return;
+    }
+    const original = payload.previousRecord;
+    const invoice = payload.invoice ? { ...payload.invoice, ...(original ? { reportPrevious: original } : {}), ...(action === "edit_sale" ? { reportMutation: true } : {}) }
+      : original ? { id: payload.saleId, sessionId: original.sessionId, number: original.invoice, reportPrevious: original } : null;
+    const saleId = String(invoice?.id || invoice?.sessionId || payload.saleId || "");
+    const ids = new Set((invoice?.items || []).map(line => String(line.menu_item_id || "")).filter(Boolean));
+    const productId = String(payload.adjustment?.productId || payload.item?.productId || payload.productId || "");
+    if (productId) ids.add(productId);
+    (payload.items || []).forEach(item => { if (item.productId) ids.add(String(item.productId)); });
+    const eventId = String(payload.adjustment?.eventId || payload.item?.movementEventId || payload.movementId || "");
+    let movements = (state.inventoryMovements || []).filter(row => eventId ? String(row.movementId) === eventId
+      : action === "record_sale" && (String(row.movementId).startsWith(`SALE-${saleId}-`) || (invoice?.sessionId && String(row.sessionId) === String(invoice.sessionId))));
+    if (action === "adjust_inventory" && eventId.startsWith("units:") && result.item) {
+      // A local preview may start from a stale balance. Share the balance that
+      // Google actually used, with the same event ID on both devices.
+      let movement;
+      if (result.duplicate) {
+        let cursor = null, revision;
+        const permissions = state.currentUser?.permissions;
+        const canReadMovements = state.currentUser?.role === "boss" || !Array.isArray(permissions) || permissions.includes("movements");
+        while (canReadMovements) {
+          const page = await appsScriptRequest("get_inventory_movements", { limit: 800, ...(cursor ? { cursor, revision } : {}) });
+          if (!page?.ok || page.stale || !Array.isArray(page.movements)) throw transientAppsScriptError("Falta confirmar el movimiento remoto del inventario.");
+          movement = page.movements.find(row => String(row.movementId) === eventId);
+          revision = page.revision;
+          cursor = page.hasMore ? page.nextCursor : null;
+          if (movement || !cursor) break;
+        }
+      } else {
+        const adjustment = payload.adjustment;
+        movement = { ...(movements[0] || {}), movementId: eventId, productId,
+          code: result.item.code || adjustment.code || "", product: result.item.name || adjustment.name || "Producto",
+          type: adjustment.movementType || (Number(adjustment.delta) > 0 ? "ENTRADA_UNIDADES" : "SALIDA_UNIDADES"),
+          delta: Number(adjustment.delta), before: Number(result.item.stock) - Number(adjustment.delta), after: Number(result.item.stock),
+          unitCost: Number(result.item.costPrice || 0), reference: adjustment.reference || "", sessionId: adjustment.sessionId || "",
+          date: adjustment.occurredAt || result.item.updatedAt, user: state.currentUser?.full_name || state.currentUser?.username || "Equipo" };
+      }
+      movements = movement ? [movement] : [];
+      if (movement) {
+        const rows = new Map((state.inventoryMovements || []).map(row => [String(row.movementId), row]));
+        rows.set(eventId, movement);
+        state.inventoryMovements = [...rows.values()];
+        persistInventoryMovements();
+      }
+    }
+    const stockDelta = action === "adjust_inventory" ? payload.adjustment?.delta
+      : action === "set_inventory_stock" ? payload.inventoryDelta
+      : action === "upsert_inventory" ? payload.item?.inventoryDelta : undefined;
+    const inventoryStockChange = stockDelta !== undefined && productId && operationId
+      ? { operationId, productId, delta: Number(stockDelta || 0) } : null;
+    const stockItems = result.items || (result.item ? [result.item] : []);
+    // Reconcile the durable receipt locally before removing its outbox job,
+    // even if publishing the notification to the other devices is interrupted.
+    if (inventoryStockChange) {
+      const mirror = reportMirror();
+      reconcileReportInventory(mirror, { inventoryStockChange, items: stockItems }, action);
+      if (!await saveReportSyncValue(reportMirrorKey(), mirror)) throw transientAppsScriptError("Falta proteger la reposicion confirmada.");
+    }
+    const change = { operationId: operationId || `${action}:${eventId || saleId || uid()}:${action === "record_sale" ? "saved" : uid()}`, action,
+      payload: { occurredAt: new Date().toISOString(), ...(invoice ? { invoice } : {}), ...(saleId ? { saleId } : {}), ...(payload.saleLink ? { saleLink: payload.saleLink } : {}), ...(productId ? { productId } : {}),
+        ...(["edit_sale", "delete_sale"].includes(action) ? { mutationId: payload.mutationId || operationId } : {}),
+        ...(inventoryStockChange ? { inventoryStockChange } : {}),
+        ...(invoice?.reportRejected ? { inventoryRejectedOperation: payload.mutationId } : {}),
+        ...(invoice?.googlePending ? { inventoryEffect: { operationId: payload.mutationId || operationId, deltas: saleInventoryDeltas(action, payload) } } : {}),
+        ...(Array.isArray(result.items) ? { inventorySettledOperations: result.reportInventorySettled || [operationId] } : {}),
+        movements, items: (result.items || (result.item ? [result.item] : [])).filter(item => result.reportBatchInventory || action === "delete_sale" || ids.has(String(item.productId))) } };
+    const queued = readLocalJson(reportChangeOutboxKey, []);
+    if (!queued.some(entry => entry.operationId === change.operationId)) {
+      if (!await saveReportSyncValue(reportChangeOutboxKey, [...queued, change])) throw transientAppsScriptError("El cambio quedó guardado; falta proteger su aviso de sincronización.");
+    }
+    if (!reportChangeBatchDepth) void flushConfirmedReportChanges();
+  };
+  const protectCheckoutForFastSync = async (invoice) => {
+    invoice.checkoutAccepted = true;
+    const jobs = readAppsScriptOutbox();
+    jobs.forEach(job => { if (job.action === "record_sale" && String(job.payload?.invoice?.id) === String(invoice.id)) job.payload.invoice.checkoutAccepted = true; });
+    await writeAppsScriptOutbox(jobs);
+    await persistInvoiceHistory();
+    void queueReadyCheckoutReports();
+  };
+  let checkoutReportPreparing = false;
+  const queueReadyCheckoutReports = async () => {
+    if (checkoutReportPreparing || !navigator.onLine || !state.authToken || !isManager()) return;
+    checkoutReportPreparing = true;
+    reportChangeBatchDepth += 1;
+    try {
+      const status = typeof getOfflineSyncStatus === "function" ? await getOfflineSyncStatus() : null;
+      const blockedSales = new Set();
+      for (const job of readAppsScriptOutbox()) {
+        if (!["record_sale", "edit_sale", "delete_sale"].includes(job.action)) continue;
+        const saleId = String(job.payload?.invoice?.id || job.payload?.saleId || "");
+        if (!saleId) continue;
+        if ((job.action !== "record_sale" && state.currentUser?.role !== "boss")
+          || ["failed", "conflict"].includes(job.status) || blockedSales.has(saleId)
+          || (job.action === "record_sale" && !job.payload?.invoice?.checkoutAccepted)
+          || state.localSupabaseWrites > 0 || (typeof isSupabaseWriteBlockingJob === "function" && isSupabaseWriteBlockingJob(job,status))) {
+          blockedSales.add(saleId); continue;
+        }
+        const operationId = job.action === "record_sale" ? "checkout:" + saleId : "mutation:" + (job.operationId || job.id);
+        const publishedId = job.action === "record_sale" ? saleId : operationId;
+        if ((job.action === "record_sale" && reportMirror().sales[saleId])
+          || readLocalJson(publishedCheckoutKey, []).includes(publishedId)
+          || readLocalJson(reportChangeOutboxKey, []).some(change => change.operationId === operationId || change.operationId === (job.operationId || job.id))) continue;
+        await queueConfirmedReportChange(job.action, { ...job.payload, mutationId: job.operationId || job.id,
+          invoice: { ...(job.payload.invoice || { id: saleId, sessionId: job.payload.saleLink?.sessionId, number: job.payload.saleLink?.invoice }),
+            ...(job.payload.previousRecord ? { reportPrevious: job.payload.previousRecord } : {}),
+            googlePending: true, ...(job.action !== "record_sale" ? { reportMutation: true } : {}) } }, { ok: true }, operationId);
+      }
+    } catch (_) { return false; } finally { checkoutReportPreparing = false; reportChangeBatchDepth -= 1; if (!reportChangeBatchDepth) void flushConfirmedReportChanges(); }
+  };
+  let confirmedReportSending = false;
+  const flushConfirmedReportChanges = async () => {
+    if (confirmedReportSending || reportChangeBatchDepth || !navigator.onLine || !state.authToken || !isManager()) return false;
+    confirmedReportSending = true;
+    try {
+      while (true) {
+        const batch = readLocalJson(reportChangeOutboxKey, []).slice(0, 20);
+        if (!batch.length) return true;
+        let confirmedIds = new Set();
+        if (batch.length > 1 && Date.now() >= Number(state.reportBatchUnavailableUntil || 0)) {
+          const { data, error } = await state.sb.rpc("publish_report_changes_batch", { auth_token: state.authToken, p_changes: batch });
+          if (error && (error.code === "PGRST202" || /could not find.*publish_report_changes_batch|function.*publish_report_changes_batch.*does not exist/i.test(error.message || ""))) {
+            state.reportBatchUnavailableUntil = Date.now() + 60000;
+          } else {
+            if (error || !data?.ok || !Array.isArray(data.results)) return false;
+            const requested = new Set(batch.map(change => change.operationId));
+            confirmedIds = new Set(data.results.map(receipt => receipt.operationId).filter(id => requested.has(id)));
+          }
+        }
+        if (batch.length === 1 || Date.now() < Number(state.reportBatchUnavailableUntil || 0)) {
+          const change = batch[0];
+          const { data, error } = await state.sb.rpc("publish_report_change", {
+            auth_token: state.authToken, p_operation_id: change.operationId, p_action: change.action, p_payload: change.payload
+          });
+          if (error || !data?.ok) return false;
+          confirmedIds.add(change.operationId);
+        }
+        if (!confirmedIds.size) return false;
+        const checkoutIds = batch.filter(change => confirmedIds.has(change.operationId) && /^(checkout|mutation):/.test(change.operationId));
+        if (checkoutIds.length) {
+          const ids = new Set(readLocalJson(publishedCheckoutKey, []));
+          checkoutIds.forEach(change => ids.add(change.operationId.startsWith("checkout:") ? String(change.payload.invoice.id) : change.operationId));
+          if (!await saveReportSyncValue(publishedCheckoutKey, [...ids])) return false;
+        }
+        const remaining = readLocalJson(reportChangeOutboxKey, []).filter(entry => !confirmedIds.has(entry.operationId));
+        if (!await saveReportSyncValue(reportChangeOutboxKey, remaining)) return false;
+        void syncConfirmedReports();
+      }
+    } catch (_) { return false; } finally { confirmedReportSending = false; }
+  };
+  const applyConfirmedReportChanges = (mirror, changes, { applyInventory = true } = {}) => {
+    const inventory = new Map();
+    for (const change of changes) {
+      if (Number(change.sequence) <= Number(mirror.cursor)) continue;
+      const payload = change.payload || {};
+      reconcileReportInventory(mirror, payload, change.action);
+      const id = String(payload.saleId || payload.invoice?.id || payload.invoice?.sessionId || "");
+      if (change.action === "clear_income") { mirror.sales = {}; mirror.deleted = {}; mirror.pendingSaleMutations = {}; mirror.deletedSaleRecords = {}; mirror.salesClearAt = change.confirmedAt || payload.occurredAt; }
+      mirror.pendingSaleMutations ||= {};
+      mirror.deletedSaleRecords ||= {};
+      const mutation = mirror.pendingSaleMutations[id];
+      const isMutation = ["edit_sale", "delete_sale"].includes(change.action);
+      const pendingMutation = isMutation && payload.invoice?.googlePending && payload.invoice?.reportMutation;
+      // A delayed Google receipt cannot undo a later mutation accepted by Supabase.
+      const superseded = mutation && !pendingMutation && !payload.invoice?.reportRejected && ["record_sale", "edit_sale", "delete_sale"].includes(change.action)
+        && mutation !== payload.mutationId;
+      if (!superseded) {
+        if (change.action === "edit_sale" && mirror.sales[id]?.reportPrevious && payload.invoice) {
+          payload.invoice = { ...payload.invoice, reportPrevious: mirror.sales[id].reportPrevious };
+        }
+        if (pendingMutation) mirror.pendingSaleMutations[id] = payload.mutationId;
+        else if (isMutation) delete mirror.pendingSaleMutations[id];
+        if (payload.invoice && ["record_sale","edit_sale"].includes(change.action)) { mirror.sales[id] = { ...payload.invoice, reportConfirmedAt: change.confirmedAt || payload.occurredAt }; delete mirror.deleted[id]; }
+        if (change.action === "delete_sale" && id) {
+          mirror.deletedSaleLinks ||= {};
+          mirror.deletedSaleLinks[id] = payload.saleLink || mirror.sales[id] || {};
+          if (payload.invoice?.reportPrevious || mirror.sales[id]?.reportPrevious) mirror.deletedSaleRecords[id] ||= mirror.sales[id]?.reportPrevious || payload.invoice.reportPrevious;
+          delete mirror.sales[id]; mirror.deleted[id] = change.confirmedAt || payload.occurredAt || true;
+        }
+      }
+      if (change.action === "clear_inventory_movements") { mirror.movements = {}; mirror.movementsClearAt = change.confirmedAt || payload.occurredAt; }
+      (payload.movements || []).forEach(row => { if (row.movementId) mirror.movements[row.movementId] = { ...row, googlePending: Boolean(payload.invoice?.googlePending), reportConfirmedAt: change.confirmedAt || payload.occurredAt }; });
+      (payload.items || []).forEach(item => inventory.set(String(item.productId), item));
+      mirror.cursor = Number(change.sequence);
+    }
+    reportInventoryItems(mirror).forEach(item => inventory.set(String(item.productId), item));
+    const items = [...inventory.values()];
+    if (applyInventory && items.length) applyRemoteInventoryItems(items);
+    return items;
+  };
+  let confirmedReportReading = false;
+  let confirmedReportReadPending = false;
+  const syncConfirmedReports = async ({ periodic = false } = {}) => {
+    if (!navigator.onLine || !state.authToken || !state.currentUser || !["income","inventory","movements"].some(section => canAccessAdminSection(section))) return false;
+    if (confirmedReportReading) { if (!periodic) confirmedReportReadPending = true; return false; }
+    const readScope = state.authToken;
+    state.readBudget?.touch("reports",readScope);
+    confirmedReportReading = true;
+    const userId = state.currentUser.id;
+    try {
+      if (typeof hydrateDurableKey === "function" && state.reportMirrorHydratedUser !== userId) {
+        await hydrateDurableKey(reportMirrorKey());
+        state.reportMirrorUser = null;
+        state.reportMirrorHydratedUser = userId;
+      }
+      const mirror = reportMirror();
+      let changed = false;
+      let cursor = Number(mirror.cursor || 0);
+      const changes = [];
+      while (true) {
+        const { data, error } = await state.sb.rpc("get_report_changes", { auth_token: state.authToken, p_after: cursor });
+        if (error || !data?.ok || !Array.isArray(data.changes) || state.currentUser?.id !== userId) {
+          state.readBudget?.settled("reports",false,readScope);
+          return false;
+        }
+        state.readBudget?.settled("reports",true,readScope);
+        if (data.changes.some((change, index) => !Number.isSafeInteger(Number(change.sequence))
+          || Number(change.sequence) <= (index ? Number(data.changes[index - 1].sequence) : cursor))) return false;
+        if (!data.changes.length) break;
+        changes.push(...data.changes);
+        cursor = Number(data.changes.at(-1).sequence);
+        changed = true;
+        if (!data.hasMore) break;
+      }
+      state.fastReportsAvailable = true;
+      if (changed) {
+        // A failed later page must not commit an incomplete report cursor or
+        // repaint only the beginning of the received transaction history.
+        const nextMirror = JSON.parse(JSON.stringify(mirror));
+        const items = applyConfirmedReportChanges(nextMirror, changes, { applyInventory: false });
+        if (!await saveReportSyncValue(reportMirrorKey(), nextMirror)) return false;
+        Object.assign(mirror, nextMirror);
+        if (items.length) {
+          if (typeof pendingInventoryIds === "function") applyRemoteInventoryItems(items);
+          else applyRemoteInventoryItems(items, { preserveProductIds: typeof pendingInventoryProductIds === "function" ? pendingInventoryProductIds() : new Set() });
+        }
+        const invoiceMap = new Map((state.invoiceHistory || []).filter(invoice => !mirror.salesClearAt || String(invoice.createdAt) > mirror.salesClearAt).map(invoice => [String(invoice.id || invoice.sessionId), invoice]));
+        Object.keys(mirror.deleted).forEach(id => invoiceMap.delete(id));
+        Object.entries(mirror.sales).forEach(([id, invoice]) => invoiceMap.set(id, invoice));
+        state.invoiceHistory = [...invoiceMap.values()];
+        persistInvoiceHistory();
+        state.incomeReport = mergeConfirmedIncomeReport(state.incomeReport || localIncomeReport(incomeFiltersFromForm()), incomeFiltersFromForm());
+        if (state.activeAdminSection === "income") renderIncomeReport();
+        state.inventoryMovements = mergeConfirmedMovements(state.inventoryMovements);
+        persistInventoryMovements();
+        renderInventoryMovements();
+        if (state.activeAdminSection === "inventory") renderInventory();
+        if ($("#purchaseHistoryDialog")?.open) { renderPurchaseProductOptions(); renderPurchaseHistory(); }
+      }
+      if (!changed) {
+        const items = reportInventoryItems(mirror);
+        if (items.length) {
+          if (typeof pendingInventoryIds === "function") applyRemoteInventoryItems(items);
+          else applyRemoteInventoryItems(items, { preserveProductIds: typeof pendingInventoryProductIds === "function" ? pendingInventoryProductIds() : new Set() });
+        }
+      }
+      return changed;
+    } catch (_) { return false; } finally {
+      confirmedReportReading = false;
+      if (confirmedReportReadPending) { confirmedReportReadPending = false; window.setTimeout(() => void syncConfirmedReports(), 0); }
+    }
+  };
+  const movementBelongsToSale = (row, sale) => {
+    const id = String(sale.saleId || sale.id || sale.sessionId || "");
+    return Boolean(id && (String(row.movementId || "").startsWith("SALE-" + id + "-")
+      || String(row.movementId || "").startsWith("DELETE-SALE-" + id + "-")
+      || (sale.sessionId && String(row.sessionId || "") === String(sale.sessionId))
+      || ((sale.invoice || sale.number) && String(row.reference || "") === String(sale.invoice || sale.number))));
+  };
+  const removeDeletedSaleMovements = rows => {
+    const mirror = reportMirror();
+    const deleted = { ...(mirror.deleted || {}) };
+    readAppsScriptOutbox().filter(job => job.action === "delete_sale").forEach(job => { deleted[String(job.payload?.saleId)] = true; });
+    const removed = { ...(mirror.deletedSaleLinks || {}) };
+    rows.forEach(row => {
+      const prefix = "DELETE-SALE-", suffix = "-" + row.productId, marker = String(row.movementId || "");
+      if (row.type !== "VENTA_ELIMINADA" || !marker.startsWith(prefix) || !marker.endsWith(suffix)) return;
+      const id = marker.slice(prefix.length, -suffix.length); deleted[id] = true; removed[id] = { sessionId: row.sessionId, invoice: row.reference };
+    });
+    const ids = Object.keys(deleted);
+    if (!ids.length) return rows;
+    const sessions = new Set(ids.map(id => removed[id]?.sessionId).filter(Boolean).map(String));
+    const references = new Set(ids.map(id => removed[id]?.invoice || removed[id]?.number).filter(Boolean).map(String));
+    return rows.filter(row => !sessions.has(String(row.sessionId || "")) && !references.has(String(row.reference || ""))
+      && !ids.some(id => String(row.movementId || "").startsWith("SALE-" + id + "-") || String(row.movementId || "").startsWith("DELETE-SALE-" + id + "-")));
+  };
+  const mergeConfirmedMovements = (rows, revision = state.movementRevision, { authoritative = false, readStartedAt = 0, hasMore = false } = {}) => {
+    const mirror = reportMirror();
+    const currentAfterClear = !mirror.movementsClearAt || (authoritative && readStartedAt >= Date.parse(mirror.movementsClearAt))
+      || Number(String(revision || "").split("-")[0]) >= Date.parse(mirror.movementsClearAt);
+    const map = new Map((currentAfterClear ? rows : []).filter(row => !row.reportProjection).map(row => [String(row.movementId), row]));
+    const oldest = hasMore ? rows.reduce((date,row) => !date || String(row.date || "") < date ? String(row.date || "") : date, "") : "";
+    let retired = false;
+    Object.values(mirror.movements).forEach(row => {
+      const id = String(row.movementId);
+      const settled = !row.googlePending && authoritative && readStartedAt >= Date.parse(row.reportConfirmedAt || "");
+      if (settled && (map.has(id) || !hasMore || (oldest && String(row.date || "") >= oldest))) {
+        delete mirror.movements[id]; retired = true; return;
+      }
+      if (map.has(id) && Number(String(revision || "").split("-")[0]) >= Date.parse(row.reportConfirmedAt || "")) return;
+      map.set(id, row);
+    });
+    for (const invoice of Object.values(mirror.sales)) {
+      if (!invoice.reportMutation || invoice.reportMovementSettled) continue;
+      if (mirror.movementsClearAt && !(Date.parse(invoice.reportConfirmedAt || invoice.createdAt || "") > Date.parse(mirror.movementsClearAt))) continue;
+      if (!invoice.googlePending && authoritative && readStartedAt >= Date.parse(invoice.reportConfirmedAt || "")) {
+        invoice.reportMovementSettled = true; retired = true; continue;
+      }
+      for (const [id, row] of map) {
+        if (row.type === "CORRECCION_VENTA" && movementBelongsToSale(row, invoice)) map.delete(id);
+      }
+      const quantities = new Map();
+      (invoice.reportPrevious?.items || []).forEach(line => {
+        const id = String(line.menuItemId || line.menu_item_id || "");
+        if (id) quantities.set(id, Number(quantities.get(id) || 0) + Number(line.quantity || 0));
+      });
+      (invoice.items || []).forEach(line => {
+        const id = String(line.menu_item_id || "");
+        if (id) quantities.set(id, Number(quantities.get(id) || 0) - Number(line.quantity || 0));
+      });
+      for (const [productId, delta] of quantities) {
+        if (!delta) continue;
+        const original = [...map.values()].find(row => String(row.productId) === productId && movementBelongsToSale(row, invoice));
+        const line = (invoice.items || []).find(line => String(line.menu_item_id) === productId);
+        map.set("EDIT-REPORT-" + invoice.id + "-" + productId, { ...original,
+          movementId: "EDIT-REPORT-" + invoice.id + "-" + productId, reportProjection: true,
+          productId, product: line?.item_name || original?.product || "Producto", type: "CORRECCION_VENTA", delta,
+          before: Number(original?.after || 0), after: Number(original?.after || 0) + delta,
+          reference: invoice.number, sessionId: invoice.sessionId, date: invoice.reportConfirmedAt });
+      }
+    }
+    if (retired) void saveReportSyncValue(reportMirrorKey(), mirror);
+    return removeDeletedSaleMovements([...map.values()]);
+  };
+  const mergeConfirmedIncomeReport = (remote, filters) => {
+    const mirror = reportMirror();
+    const keys = new Set([...(remote.recordRows || []).map(row => String(row.saleId)), ...(remote.recordKeys || []).map(String)]);
+    const snapshotAfterClear = !mirror.salesClearAt || Date.parse(remote.generatedAt || "") >= Date.parse(mirror.salesClearAt);
+    const baseRows = snapshotAfterClear ? (remote.records || []) : [];
+    const records = new Map(baseRows.map(row => [String(row.saleId), row]));
+    const applied = { ...(remote.appliedReportMutations || {}) };
+    const totals = { ...(baseRows.length === (remote.records || []).length ? remote.totals : incomeTotalsFromRecords(baseRows)) };
+    const adjust = (record, direction) => {
+      const values = incomeTotalsFromRecords([record]);
+      Object.keys(values).forEach(key => { if (key !== "averageTicket") totals[key] = Number(totals[key] || 0) + direction * values[key]; });
+    };
+    for (const id of Object.keys(mirror.deleted)) {
+      if (records.has(id)) { adjust(records.get(id), -1); records.delete(id); }
+      else if (keys.has(id) && !applied[id] && mirror.deletedSaleRecords?.[id]) adjust(mirror.deletedSaleRecords[id], -1);
+      applied[id] = "deleted";
+    }
+    const visible = new Map(localIncomeRecords(filters, Object.values(mirror.sales)).map(row => [String(row.saleId), row]));
+    for (const [id, invoice] of Object.entries(mirror.sales)) {
+      const old = records.get(id), fresh = visible.get(id);
+      if ((!invoice.googlePending && Date.parse(remote.generatedAt || "") >= Date.parse(invoice.reportConfirmedAt || "")) || (invoice.googlePending && !invoice.reportMutation && old && keys.has(id))) continue;
+      // Una edición confirmada se sustituye por ID; nunca agrega una segunda venta.
+      if (old) { adjust(old, -1); records.delete(id); }
+      const previous = !old && keys.has(id) && !applied[id] && invoice.reportMutation ? invoice.reportPrevious : null;
+      if (previous) adjust(previous, -1);
+      if (fresh) { records.set(id, fresh); if (old || previous || !keys.has(id)) adjust(fresh, 1); }
+      if (invoice.reportMutation) applied[id] = "edited";
+    }
+    totals.averageTicket = totals.sales ? totals.income / totals.sales : 0;
+    const queued = new Set(readAppsScriptOutbox().filter(job => job.action === "record_sale").map(job => String(job.payload?.invoice?.id || "")));
+    const pendingCount = [...visible].filter(([id]) => mirror.sales[id]?.googlePending && !queued.has(id) && !keys.has(id)).length;
+    return { ...remote, filters, appliedReportMutations: applied, records: [...records.values()].sort((a,b) => String(b.date).localeCompare(String(a.date))), totals, pendingCount: Number(remote.pendingCount || 0) + pendingCount,
+      totalRecords: Math.max(Number(totals.sales || 0), records.size) };
+  };
+  const startConfirmedReportSync = () => {
+    if (state.confirmedReportTimer) return;
+    const tick = () => {
+      void queueReadyCheckoutReports(); void flushConfirmedReportChanges();
+      const interval = state.adminBroadcastConnected ? (document.hidden ? 15000 : 5000) : SYNC_INTERVAL_MS;
+      if (state.readBudget?.due("reports",interval,state.authToken) !== false) void syncConfirmedReports({periodic:true});
+    };
+    tick();
+    state.confirmedReportTimer = window.setInterval(tick, SYNC_INTERVAL_MS);
+  };
+
+  const CLIENT_ACTION_FIELDS = { waiter: "client_waiter_enabled", bill: "client_bill_enabled", menu: "client_menu_enabled", chat: "client_chat_enabled" };
+  const syncClientActions = () => {
+    if (!state.pizzeriaService) return;
+    const actions = { waiter: $('[data-request="waiter"]'), bill: $('[data-request="bill"]'), menu: $("#openMenuCards"), chat: $("#focusTableChat") };
+    let visible = 0;
+    Object.entries(actions).forEach(([key, button]) => {
+      if (!button) return;
+      button.hidden = state.business?.[CLIENT_ACTION_FIELDS[key]] === false;
+      if (!button.hidden) visible++;
+    });
+    const shortcuts = $(".quick-actions");
+    if (shortcuts) { shortcuts.hidden = visible === 0; shortcuts.style.setProperty("--mesa-actions", String(Math.max(1,visible))); }
+    const chatEnabled = state.business?.client_chat_enabled !== false;
+    const input = $("#assistantInput"), panel = $(".assistant-panel");
+    if (panel) panel.closest(".client-section").hidden = !chatEnabled;
+    if (input) { if (!chatEnabled && document.activeElement === input) input.blur(); input.disabled = !chatEnabled; }
+    if (state.business?.client_menu_enabled === false) $("#menuCardsViewer")?.close();
+  };
+  const saveClientActionVisibility = async (input) => {
+    const field = input.name;
+    if (!Object.values(CLIENT_ACTION_FIELDS).includes(field)) return;
+    const desired = input.checked, previous = state.business?.[field] !== false;
+    state.clientActionSaves ||= new Set(); state.clientActionSaves.add(field);
+    input.disabled = true; state.business = { ...state.business, [field]: desired }; syncClientActions();
+    try {
+      const saved = await retryQuiet(() => state.sb.from("business_settings").update({ [field]: desired })
+        .eq("is_primary",true).select("*").single(),4);
+      if (!saved) throw new Error("No pudimos guardar la opción. Revisa internet y vuelve a intentarlo.");
+      state.business = { ...state.business, [field]: saved[field] };
+      persistBootstrapCache(); syncClientBillVisibility(); syncClientActions(); notifyAdminPeers({ core: true });
+      toast("Opción actualizada para los clientes.");
+    } catch (error) {
+      state.business = { ...state.business, [field]: previous }; input.checked = previous;
+      syncClientBillVisibility(); syncClientActions(); toast(error.message,"error","client-action-save:"+field);
+    } finally { state.clientActionSaves.delete(field); input.disabled = false; }
+  };
+
+  const clientBillEnabled = () => state.business?.client_bill_enabled !== false;
+  const syncClientBillVisibility = () => {
+    $$('[data-request="bill"]').forEach(button => { button.hidden = !clientBillEnabled(); });
+    if (state.page === "client" && !clientBillEnabled()) {
+      state.localBillOpen = false;
+      const box = $("#billChat");
+      if (box) { box.hidden = true; box.innerHTML = ""; }
+    }
+  };
+  const saveClientBillVisibility = async (input) => {
+    const previous = clientBillEnabled();
+    const desired = input.checked;
+    input.disabled = true;
+    try {
+      const saved = await retryQuiet(() => state.sb.from("business_settings")
+        .update({ client_bill_enabled: desired }).eq("is_primary", true).select("*").single(), 4);
+      if (!saved) throw new Error("No pudimos guardar el cambio. Revisa internet y vuelve a intentarlo.");
+      state.business = saved;
+      persistBootstrapCache();
+      syncClientBillVisibility();
+      notifyAdminPeers({ core: true });
+      toast(desired ? "Los clientes ya pueden ver su cuenta." : "Ver cuenta quedó oculto para los clientes.");
+    } catch (error) { input.checked = previous; toast(error.message, "error", "bill-setting-failed"); }
+    finally { input.disabled = false; }
+  };
+
+  const reportNumber = value => (reportNumber.formatter ||= new Intl.NumberFormat("es-CO", { maximumFractionDigits: 2 })).format(Number(value || 0));
+  const filteredMovementRows = () => movementViewRows()
+    .filter(row => !state.movementProductFilter || state.movementProductFilter === "all" || String(row.productId) === state.movementProductFilter)
+    .sort((a,b) => String(b.date || "").localeCompare(String(a.date || "")));
+  const renderMovementProductOptions = () => {
+    const select = $("#movementProductFilter");
+    if (!select) return;
+    const products = new Map(state.items.map(item => [String(item.id), String(item.name || "Producto")]));
+    state.inventoryMovements.forEach(row => { if (row.productId && !products.has(String(row.productId))) products.set(String(row.productId), String(row.product || row.productName || row.code || "Producto")); });
+    const markup = '<option value="all">Todos los productos</option>' + [...products].sort((a,b) => a[1].localeCompare(b[1],"es"))
+      .map(([id,name]) => `<option value="${escapeHTML(id)}">${escapeHTML(name)}</option>`).join("");
+    if (select.innerHTML !== markup) select.innerHTML = markup;
+    select.value = state.movementProductFilter || "all";
+    syncMovementProductPicker();
+  };
+  const syncMovementProductPicker = () => {
+    const select=$("#movementProductFilter"),toggle=$("#movementProductToggle"),list=$("#movementProductOptions");
+    if(!select || !toggle || !list) return;
+    const label=select.selectedOptions[0]?.textContent || "Todos los productos";
+    if(!toggle.dataset.searching) toggle.value=label;
+    toggle.placeholder=label;
+    const terms=normalizeText(toggle.dataset.searching ? toggle.value : "").split(/\s+/).filter(Boolean);
+    const options=[...select.options].filter(option=>{
+      const words=option.textContent.split(/\s+/).map(word=>word[0] || "").join("");
+      const text=normalizeText(option.textContent+" "+(state.inventoryMeta?.[option.value]?.code || "")+" "+words);
+      return option.value==="all" || terms.every(term=>text.includes(term));
+    });
+    const markup=options.map(option=>'<button type="button" role="option" id="movement-product-option-'+option.index+'" data-movement-product="'+escapeHTML(option.value)+'" aria-selected="'+String(option.selected)+'">'+escapeHTML(option.textContent)+'</button>').join("")
+      +(terms.length && options.length===1 && options[0].value==="all" ? '<span class="movement-product-empty" role="status">Sin coincidencias</span>' : '');
+    if(list.innerHTML!==markup)list.innerHTML=markup;
+  };
+  const bindMovementProductPicker = () => {
+    const select=$("#movementProductFilter"),toggle=$("#movementProductToggle"),list=$("#movementProductOptions"),picker=$("#movementProductPicker");
+    if(!select || !toggle || !list || !picker || toggle.dataset.bound) return;
+    toggle.dataset.bound="1";
+    const close=()=>{if(list.hidden&&!toggle.dataset.searching)return;list.hidden=true;toggle.setAttribute("aria-expanded","false");toggle.removeAttribute("aria-activedescendant");delete toggle.dataset.searching;toggle.value=select.selectedOptions[0]?.textContent || "Todos los productos";};
+    const choose=option=>{if(!option)return;select.value=option.dataset.movementProduct;select.dispatchEvent(new Event("change",{bubbles:true}));close();};
+    const open=()=>{
+      syncMovementProductPicker();
+      if(toggle.getBoundingClientRect().bottom>window.innerHeight-180)toggle.scrollIntoView({block:"center",behavior:"instant"});
+      list.style.maxHeight=Math.max(96,Math.min(280,window.innerHeight-toggle.getBoundingClientRect().bottom-12))+"px";
+      list.hidden=false;toggle.setAttribute("aria-expanded","true");
+    };
+    toggle.addEventListener("focus",()=>{toggle.dataset.searching="1";toggle.value="";open();});
+    toggle.addEventListener("click",()=>{if(list.hidden){toggle.dataset.searching="1";toggle.value="";open();}});
+    toggle.addEventListener("input",()=>{toggle.dataset.searching="1";toggle.removeAttribute("aria-activedescendant");open();});
+    list.addEventListener("pointerdown",event=>{if(event.target.closest("[data-movement-product]"))event.preventDefault();});
+    list.addEventListener("click",event=>{const option=event.target.closest("[data-movement-product]");if(option)choose(option);});
+    toggle.addEventListener("keydown",event=>{
+      if(event.key==="Escape"||event.key==="Tab"){close();return;}
+      if(!["ArrowDown","ArrowUp","Enter"].includes(event.key))return;
+      event.preventDefault();if(list.hidden)open();
+      const options=[...list.querySelectorAll('[role="option"]')];if(!options.length)return;
+      let index=options.findIndex(option=>option.id===toggle.getAttribute("aria-activedescendant"));
+      if(event.key==="Enter"){choose(options[index<0 ? (options.length>1 ? 1 : 0) : index]);return;}
+      index=Math.max(0,Math.min(options.length-1,index+(event.key==="ArrowDown"?1:-1)));
+      toggle.setAttribute("aria-activedescendant",options[index].id);options[index].scrollIntoView({block:"nearest"});
+    });
+    document.addEventListener("click",event=>{if(!picker.contains(event.target))close();});
+    document.addEventListener("keydown",event=>{if(event.key==="Escape")close();});
+    window.addEventListener("resize",close);
+  };
+
+  let completeMovementsPromise = null;
+  const ensureCompleteMovementHistory = () => {
+    if (completeMovementsPromise) return completeMovementsPromise;
+    completeMovementsPromise = (async () => {
+      if (!navigator.onLine) return false;
+      const readStartedAt = Date.now();
+      const baseline = new Map(state.inventoryMovements.map(row => [String(row.movementId), JSON.stringify(row)]));
+      const collected = new Map();
+      let cursor = null, revision = "";
+      do {
+        const result = await appsScriptRequest("get_inventory_movements", { limit: 800, cursor, revision });
+        if (!result?.ok || result.stale || !Array.isArray(result.movements)) throw new Error("El historial cambió. Vuelve a intentar la consulta.");
+        if (cursor && String(result.revision || "") !== revision) throw new Error("El historial cambió durante la consulta.");
+        result.movements.forEach(row => collected.set(String(row.movementId), row));
+        revision = String(result.revision || "");
+        const next = result.hasMore ? result.nextCursor : null;
+        if (next && next === cursor) throw new Error("No se pudo completar el historial.");
+        cursor = next;
+      } while (cursor);
+      if (readAppsScriptOutbox().some(job => job.action === "clear_inventory_movements")) return false;
+      const pendingIds = new Set();
+      readAppsScriptOutbox().forEach(job => {
+        const id = job.payload?.adjustment?.eventId || job.payload?.item?.movementEventId || job.payload?.movementId;
+        if (id) pendingIds.add(String(id));
+        (job.payload?.invoice?.items || []).forEach(line => pendingIds.add(`SALE-${job.payload.invoice.id}-${line.menu_item_id}`));
+      });
+      const current = new Map(state.inventoryMovements.map(row => [String(row.movementId),row]));
+      baseline.forEach((_,id) => { if (!current.has(id)) collected.delete(id); });
+      current.forEach((row,id) => { if (pendingIds.has(id) || baseline.get(id) !== JSON.stringify(row)) collected.set(id,row); });
+      state.inventoryMovements = mergeConfirmedMovements([...collected.values()], revision, { authoritative: true, readStartedAt });
+      state.movementRevision = revision;
+      state.completeMovementRevision = revision;
+      await saveReportSyncValue("donpieros_complete_movement_history_v1", { revision });
+      state.movementHasMore = false;
+      state.movementCursor = null;
+      state.movementLoaded = true;
+      persistInventoryMovements();
+      renderInventoryMovements();
+      return true;
+    })().finally(() => { completeMovementsPromise = null; });
+    return completeMovementsPromise;
+  };
+  const movementViewRows = () => removeDeletedSaleMovements(state.inventoryMovements);
+
+  const renderMovementTotals = (movements) => {
+    const entries = movements.filter(row => movementKind(row) === "entry").reduce((sum,row) => sum + Number(row.delta ?? row.quantityChange ?? 0),0);
+    const exits = movements.filter(row => movementKind(row) === "exit").reduce((sum,row) => sum + Math.abs(Number(row.delta ?? row.quantityChange ?? 0)),0);
+    const summary = $("#movementSummary");
+    if (summary) summary.innerHTML = `<article class="movement-kpi entry">${icon("arrow-down-to-line",19)}<span><small>Unidades ingresadas</small><strong>+${reportNumber(entries)}</strong></span></article>
+      <article class="movement-kpi exit">${icon("arrow-up-from-line",19)}<span><small>${state.movementProductFilter && state.movementProductFilter !== "all" ? "De este producto has vendido" : "Unidades retiradas"}</small><strong>${reportNumber(exits)}</strong></span></article>
+      <article class="movement-kpi">${icon("list-checks",19)}<span><small>Movimientos visibles</small><strong>${movements.length}</strong></span></article>`;
+    const feedback = $("#movementTotalsFeedback");
+    if (feedback) feedback.textContent = "Cantidades de los movimientos cargados para el producto seleccionado.";
+  };
+
+  const buildBusinessReportPdf = ({ title, subtitle, metrics = [], sections = [], note = "", filename }) => {
+    const PDF = window.jspdf?.jsPDF;
+    if (!PDF) throw new Error("El generador PDF no está disponible. Recarga la aplicación y vuelve a intentar.");
+    const doc = new PDF({ unit: "mm", format: "a4" });
+    const width = 210, margin = 15, bottom = 280;
+    let y = 0;
+    const clean = value => String(value ?? "").replace(/[\u00a0\u202f]/g," ").replace(/→/g," a ");
+    const header = () => {
+      doc.setFillColor(22,43,57); doc.rect(0,0,width,35,"F");
+      doc.setTextColor(255,255,255); doc.setFont("helvetica","bold"); doc.setFontSize(17);
+      doc.text(clean(title),margin,14);
+      doc.setFontSize(10); doc.setFont("helvetica","normal");
+      doc.text(doc.splitTextToSize(clean(state.business?.business_name || "Don Pieros Pizza"),180).slice(0,1),margin,22);
+      doc.text(doc.splitTextToSize(clean(subtitle),180).slice(0,1),margin,29);
+      doc.setTextColor(35,48,58); y = 44;
+    };
+    const ensure = height => { if (y + height > bottom) { doc.addPage(); header(); } };
+    const paragraph = (text,size=10,bold=false) => {
+      doc.setFont("helvetica",bold ? "bold" : "normal"); doc.setFontSize(size);
+      const lines = doc.splitTextToSize(clean(text),180);
+      for (const line of lines) { ensure(6); doc.text(line,margin,y); y += 5.5; }
+      y += 3;
+    };
+    const table = (columns, rows) => {
+      const drawHead = () => {
+        ensure(10); doc.setFillColor(232,239,243); doc.rect(margin,y-4,180,9,"F");
+        doc.setFont("helvetica","bold");doc.setFontSize(9);
+        let x=margin+2;for(const col of columns){doc.text(clean(col.label),x,y+1);x+=col.width;} y+=10;
+      };
+      drawHead();
+      rows.forEach((row,index) => {
+        doc.setFont("helvetica","normal");doc.setFontSize(9);
+        const cells = columns.map((col,i) => doc.splitTextToSize(clean(row[i]),col.width-4));
+        const h = Math.max(...cells.map(lines => lines.length))*4.5+5;
+        if(y+h>bottom){doc.addPage();header();drawHead();}
+        if(index%2===0){doc.setFillColor(247,249,250);doc.rect(margin,y-3,180,h,"F");}
+        let x=margin+2;cells.forEach((lines,i)=>{doc.text(lines,x,y+1);x+=columns[i].width;});y+=h;
+      });y+=7;
+    };
+    header();
+    metrics.forEach(([label,value]) => paragraph(`${label}: ${value}`,13,true));
+    if(note) paragraph(note,10);
+    for(const section of sections){ensure(22);paragraph(section.title,12,true);if(section.text)paragraph(section.text);table(section.columns,section.rows);}
+    const pages=doc.getNumberOfPages();
+    for(let p=1;p<=pages;p++){doc.setPage(p);doc.setDrawColor(215,224,230);doc.line(margin,285,195,285);doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(90,105,115);doc.text(`Generado ${clean(prettyDateTime(new Date()))}`,margin,291);doc.text(`Página ${p} de ${pages}`,195,291,{align:"right"});}
+    doc.save(filename);
+    return doc;
+  };
+  const buildPurchasesReportPdf = (rows, filters) => {
+    const PDF = window.jspdf?.jsPDF;
+    if (!PDF) throw new Error("El generador PDF no está disponible. Recarga la aplicación.");
+    const doc = new PDF({orientation:"landscape",unit:"mm",format:"a4"});
+    const width=297, margin=15, tableWidth=267, bottom=191;
+    const clean=value=>String(value ?? "").replace(/[\u00a0\u202f]/g," ");
+    let y=0;
+    const heading=()=>{
+      doc.setFillColor(22,43,57);doc.rect(0,0,width,31,"F");
+      doc.setTextColor(255,255,255);doc.setFont("helvetica","bold");doc.setFontSize(17);
+      doc.text("Compras de inventario",margin,12);
+      doc.setFont("helvetica","normal");doc.setFontSize(10);
+      doc.text(doc.splitTextToSize(clean(state.business?.business_name || "Don Pieros Pizza"),tableWidth).slice(0,1),margin,20);
+      doc.text(`${filters.from || "Todo el historial"} a ${filters.to || "hoy"}`,margin,27);
+      doc.setTextColor(35,48,58);y=40;
+    };
+    const newPage=()=>{doc.addPage();heading();};
+    const paragraph=(text,bold=false)=>{
+      doc.setFont("helvetica",bold?"bold":"normal");doc.setFontSize(bold?12:9);
+      const lines=doc.splitTextToSize(clean(text),tableWidth);
+      for(const line of lines){if(y+6>bottom)newPage();doc.text(line,margin,y);y+=5;}
+      y+=3;
+    };
+    const table=(title,columns,data)=>{
+      if(y+25>bottom)newPage();paragraph(title,true);
+      const head=()=>{
+        doc.setFillColor(232,239,243);doc.rect(margin,y-4,tableWidth,10,"F");
+        doc.setFont("helvetica","bold");doc.setFontSize(9);
+        let x=margin;
+        columns.forEach(c=>{doc.text(clean(c.label),c.right?x+c.width-2:x+2,y+2,{align:c.right?"right":"left"});x+=c.width;});
+        y+=11;
+      };
+      head();
+      data.forEach((row,index)=>{
+        doc.setFont("helvetica","normal");doc.setFontSize(9);
+        const cells=columns.map((c,i)=>doc.splitTextToSize(clean(row[i]),c.width-5));
+        const lineCount=Math.max(1,...cells.map(c=>c.length));
+        // Una referencia o un nombre largo puede continuar en la página siguiente.
+        let offset=0;
+        while(offset<lineCount){
+          if(y+10>bottom){newPage();head();}
+          const count=Math.min(lineCount-offset,Math.max(1,Math.floor((bottom-y-5)/4.5)));
+          const height=count*4.5+5;
+          if(index%2===0){doc.setFillColor(247,249,250);doc.rect(margin,y-3,tableWidth,height,"F");}
+          doc.setFont("helvetica","normal");doc.setFontSize(9);doc.setTextColor(35,48,58);
+          let x=margin;
+          cells.forEach((lines,i)=>{const c=columns[i],part=lines.slice(offset,offset+count);if(part.length)doc.text(part,c.right?x+c.width-2:x+2,y+1,{align:c.right?"right":"left"});x+=c.width;});
+          y+=height;offset+=count;
+          if(offset<lineCount){newPage();head();}
+        }
+      });y+=7;
+    };
+    heading();
+    const total=rows.reduce((sum,row)=>sum+Number(row.delta||0)*purchaseUnitCost(row),0);
+    const units=rows.reduce((sum,row)=>sum+Number(row.delta||0),0);
+    paragraph(`Total invertido: ${money(total)}   |   Unidades compradas: ${reportNumber(units)}   |   Registros: ${rows.length}`,true);
+    paragraph(`Producto: ${filters.product}. Búsqueda: ${filters.query || "ninguna"}.`);
+    paragraph(`Alcance: ${rows.length} compras filtradas de los registros cargados en pantalla.${filters.hasMore?" Hay historial anterior sin cargar; este documento contiene la selección visible.":""}${filters.offline?" Sin conexión: copia disponible en este equipo.":""} Las devoluciones no se cuentan como compras. Se usa el costo guardado; si faltaba, el costo actual, igual que en Compras.`);
+    const grouped=new Map();
+    rows.forEach(row=>{const key=String(row.productId||row.product),old=grouped.get(key)||{name:row.product,units:0,total:0};old.units+=Number(row.delta||0);old.total+=Number(row.delta||0)*purchaseUnitCost(row);grouped.set(key,old);});
+    table("Resumen por producto",[{label:"Producto",width:169},{label:"Unidades",width:40,right:true},{label:"Inversión",width:58,right:true}],
+      [...grouped.values()].map(row=>[row.name,reportNumber(row.units),money(row.total)]));
+    table("Detalle de compras",[{label:"Fecha / responsable",width:58},{label:"Producto / referencia",width:91},{label:"Unidades",width:24,right:true},{label:"Costo / unidad",width:42,right:true},{label:"Total",width:52,right:true}],
+      rows.map(row=>[`${prettyDateTime(row.date)}\n${row.user||"Sistema"}`,`${row.product}\n${row.reference||""}`,reportNumber(row.delta),money(purchaseUnitCost(row)),money(Number(row.delta||0)*purchaseUnitCost(row))]));
+    const pages=doc.getNumberOfPages();
+    for(let page=1;page<=pages;page++){
+      doc.setPage(page);doc.setDrawColor(215,224,230);doc.line(margin,198,width-margin,198);
+      doc.setFont("helvetica","normal");doc.setFontSize(8);doc.setTextColor(90,105,115);
+      doc.text(clean(`Generado ${prettyDateTime(new Date())} · COP`),margin,204);
+      doc.text(`Página ${page} de ${pages}`,width-margin,204,{align:"right"});
+    }
+    return doc.save(`compras-${filters.from||"historial"}-${filters.to||purchaseDateKey(new Date())}.pdf`,{returnPromise:true});
+  };
+  const exportPurchasesPdf = async () => {
+    const button=$("#exportPurchasesPdf");
+    if(button?.disabled)return;
+    if(button)button.disabled=true;
+    const feedback=$("#purchaseFilterFeedback");
+    try {
+      if(state.purchaseDateFrom && state.purchaseDateTo && state.purchaseDateFrom>state.purchaseDateTo)throw new Error("La fecha inicial debe ser anterior a la final.");
+      // Misma selección que renderPurchaseHistory. La descarga no exige una
+      // consulta de Movimientos ni permisos adicionales a los de esta pantalla.
+      const rows=purchaseMovements().map(row=>({...row}));
+      if(!rows.length)throw new Error("No hay compras con estos filtros.");
+      await buildPurchasesReportPdf(rows,{from:state.purchaseDateFrom,to:state.purchaseDateTo,
+        product:$("#purchaseProductFilter")?.selectedOptions?.[0]?.textContent||"Todos",
+        query:state.purchaseSearch,hasMore:state.movementHasMore,offline:!navigator.onLine});
+      if(feedback){feedback.textContent=`PDF generado con ${rows.length} compras de la selección visible.`;feedback.classList.remove("is-error");}
+    }catch(error){
+      if(feedback){feedback.textContent=friendlyMessage(error);feedback.classList.add("is-error");}
+      toast(error.message,"error","purchase-pdf-failed");
+    }finally{if(button)button.disabled=false;}
+  };
+
+
+  const renderConsumptionProductOptions = (searchValue = "") => {
+    const options = $("#consumptionProductOptions");
+    const combobox = $("#consumptionProductCombobox");
+    const hint = $("#consumptionProductHint");
+    if (!options || !combobox) return;
+    const products = matchingProducts(searchValue).slice(0, 30);
+    const previousId = combobox.dataset.activeProduct || "";
+    const signature = JSON.stringify([searchValue, products.map(item => [item.id,item.name,item.price,inventoryFor(item)])]);
+    if (combobox.dataset.renderSignature === signature) return;
+    combobox.dataset.renderSignature = signature;
+    state.productPickerMatches = products;
+    combobox.dataset.activeIndex = products.length === 1 ? "0" : "-1";
+    options.innerHTML = products.length
+      ? products.map((item, index) => {
+          const inventory = inventoryFor(item);
+          const tracked = Object.prototype.hasOwnProperty.call(state.inventoryMeta, item.id);
+          const out = tracked && inventory.stock <= 0;
+          return `<button type="button" class="product-combobox-option${products.length === 1 ? " is-selected" : ""}" role="option"
+            id="consumption-product-${index}" data-consumption-product="${escapeHTML(item.id)}" aria-selected="${products.length === 1}" ${out ? "disabled" : ""}>
+            <span class="product-option-code">${escapeHTML(inventory.code)}</span>
+            <span><strong>${escapeHTML(item.name)}</strong><small>${money(item.price)} · ${tracked ? `${inventory.stock.toLocaleString("es-CO", { maximumFractionDigits: 2 })} ${escapeHTML(inventory.unit)}` : "Sin stock configurado"}</small></span>
+            <em class="${out ? "is-out" : ""}">${out ? "Agotado" : icon("check", 16)}</em>
+          </button>`;
+        }).join("")
+      : `<div class="product-combobox-empty">No hay coincidencias. Puedes escribir el nombre como consumo personalizado.</div>`;
+    if (hint) hint.textContent = products.length
+      ? `${products.length} producto${products.length === 1 ? "" : "s"}. Busca por nombre o iniciales, por ejemplo CN.`
+      : "Sin coincidencias: el nombre escrito puede guardarse como consumo personalizado.";
+    const available = $$('[data-consumption-product]:not(:disabled)', options);
+    const restored = available.findIndex(button => button.dataset.consumptionProduct === previousId);
+    combobox.dataset.activeIndex = "-1";
+    combobox.dataset.activeProduct = "";
+    $("#consumptionProductSearch")?.removeAttribute("aria-activedescendant");
+    if (restored >= 0) setConsumptionProductActiveIndex(restored);
+    else if (available.length === 1) setConsumptionProductActiveIndex(0);
+    refreshIcons();
+  };
+
+  const showConsumptionProductOptions = () => {
+    const options = $("#consumptionProductOptions");
+    const combobox = $("#consumptionProductCombobox");
+    const input = $("#consumptionProductSearch");
+    if (!options || !combobox || !input) return;
+    options.hidden = false;
+    combobox.classList.add("is-open");
+    input.setAttribute("aria-expanded", "true");
+  };
+
+  const closeConsumptionProductOptions = () => {
+    const options = $("#consumptionProductOptions");
+    const combobox = $("#consumptionProductCombobox");
+    const input = $("#consumptionProductSearch");
+    if (!options || !combobox || !input) return;
+    options.hidden = true;
+    combobox.classList.remove("is-open");
+    input.setAttribute("aria-expanded", "false");
+  };
+
+  const selectConsumptionProduct = (id) => {
+    const item = state.items.find((entry) => entry.id === id);
+    const form = $("#consumptionForm");
+    const search = $("#consumptionProductSearch");
+    if (!item || !form || !search) return;
+    form.menu_item_id.value = item.id;
+    form.item_name.value = item.name || "";
+    setCurrencyInputValue(form.unit_price, Number(item.price || 0));
+    form.quantity.value = "";
+    search.value = `${inventoryFor(item).code} · ${item.name}`;
+    closeConsumptionProductOptions();
+    $("#consumptionProductHint") && ($("#consumptionProductHint").textContent = `${item.name} seleccionado · escribe la cantidad y presiona Enter.`);
+    window.requestAnimationFrame(() => {
+      form.quantity.focus({ preventScroll: true });
+    });
+  };
+
+  const setConsumptionProductActiveIndex = (requestedIndex) => {
+    const options = $("#consumptionProductOptions");
+    const input = $("#consumptionProductSearch");
+    const buttons = $$('[data-consumption-product]:not(:disabled)', options);
+    if (!buttons.length || !input) return null;
+    const index = (requestedIndex + buttons.length) % buttons.length;
+    buttons.forEach((button, buttonIndex) => {
+      const selected = buttonIndex === index;
+      button.classList.toggle("is-selected", selected);
+      button.setAttribute("aria-selected", String(selected));
+    });
+    $("#consumptionProductCombobox").dataset.activeIndex = String(index);
+    $("#consumptionProductCombobox").dataset.activeProduct = buttons[index].dataset.consumptionProduct;
+    input.setAttribute("aria-activedescendant", buttons[index].id);
+    buttons[index].scrollIntoView({ block: "nearest" });
+    return buttons[index];
+  };
+
+  const renderCategorySelects = () => {
+    const categorySelects = $$(".js-category-select");
+    categorySelects.forEach((select) => {
+      const selectedCategoryId = select.value;
+      select.innerHTML = `
+        <option value="">Elegir categoria</option>
+        ${state.categories.map((category) => `<option value="${escapeHTML(category.id)}">${escapeHTML(category.name)}</option>`).join("")}
+      `;
+      if (Array.from(select.options).some((option) => option.value === selectedCategoryId)) select.value = selectedCategoryId;
+    });
+  };
+
+  const renderMenuManager = () => {
+    renderCategorySelects();
+
+    renderConsumptionProductOptions($("#consumptionProductSearch")?.value || "");
+
+    const categoryList = $("#categoryList");
+    if (categoryList) {
+      categoryList.innerHTML = state.categories.length
+        ? state.categories
+            .map(
+              (category) => `
+                <div class="manager-row category-manager-row">
+                  <div class="category-token">${icon("tag", 16)}</div>
+                  <div>
+                    <strong>${escapeHTML(category.name)}</strong>
+                    <span>Orden ${category.sort_order || 0} · ${category.is_active ? "Visible" : "Oculta"}</span>
+                  </div>
+                  <div class="row-actions">
+                    <button class="icon-btn" data-edit-category="${category.id}" aria-label="Editar categoria">${icon("pencil", 17)}</button>
+                    <button class="icon-btn danger" data-delete-category="${category.id}" data-boss-only aria-label="Eliminar categoria">${icon("trash-2", 17)}</button>
+                  </div>
+                </div>
+              `
+            )
+            .join("")
+        : emptyState("Sin categorias", "Crea categorias para ordenar el menu.", "tags");
+    }
+
+    const itemList = $("#itemList");
+    if (itemList) {
+      itemList.innerHTML = state.items.length
+        ? state.items
+            .map(
+              (item) => `
+                <div class="manager-row item-row product-manager-row">
+                  <div class="product-thumb">
+                    ${
+                      item.image_url
+                        ? `<img src="${escapeHTML(item.image_url)}" alt="${escapeHTML(item.name)}">`
+                        : icon("utensils", 20)
+                    }
+                  </div>
+                  <div class="product-manager-copy">
+                    <strong>${escapeHTML(item.name)}</strong>
+                    <span>${escapeHTML(item.description || "Sin descripcion")}</span>
+                    <div class="product-badges">
+                      <em>${item.menu_categories?.name || "Sin categoria"}</em>
+                      <em class="${item.is_available ? "is-on" : "is-off"}">${item.is_available ? "Disponible" : "Oculto"}</em>
+                    </div>
+                  </div>
+                  <strong class="product-price">${money(item.price)}</strong>
+                  <div class="row-actions">
+                    <button class="icon-btn" data-edit-item="${item.id}" aria-label="Editar producto">${icon("pencil", 17)}</button>
+                    <button class="icon-btn danger" data-delete-item="${item.id}" data-boss-only aria-label="Eliminar producto">${icon("trash-2", 17)}</button>
+                  </div>
+                </div>
+              `
+            )
+            .join("")
+        : emptyState("Sin productos", "Agrega platos, bebidas o servicios.", "chef-hat");
+    }
+    refreshIcons();
+  };
+
+  const inventorySummary = () => state.items.reduce((summary, item) => {
+    const inventory = inventoryFor(item);
+    summary.units += inventory.stock;
+    summary.costValue += inventory.stock * inventory.costPrice;
+    summary.saleValue += inventory.stock * Number(item.price || 0);
+    const status = inventoryStatus(item);
+    if (status === "low") summary.low += 1;
+    if (status === "out") summary.out += 1;
+    return summary;
+  }, { units: 0, costValue: 0, saleValue: 0, low: 0, out: 0 });
+
+  const renderInventoryLiveCalculation = () => {
+    const form = $("#inventoryForm");
+    const box = $("#inventoryLiveCalculation");
+    if (!form || !box) return;
+    const cost = currencyInputNumber(form.cost_price);
+    const sale = currencyInputNumber(form.sale_price);
+    const stock = Math.max(0, Number(form.stock.value || 0));
+    const profit = sale - cost;
+    const margin = sale > 0 ? (profit / sale) * 100 : 0;
+    box.innerHTML = `
+      <span><small>Utilidad por unidad</small><strong>${money(profit)}</strong></span>
+      <span><small>Margen estimado</small><strong>${margin.toLocaleString("es-CO", { maximumFractionDigits: 1 })}%</strong></span>
+      <span><small>Valor del inventario</small><strong>${money(cost * stock)}</strong></span>
+      <span><small>Venta potencial</small><strong>${money(sale * stock)}</strong></span>`;
+  };
+
+  const renderInventoryCategoryFilter = () => {
+    const select = $("#inventoryCategoryFilter");
+    if (!select) return;
+    const categories = [...state.categories]
+      .filter((category) => category?.id && state.items.some((item) => String(item.category_id || "") === String(category.id)))
+      .sort((left, right) => Number(left.sort_order || 0) - Number(right.sort_order || 0) || String(left.name || "").localeCompare(String(right.name || ""), "es"));
+    const validIds = new Set(categories.map((category) => String(category.id)));
+    const hasUncategorized = state.items.some((item) => !item.category_id);
+    if (state.inventoryCategoryFilter !== "all" && state.inventoryCategoryFilter !== "uncategorized" && !validIds.has(String(state.inventoryCategoryFilter))) state.inventoryCategoryFilter = "all";
+    if (state.inventoryCategoryFilter === "uncategorized" && !hasUncategorized) state.inventoryCategoryFilter = "all";
+    select.innerHTML = [
+      '<option value="all">Todas</option>',
+      ...categories.map((category) => `<option value="${escapeHTML(category.id)}">${escapeHTML(category.name || "Sin categoría")}</option>`),
+      ...(hasUncategorized ? ['<option value="uncategorized">Sin categoría</option>'] : [])
+    ].join("");
+    select.value = state.inventoryCategoryFilter;
+  };
+
+  const renderInventory = () => {
+    if (state.activeAdminSection && state.activeAdminSection !== "inventory") return;
+    const metrics = $("#inventoryMetrics");
+    const list = $("#inventoryList");
+    if (!metrics || !list) return;
+    const summary = inventorySummary();
+    metrics.innerHTML = `
+      <article><span>${icon("package-check", 19)} Unidades</span><strong>${summary.units.toLocaleString("es-CO", { maximumFractionDigits: 2 })}</strong><small>Existencia total registrada</small></article>
+      <article><span>${icon("circle-dollar-sign", 19)} Inversion</span><strong>${money(summary.costValue)}</strong><small>Inventario registrado</small></article>
+      <article><span>${icon("trending-up", 19)} Venta potencial</span><strong>${money(summary.saleValue)}</strong><small>Estimado al vender todo</small></article>
+      <article class="${summary.low || summary.out ? "inventory-alert-metric" : ""}"><span>${icon("triangle-alert", 19)} Alertas</span><strong>${summary.low + summary.out}</strong><small>${summary.out} agotados · ${summary.low} por reponer</small></article>`;
+
+    renderInventoryCategoryFilter();
+    const query = state.inventorySearch;
+    const products = matchingProducts(query, { includeUnavailable: true })
+      .filter((item) => state.inventoryStatusFilter === "all" || inventoryStatus(item) === state.inventoryStatusFilter)
+      .filter((item) => state.inventoryCategoryFilter === "all"
+        || (state.inventoryCategoryFilter === "uncategorized" ? !item.category_id : String(item.category_id || "") === String(state.inventoryCategoryFilter)));
+    const rowRenderers = products.length ? products.map((item) => () => {
+          const inventory = inventoryFor(item);
+          const status = inventoryStatus(item);
+          const statusLabel = status === "out" ? "Agotado" : status === "low" ? "Stock bajo" : "Disponible";
+          const profit = Number(item.price || 0) - inventory.costPrice;
+          const margin = Number(item.price || 0) > 0 ? profit / Number(item.price) * 100 : 0;
+          return `
+            <article class="inventory-row inventory-${status}">
+              <div class="inventory-product-identity">
+                <span class="inventory-code">${escapeHTML(inventory.code)}</span>
+                <div><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.menu_categories?.name || "Sin categoria")} · ${escapeHTML(inventory.unit)}</small></div>
+              </div>
+              <div class="inventory-stock-block">
+                <small>Existencia</small>
+                <strong>${inventory.stock.toLocaleString("es-CO", { maximumFractionDigits: 2 })}</strong>
+                <span class="inventory-status">${statusLabel}</span>
+              </div>
+              <div class="inventory-numbers">
+                <span><small>Costo</small><strong>${money(inventory.costPrice)}</strong></span>
+                <span><small>Venta</small><strong>${money(item.price)}</strong></span>
+                <span class="inventory-profit"><small>Utilidad</small><strong>${money(profit)}</strong><em>${margin.toLocaleString("es-CO", { maximumFractionDigits: 1 })}% margen</em></span>
+              </div>
+              <div class="inventory-row-actions">
+                <button class="ghost small inventory-adjust-trigger" type="button" data-inventory-adjust="${escapeHTML(item.id)}">${icon("package-plus", 16)} Unidades</button>
+                <button class="icon-btn" type="button" data-edit-inventory="${escapeHTML(item.id)}" aria-label="Editar ${escapeHTML(item.name)}">${icon("pencil", 17)}</button>
+                <button class="icon-btn danger" type="button" data-delete-item="${escapeHTML(item.id)}" data-boss-only aria-label="Eliminar ${escapeHTML(item.name)}">${icon("trash-2", 17)}</button>
+              </div>
+            </article>`;
+        }) : [() => emptyState("Sin coincidencias", query ? `No encontramos productos para “${escapeHTML(query)}”. Prueba el nombre o sus iniciales.` : "Agrega el primer producto al inventario.", "search-x")];
+    if (typeof paintRowsProgressively === "function") paintRowsProgressively(list, rowRenderers);
+    else list.innerHTML = rowRenderers.map(render => render()).join("");
+    renderInventoryLiveCalculation();
+    refreshIcons();
+  };
+
+  const movementKind = (movement) => Number(movement.delta ?? movement.quantityChange ?? 0) >= 0 ? "entry" : "exit";
+
+  const isPurchaseMovement = (movement) => {
+    const type = String(movement?.type || "").trim().toUpperCase();
+    return Number(movement?.delta ?? movement?.quantityChange ?? 0) > 0
+      && (type === "NUEVO_PRODUCTO" || type.startsWith("ENTRADA"));
+  };
+
+  const purchaseUnitCost = (movement) => {
+    const storedCost = Number(movement?.unitCost);
+    if (Number.isFinite(storedCost) && storedCost >= 0) return storedCost;
+    const item = state.items.find((entry) => String(entry.id) === String(movement?.productId));
+    return item ? inventoryFor(item).costPrice : 0;
+  };
+
+  const purchaseHistoryCutoff = () => {
+    try {
+      return Date.parse(localStorage.getItem(PURCHASE_HISTORY_CUTOFF_KEY) || "");
+    } catch {
+      return Number.NaN;
+    }
+  };
+
+  const hiddenPurchaseMovementIds = () => {
+    try {
+      const ids = JSON.parse(localStorage.getItem(HIDDEN_PURCHASE_MOVEMENTS_KEY) || "[]");
+      return new Set(Array.isArray(ids) ? ids.map(String) : []);
+    } catch {
+      return new Set();
+    }
+  };
+
+  const purchaseMovements = () => {
+    const query = normalizeText(state.purchaseSearch);
+    const cutoff = purchaseHistoryCutoff();
+    const hiddenIds = hiddenPurchaseMovementIds();
+    return state.inventoryMovements
+      .filter(isPurchaseMovement)
+      .filter((movement) => !hiddenIds.has(String(movement.movementId || "")))
+      .filter((movement) => {
+        if (!Number.isFinite(cutoff)) return true;
+        const movementTime = Date.parse(movement.date || "");
+        return Number.isFinite(movementTime) && movementTime > cutoff;
+      })
+      .filter((movement) => state.purchaseProductFilter === "all" || String(movement.productId) === state.purchaseProductFilter)
+      .filter((movement) => {
+        const movementDate = new Date(movement.date);
+        const dateKey = Number.isNaN(movementDate.getTime()) ? "" : businessDateKey(movementDate);
+        return (!state.purchaseDateFrom || dateKey >= state.purchaseDateFrom)
+          && (!state.purchaseDateTo || dateKey <= state.purchaseDateTo);
+      })
+      .filter((movement) => !query || normalizeText([
+        movement.product,
+        movement.code,
+        movement.reference,
+        movement.user
+      ].join(" ")).includes(query))
+      .sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")) || String(right.movementId || "").localeCompare(String(left.movementId || "")));
+  };
+
+  const renderPurchaseProductOptions = () => {
+    const select = $("#purchaseProductFilter");
+    if (!select) return;
+    const selected = state.purchaseProductFilter;
+    const products = new Map();
+    state.items.forEach((item) => products.set(String(item.id), { id: String(item.id), name: item.name || "Producto", code: inventoryFor(item).code }));
+    state.inventoryMovements.filter(isPurchaseMovement).forEach((movement) => {
+      const id = String(movement.productId || "");
+      if (id && !products.has(id)) products.set(id, { id, name: movement.product || "Producto", code: movement.code || "" });
+    });
+    const options = Array.from(products.values()).sort((left, right) => left.name.localeCompare(right.name, "es"));
+    select.innerHTML = `<option value="all">Todos los productos</option>${options.map((product) => `<option value="${escapeHTML(product.id)}">${escapeHTML(product.name)}${product.code ? ` (${escapeHTML(product.code)})` : ""}</option>`).join("")}`;
+    select.value = options.some((product) => product.id === selected) ? selected : "all";
+    state.purchaseProductFilter = select.value;
+  };
+
+  const savePurchaseUnitCost = (button) => {
+    const record = button?.closest(".purchase-record");
+    const input = record?.querySelector("[data-purchase-unit-cost]");
+    const movementId = String(button?.dataset.savePurchaseCost || "");
+    const movement = state.inventoryMovements.find((entry) => String(entry.movementId) === movementId);
+    if (!movement || !input) return;
+    const unitCost = currencyInputNumber(input);
+    if (!Number.isFinite(unitCost) || unitCost < 0) {
+      toast("Escribe un costo unitario válido.", "error", `purchase-cost-invalid:${movementId}`);
+      input.focus({ preventScroll: true });
+      return;
+    }
+    if (purchaseUnitCost(movement) === unitCost && Number.isFinite(Number(movement.unitCost))) {
+      toast("Ese costo ya está guardado.", "ok", `purchase-cost-unchanged:${movementId}`);
+      return;
+    }
+    movement.unitCost = unitCost;
+    persistInventoryMovements();
+    enqueueAppsScriptJob(
+      "update_inventory_movement_cost",
+      { movementId, unitCost },
+      `purchase-cost:${movementId}`
+    );
+    renderPurchaseHistory();
+    toast(navigator.onLine ? "Costo de la compra actualizado." : "Costo guardado; se sincronizará al volver la conexión.", "ok", `purchase-cost-saved:${movementId}:${unitCost}`);
+  };
+
+  const renderPurchaseHistory = () => {
+    const summary = $("#purchaseSummary");
+    const list = $("#purchaseHistoryList");
+    const feedback = $("#purchaseFilterFeedback");
+    if (!summary || !list || !feedback) return;
+    const invalidRange = state.purchaseDateFrom && state.purchaseDateTo && state.purchaseDateFrom > state.purchaseDateTo;
+    const purchases = invalidRange ? [] : purchaseMovements();
+    const totalUnits = purchases.reduce((sum, movement) => sum + Number(movement.delta || 0), 0);
+    const totalSpent = purchases.reduce((sum, movement) => sum + Number(movement.delta || 0) * purchaseUnitCost(movement), 0);
+    const productCount = new Set(purchases.map((movement) => String(movement.productId || movement.product))).size;
+    summary.innerHTML = `
+      <article><span>${icon("wallet-cards", 20)} Total invertido</span><strong>${money(totalSpent)}</strong><small>Seg&uacute;n los filtros actuales</small></article>
+      <article><span>${icon("package-plus", 20)} Unidades compradas</span><strong>${totalUnits.toLocaleString("es-CO", { maximumFractionDigits: 2 })}</strong><small>En ${purchases.length} ${purchases.length === 1 ? "registro" : "registros"}</small></article>
+      <article><span>${icon("boxes", 20)} Productos</span><strong>${productCount}</strong><small>Productos distintos</small></article>`;
+    feedback.textContent = invalidRange
+      ? "La fecha inicial no puede ser posterior a la fecha final."
+      : `${purchases.length} ${purchases.length === 1 ? "compra encontrada" : "compras encontradas"}${state.movementHasMore ? ". Puedes cargar registros anteriores al final." : "."}`;
+    feedback.classList.toggle("is-error", Boolean(invalidRange));
+    list.innerHTML = purchases.length
+      ? purchases.map((movement) => {
+          const quantity = Number(movement.delta || 0);
+          const unitCost = purchaseUnitCost(movement);
+          const total = quantity * unitCost;
+          const exactCost = Number.isFinite(Number(movement.unitCost));
+          const movementId = String(movement.movementId || "");
+          const productName = movement.product || "Producto";
+          return `<article class="purchase-record" data-purchase-record="${escapeHTML(String(movement.movementId || ""))}">
+            <span class="purchase-record-icon">${icon("shopping-basket", 20)}</span>
+            <div class="purchase-record-main"><strong>${escapeHTML(productName)}</strong><small>${escapeHTML(movement.code || "Sin siglas")} &middot; ${escapeHTML(formatIncomeDate(movement.date))}</small></div>
+            <div class="purchase-record-calculation">
+              <span>Agregaste <strong>${quantity.toLocaleString("es-CO", { maximumFractionDigits: 2 })}</strong> ${quantity === 1 ? "unidad" : "unidades"}</span>
+              <small>${exactCost ? "Costo unitario registrado" : "Calculado con el costo actual"}${movement.user ? ` &middot; ${escapeHTML(movement.user)}` : ""}</small>
+              <div class="purchase-cost-editor">
+                <label>Costo real por unidad<input type="text" inputmode="numeric" autocomplete="off" value="${formattedCurrencyInput(unitCost)}" data-currency-input data-purchase-unit-cost data-purchase-quantity="${quantity}"></label>
+                <button class="primary small" type="button" data-save-purchase-cost="${escapeHTML(String(movement.movementId || ""))}">${icon("save", 15)} Guardar</button>
+              </div>
+            </div>
+            <div class="purchase-record-actions"><strong class="purchase-record-total" data-purchase-total>${money(total)}</strong>${movementId ? `<button class="icon-btn danger-text purchase-record-remove" type="button" data-hide-purchase="${escapeHTML(movementId)}" aria-label="Quitar compra de ${escapeHTML(productName)} de la lista" title="Quitar de la lista">${icon("trash-2", 16)}</button>` : ""}</div>
+          </article>`;
+        }).join("")
+      : emptyState(invalidRange ? "Revisa las fechas" : "Sin compras", invalidRange ? "Corrige el rango para consultar el historial." : "No hay entradas de unidades que coincidan con estos filtros.", invalidRange ? "calendar-x" : "shopping-cart");
+    const moreButton = $("#morePurchaseHistory");
+    if (moreButton) {
+      moreButton.hidden = !state.movementHasMore;
+      moreButton.disabled = state.movementLoading;
+      moreButton.textContent = state.movementLoading ? "Cargando compras..." : "Cargar compras anteriores";
+    }
+    bindCurrencyInputs(list);
+    refreshIcons();
+  };
+
+  const openPurchaseHistory = async () => {
+    const dialog = $("#purchaseHistoryDialog");
+    if (!dialog) return;
+    renderPurchaseProductOptions();
+    renderPurchaseHistory();
+    if (!dialog.open) dialog.showModal();
+    refreshIcons();
+    window.requestAnimationFrame(() => $("#purchaseSearch")?.focus({ preventScroll: true }));
+    if (isAppsScriptConfigured() && state.currentUser && !state.movementLoading) {
+      await loadInventoryMovements({ background: true });
+      renderPurchaseProductOptions();
+      renderPurchaseHistory();
+    }
+  };
+
+  const renderInventoryMovements = () => {
+    if (state.activeAdminSection && state.activeAdminSection !== "movements") return;
+    const list = $("#inventoryMovementList");
+    const summary = $("#movementSummary");
+    if (!list || !summary) return;
+    renderMovementProductOptions();
+    const moreButton = $("#moreInventoryMovements");
+    if(moreButton) { moreButton.hidden = !state.movementHasMore; moreButton.disabled = state.movementLoading; moreButton.textContent = state.movementLoading ? "Cargando movimientos…" : "Ver más movimientos"; }
+    const signature = JSON.stringify([state.inventoryMovements, state.movementProductFilter]);
+    if (signature === state.movementRenderSignature && list.firstElementChild) return;
+    state.movementRenderSignature = signature;
+    const query = normalizeText(state.movementSearch);
+    const movements = filteredMovementRows();
+    renderMovementTotals(movements);
+    const rowRenderers = movements.length ? movements.map((movement) => () => {
+      const delta = Number(movement.delta ?? movement.quantityChange ?? 0);
+      const kind = delta >= 0 ? "entry" : "exit";
+      return `<article class="movement-row ${kind}"><span class="movement-direction">${icon(kind === "entry" ? "arrow-down-left" : "arrow-up-right", 20)}</span><div class="movement-product"><strong>${escapeHTML(movement.product || "Producto")}</strong><small>${escapeHTML(movement.code || "")}${movement.reference ? ` · ${escapeHTML(movement.reference)}` : ""}</small></div><div><small>Movimiento</small><strong>${escapeHTML(String(movement.type || (kind === "entry" ? "ENTRADA" : "SALIDA")).replaceAll("_", " "))}</strong></div><div><small>Existencia</small><strong>${reportNumber(Number(movement.before || 0))} → ${reportNumber(Number(movement.after || 0))}</strong></div><strong class="movement-delta">${delta > 0 ? "+" : ""}${reportNumber(Math.abs(delta))}</strong><div class="movement-audit"><strong>${escapeHTML(movement.user || "Sistema")}</strong><small>${escapeHTML(prettyDateTime(movement.date))}</small></div></article>`;
+    }) : [() => emptyState("Sin movimientos", query ? "No hay coincidencias para este filtro." : "Las entradas y salidas apareceran aqui con su responsable.", "arrow-left-right")];
+    if (typeof paintRowsProgressively === "function") paintRowsProgressively(list, rowRenderers);
+    else list.innerHTML = rowRenderers.map(render => render()).join("");
+    refreshIcons();
+  };
+
+  let movementRefreshPending = false;
+  const loadInventoryMovements = async ({ more = false, background = false, force = false } = {}) => {
+    if (!isAppsScriptConfigured() || !state.currentUser) return false;
+    if (state.movementLoading) { if (force) movementRefreshPending = true; return false; }
+    if (more && !state.movementHasMore) return false;
+    const requestId = ++state.movementRequestId;
+    state.movementLoading = true;
+    const button = $("#moreInventoryMovements");
+    if (button) { button.disabled = true; button.textContent = "Cargando movimientos..."; }
+    const readStartedAt = Date.now();
+    const baseline = new Map(state.inventoryMovements.map(row => [String(row.movementId), JSON.stringify(row)]));
+    let appendFrom = 0;
+    let refreshAfterStale = false;
+    const previousIds = more && !state.movementSearch && state.movementTypeFilter === "all"
+      ? [...state.inventoryMovements].sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")) || String(right.movementId || "").localeCompare(String(left.movementId || ""))).map((movement) => String(movement.movementId))
+      : [];
+    try {
+      if (!more && !background && state.activeAdminSection === "movements") renderInventoryMovements();
+      const result = await appsScriptRequest("get_inventory_movements", { limit: 800, cursor: more ? state.movementCursor : null, revision: state.movementRevision });
+      if (!result?.ok || !Array.isArray(result.movements)) throw new Error(result?.error || "No se pudieron consultar los movimientos.");
+      if (requestId !== state.movementRequestId) return false;
+      if (result.stale) {
+        refreshAfterStale = true;
+        return false;
+      }
+      // Un respaldo anterior puede devolver movimientos válidos sin metadatos de paginación.
+      result.revision = String(result.revision || "");
+      result.hasMore = Boolean(result.hasMore && result.nextCursor);
+      const pendingJobs = readAppsScriptOutbox();
+      const pendingPurchaseCostIds = new Set(pendingJobs
+        .filter((job) => job.action === "update_inventory_movement_cost")
+        .map((job) => String(job.payload?.movementId || ""))
+        .filter(Boolean));
+      const pendingMovementIds = new Set(pendingPurchaseCostIds);
+      if (force) pendingJobs.forEach((job) => {
+        if (job.action === "adjust_inventory" && job.payload?.adjustment?.eventId) pendingMovementIds.add(String(job.payload.adjustment.eventId));
+        if (job.action === "upsert_inventory" && job.payload?.item?.movementEventId) pendingMovementIds.add(String(job.payload.item.movementEventId));
+        if (job.action === "record_sale") {
+          const invoice = job.payload?.invoice;
+          (invoice?.items || []).forEach((line) => {
+            if (invoice.id && line.menu_item_id) pendingMovementIds.add(`SALE-${invoice.id}-${line.menu_item_id}`);
+          });
+        }
+      });
+      if (pendingJobs.some(job => job.action === "clear_inventory_movements")) return false;
+      pendingJobs.forEach(job => {
+        const id = job.payload?.adjustment?.eventId || job.payload?.item?.movementEventId;
+        if (id) pendingMovementIds.add(String(id));
+        (job.payload?.invoice?.items || []).forEach(line => pendingMovementIds.add("SALE-" + job.payload.invoice.id + "-" + line.menu_item_id));
+      });
+      const merged = new Map((more ? state.inventoryMovements : result.movements).map(row => [String(row.movementId), row]));
+      result.movements.forEach(row => { if(row.movementId) merged.set(String(row.movementId), row); });
+      const current = new Map(state.inventoryMovements.map(row => [String(row.movementId), row]));
+      baseline.forEach((_,id) => { if (!current.has(id)) merged.delete(id); });
+      current.forEach((row,id) => { if(pendingMovementIds.has(id) || baseline.get(id) !== JSON.stringify(row)) merged.set(id,row); });
+      state.inventoryMovements = mergeConfirmedMovements([...merged.values()], result.revision, { authoritative: true, readStartedAt, hasMore: Boolean(result.hasMore) });
+      state.movementCursor = result.nextCursor || null;
+      state.movementRevision = result.revision || "";
+      state.movementHasMore = Boolean(result.hasMore && result.nextCursor);
+      state.movementLoaded = true;
+      state.movementFetchedAt = Date.now();
+      persistInventoryMovements();
+      if (previousIds.length) {
+        const sorted = [...state.inventoryMovements].sort((left, right) => String(right.date || "").localeCompare(String(left.date || "")) || String(right.movementId || "").localeCompare(String(left.movementId || "")));
+        if (previousIds.every((id, index) => String(sorted[index]?.movementId) === id)) appendFrom = previousIds.length;
+      }
+      return true;
+    } catch (error) {
+      if (!background) toast(String(error?.message || error), "error", "movement-page-failed");
+      return false;
+    } finally {
+      if (requestId === state.movementRequestId) {
+        state.movementLoading = false;
+        if (state.activeAdminSection === "movements") renderInventoryMovements(appendFrom);
+        if (refreshAfterStale || movementRefreshPending) {
+          movementRefreshPending = false;
+          window.setTimeout(() => void loadInventoryMovements({ background: true, force: true }), 0);
+        }
+      }
+    }
+  };
+
+  const resetInventoryForm = ({ open = false } = {}) => {
+    const form = $("#inventoryForm");
+    if (!form) return;
+    form.reset();
+    renderCategorySelects();
+    form.product_id.value = "";
+    form.stock.value = "";
+    form.min_stock.value = 5;
+    form.unit.value = "unidad";
+    form.is_available.checked = true;
+    $("#inventoryFormTitle") && ($("#inventoryFormTitle").textContent = "Agregar producto");
+    renderInventoryLiveCalculation();
+    if (open) {
+      $("#inventoryDialog")?.showModal();
+      window.setTimeout(() => form.product_name.focus({ preventScroll: true }), 0);
+    }
+  };
+
+  const editInventoryProduct = (id) => {
+    const item = state.items.find((entry) => entry.id === id);
+    const form = $("#inventoryForm");
+    if (!item || !form) return;
+    renderCategorySelects();
+    const inventory = inventoryFor(item);
+    form.product_id.value = item.id;
+    form.product_name.value = item.name || "";
+    form.product_code.value = inventory.code;
+    const assignedCategory = state.categories.find((category) => String(category.id) === String(item.category_id || ""));
+    if (assignedCategory && !Array.from(form.category_id.options).some((option) => option.value === String(assignedCategory.id))) {
+      form.category_id.add(new Option(assignedCategory.name || "Categoría actual", assignedCategory.id));
+    }
+    form.category_id.value = item.category_id || "";
+    form.new_category.value = "";
+    setCurrencyInputValue(form.cost_price, inventory.costPrice);
+    setCurrencyInputValue(form.sale_price, Number(item.price || 0));
+    form.stock.value = inventory.stock;
+    form.min_stock.value = inventory.minStock;
+    form.unit.value = inventory.unit;
+    form.is_available.checked = item.is_available !== false;
+    $("#inventoryFormTitle") && ($("#inventoryFormTitle").textContent = `Editar ${item.name}`);
+    renderInventoryLiveCalculation();
+    $("#inventoryDialog")?.showModal();
+    window.setTimeout(() => form.product_name.focus({ preventScroll: true }), 0);
+  };
+
+  const saveInventoryProduct = async (form) => {
+    const name = form.product_name.value.trim();
+    const costPrice = currencyInputNumber(form.cost_price);
+    const salePrice = currencyInputNumber(form.sale_price);
+    const stock = Number(form.stock.value || 0);
+    const minStock = Number(form.min_stock.value || 0);
+    if (!name || ![costPrice, salePrice, stock, minStock].every(Number.isFinite) || [costPrice, salePrice, stock, minStock].some((value) => value < 0)) {
+      toast("Revisa nombre, precios y existencias antes de guardar.", "error", "invalid-inventory-product");
+      return;
+    }
+    const id = form.product_id.value;
+    if (!id && costPrice === salePrice) {
+      const dialog = $("#zeroProfitDialog");
+      if (!dialog) return;
+      dialog.returnValue = "";
+      dialog.showModal();
+      refreshIcons();
+      const confirmed = await new Promise((resolve) => dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirm"), { once: true }));
+      if (!confirmed) return;
+    }
+    const previousInventory = id ? inventoryFor(state.items.find((item) => item.id === id)) : null;
+    let categoryId = form.category_id.value;
+    const newCategory = form.new_category.value.trim();
+    if (!categoryId && newCategory) {
+      const category = await db(state.sb.from("menu_categories").insert({ name: newCategory, is_active: true }).select("*").single(), null);
+      if (!category) return;
+      state.categories = [...state.categories, category];
+      categoryId = category.id;
+    }
+    const payload = {
+      category_id: categoryId || null,
+      name,
+      price: salePrice,
+      description: state.items.find((item) => item.id === id)?.description || "",
+      image_url: state.items.find((item) => item.id === id)?.image_url || "",
+      is_available: form.is_available.checked,
+      sort_order: state.items.find((item) => item.id === id)?.sort_order || 0
+    };
+    const saved = await db(id
+      ? state.sb.from("menu_items").update(payload).eq("id", id).select("*").single()
+      : state.sb.from("menu_items").insert(payload).select("*").single(), null);
+    if (!saved) return;
+    const category = state.categories.find((entry) => entry.id === categoryId);
+    const hydrated = { ...saved, menu_categories: category ? { name: category.name } : null };
+    state.items = id
+      ? state.items.map((item) => item.id === id ? hydrated : item)
+      : [...state.items, hydrated];
+    state.inventoryMeta[saved.id] = {
+      code: (form.product_code.value.trim() || productAcronym(name)).toUpperCase(),
+      costPrice,
+      stock,
+      minStock,
+      unit: form.unit.value || "unidad",
+      updatedAt: new Date().toISOString()
+    };
+    const beforeStock = Number(previousInventory?.stock || 0);
+    const stockDelta = stock - beforeStock;
+    const movementEventId = (!id || stockDelta) ? `product:${saved.id}:${Date.now()}` : "";
+    if (movementEventId) {
+      recordLocalInventoryMovement({
+        eventId: movementEventId,
+        item: hydrated,
+        delta: stockDelta,
+        before: beforeStock,
+        after: stock,
+        type: id ? (stockDelta > 0 ? "ENTRADA_EDICION" : "SALIDA_EDICION") : "NUEVO_PRODUCTO",
+        reference: id ? "Edicion de producto" : "Registro inicial"
+      });
+    }
+    persistInventoryStore();
+    persistBootstrapCache();
+    queueInventoryUpsert(hydrated, movementEventId ? {
+      movementEventId,
+      inventoryDelta: stockDelta,
+      movementType: id ? (stockDelta > 0 ? "ENTRADA_EDICION" : "SALIDA_EDICION") : "NUEVO_PRODUCTO",
+      movementReference: id ? "Edicion de producto" : "Registro inicial"
+    } : {});
+    resetInventoryForm();
+    $("#inventoryDialog")?.close();
+    renderMenuManager();
+    renderInventory();
+    toast(id ? "Producto e inventario actualizados." : "Producto agregado al inventario.");
+  };
+
+  const renderInventoryAdjustmentPreview = () => {
+    const form = $("#inventoryAdjustForm");
+    const target = $("#inventoryAdjustResult");
+    if (!form || !target) return;
+    const item = state.items.find((entry) => entry.id === form.product_id.value);
+    if (!item) return;
+    const current = inventoryFor(item).stock;
+    const quantity = Math.max(0, Number(form.quantity.value || 0));
+    const subtract = form.operation.value === "subtract";
+    const next = subtract ? current - quantity : current + quantity;
+    target.classList.toggle("is-invalid", next < 0);
+    target.innerHTML = `<span>Quedará en</span><strong>${Math.max(0, next).toLocaleString("es-CO", { maximumFractionDigits: 2 })} ${escapeHTML(inventoryFor(item).unit)}${next === 1 ? "" : "s"}</strong>${next < 0 ? "<small>No puedes retirar más de lo disponible.</small>" : "<small>El ajuste quedará identificado en Movimientos.</small>"}`;
+  };
+
+  const openInventoryAdjustment = (id) => {
+    const item = state.items.find((entry) => entry.id === id);
+    const form = $("#inventoryAdjustForm");
+    if (!item || !form) return;
+    const current = inventoryFor(item);
+    form.reset();
+    form.product_id.value = item.id;
+    form.operation.value = "add";
+    form.quantity.value = "1";
+    $("#inventoryAdjustTitle").textContent = item.name;
+    $("#inventoryAdjustCurrent").textContent = `Existencia actual: ${current.stock.toLocaleString("es-CO", { maximumFractionDigits: 2 })} ${current.unit}${current.stock === 1 ? "" : "s"}.`;
+    renderInventoryAdjustmentPreview();
+    $("#inventoryAdjustDialog")?.showModal();
+    window.setTimeout(() => form.quantity.select(), 0);
+    refreshIcons();
+  };
+
+  const saveInventoryAdjustment = (form) => {
+    const id = form.product_id.value;
+    const item = state.items.find((entry) => entry.id === id);
+    if (!item) return;
+    const current = inventoryFor(item);
+    const quantity = Number(form.quantity.value || 0);
+    const delta = form.operation.value === "subtract" ? -quantity : quantity;
+    const nextStock = current.stock + delta;
+    if (!Number.isFinite(quantity) || quantity <= 0 || nextStock < 0) {
+      toast(nextStock < 0 ? "No puedes retirar más unidades de las disponibles." : "Escribe una cantidad mayor que cero.", "error", `invalid-stock-adjustment:${id}`);
+      return;
+    }
+    state.inventoryMeta[id] = {
+      ...current,
+      code: current.code,
+      stock: nextStock,
+      updatedAt: new Date().toISOString()
+    };
+    const eventId = `units:${item.id}:${uid()}`;
+    const movementType = delta > 0 ? "ENTRADA_UNIDADES" : "SALIDA_UNIDADES";
+    const movementReference = "Botón + Unidades";
+    recordLocalInventoryMovement({
+      eventId,
+      item,
+      delta,
+      before: current.stock,
+      after: nextStock,
+      type: movementType,
+      reference: movementReference,
+      occurredAt: state.inventoryMeta[id].updatedAt
+    });
+    persistInventoryStore();
+    enqueueAppsScriptJob("adjust_inventory", {
+      adjustment: {
+        eventId,
+        productId: item.id,
+        code: current.code,
+        name: item.name || "Producto",
+        delta,
+        reference: movementReference,
+        movementType,
+        occurredAt: state.inventoryMeta[id].updatedAt
+      }
+    }, `inventory-adjust:${eventId}`);
+    $("#inventoryAdjustDialog")?.close();
+    renderInventory();
+    toast(`Existencia de ${item.name} actualizada a ${nextStock.toLocaleString("es-CO", { maximumFractionDigits: 2 })}.`, "ok", `stock-adjusted:${id}:${nextStock}`);
+  };
+
+  const businessDateKey = (date = new Date()) => {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: state.businessTimeZone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(date);
+    const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${value.year}-${value.month}-${value.day}`;
+  };
+
+  const shiftBusinessDateKey = (key, days) => {
+    const date = new Date(`${key}T12:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+  };
+
+  const salesShiftStorageKey = () => `donpieros_shared_sales_shift_v1:${SUPABASE_CONFIG.url}`;
+  const persistSalesShift = async (shift, pending = null, shifts = state.salesShiftHistory || []) => {
+    const value = { shift, pending, shifts };
+    if (typeof persistDurableJson === "function") {
+      if (!await persistDurableJson(salesShiftStorageKey(), value)) throw new Error("No se pudo guardar el turno en este equipo. Intenta de nuevo.");
+    } else localStorage.setItem(salesShiftStorageKey(), JSON.stringify(value));
+    state.salesShift = shift;
+    state.salesShiftPending = pending;
+    state.salesShiftHistory = shifts;
+  };
+  const renderSalesShift = () => {
+    const button = $("#salesShiftBase");
+    if (!button) return;
+    const shift = state.salesShift;
+    const register = $("#registerSalesShift");
+    if (register) register.hidden = !SalesShift.needsNewShift(shift, new Date());
+    let summary;
+    if (!shift) {
+      summary = `${icon("wallet", 18)}<span><small>Base del turno</small><strong>Registrar turno</strong><small>${state.salesShiftError ? escapeHTML(friendlyMessage(state.salesShiftError)) : "Configura el horario y la base compartida"}</small></span>`;
+    } else {
+      summary = `${icon("wallet", 18)}<span><small>Base del turno · ${escapeHTML(SalesShift.dateLabel(shift.date))}</small><strong>${money(shift.base)}</strong><small>Inicial: ${money(shift.initialBase)} · ${escapeHTML(SalesShift.timeLabel(shift.startMinutes))}–${escapeHTML(SalesShift.timeLabel(shift.endMinutes))}</small><small>${state.salesShiftPending ? "Guardado en este equipo · pendiente de compartir" : `Actualizada: ${escapeHTML(formatIncomeDate(shift.updatedAt))}`}</small></span>${icon("pencil", 15)}`;
+    }
+    if (state.salesShiftRenderedSummary !== summary) {
+      button.innerHTML = summary;
+      state.salesShiftRenderedSummary = summary;
+      refreshIcons();
+    }
+    const history = $("#salesShiftHistory"), edit = $("#editSalesShiftHistory");
+    if (history) {
+      const shifts = [...(state.salesShiftHistory || [])].sort((a, b) => b.date.localeCompare(a.date));
+      const options = '<option value="">Elegir un día</option>' + shifts.map((item) => {
+        const end = SalesShift.bounds(item)?.end;
+        const endDate = end ? SalesShift.dateKey(new Date(end - 1)) : item.date;
+        return `<option value="${escapeHTML(item.id)}">${escapeHTML(SalesShift.dateLabel(item.date, true))} · ${escapeHTML(SalesShift.timeLabel(item.startMinutes))} a ${escapeHTML(SalesShift.timeLabel(item.endMinutes))}${endDate !== item.date ? ` (${escapeHTML(SalesShift.dateLabel(endDate, true))})` : ""}</option>`;
+      }).join("");
+      if (state.salesShiftRenderedOptions !== options) {
+        history.innerHTML = options;
+        state.salesShiftRenderedOptions = options;
+      }
+      const selected = state.incomeRangePreset === "shift" ? state.selectedSalesShiftId || ""
+        : state.incomeRangePreset === "today" ? SalesShift.range("today", state.salesShift, new Date(), state.salesShiftHistory).shiftId || "" : "";
+      if (history.value !== selected) history.value = selected;
+      if (edit) edit.disabled = !history.value || Boolean(state.salesShiftPending);
+    }
+  };
+  const refreshSalesShiftRange = () => {
+    renderSalesShift();
+    if (state.incomeRangePreset === "custom") return;
+    const range = incomeRangeDates(state.incomeRangePreset);
+    const signature = JSON.stringify(range);
+    if (state.salesShiftRangeSignature === signature) return;
+    setIncomeRange(state.incomeRangePreset, false);
+    if (state.activeAdminSection === "income") void loadIncomeReport();
+  };
+  const syncSalesShift = async () => {
+    if (!state.currentUser || !canAccessAdminSection("income") || state.salesShiftSyncBusy) return false;
+    state.salesShiftSyncBusy = true;
+    try {
+      const pending = state.salesShiftPending;
+      const result = await appsScriptRequest(pending ? "save_sales_shift" : "get_sales_shift", pending || {}, 12000);
+      if (!result?.ok) {
+        if (pending && result?.retryable === false && Object.prototype.hasOwnProperty.call(result, "shift")) {
+          await persistSalesShift(result.shift, null, result.shifts || []);
+          toast(result.error || "El turno cambió en otro equipo. Revisa la base antes de guardar nuevamente.", "error", "sales-shift-conflict");
+          refreshSalesShiftRange();
+        }
+        throw new Error(result?.error || "No se pudo consultar el turno compartido.");
+      }
+      // Un formulario puede guardarse mientras llega esta lectura. No sustituir su operación pendiente.
+      if (state.salesShiftPending && state.salesShiftPending.id !== pending?.id) return false;
+      const nextShift = result.shift || null, nextHistory = result.shifts || [];
+      if (pending || JSON.stringify({ shift: nextShift, shifts: nextHistory }) !== JSON.stringify({ shift: state.salesShift, shifts: state.salesShiftHistory || [] })) {
+        await persistSalesShift(nextShift, null, nextHistory);
+      }
+      state.salesShiftError = "";
+      refreshSalesShiftRange();
+      if (pending) toast("Turno y base compartidos con todos los equipos.", "ok", "sales-shift-saved");
+      return true;
+    } catch (error) {
+      state.salesShiftError = /accion no permitida/i.test(normalizeText(error?.message || ""))
+        ? "El turno compartido necesita revisión. Contacta al responsable."
+        : "Sin conexión al turno compartido";
+      renderSalesShift();
+      return false;
+    } finally { state.salesShiftSyncBusy = false; }
+  };
+  const updateSalesShiftForm = () => {
+    const form = $("#salesShiftForm");
+    if (!form) return;
+    const action = form.elements.namedItem("action").value;
+    const editing = action !== "new", editingSchedule = action === "edit";
+    form.elements.namedItem("date").readOnly = editing && !editingSchedule;
+    for (const name of ["start_time", "start_period", "end_time", "end_period"]) form.elements.namedItem(name).disabled = editing && !editingSchedule;
+    form.elements.namedItem("amount").disabled = editingSchedule;
+    form.elements.namedItem("amount").parentElement.hidden = editingSchedule;
+    $("#salesShiftAmountLabel").textContent = action === "add" ? "Dinero adicional" : editing ? "Saldo base actualizado" : "Saldo base inicial";
+    $("#salesShiftHint").textContent = editingSchedule
+      ? "Corrige el día y las horas de este turno. El saldo base se conserva. El cierre anterior al inicio corresponde al día siguiente."
+      : editing ? "La base se comparte entre todos los equipos y no se suma a los ingresos por ventas."
+      : "Si el cierre es anterior al inicio, termina al día siguiente. Horario de Colombia.";
+    if (editing && state.salesShiftFormSnapshot) {
+      const shift = state.salesShiftFormSnapshot;
+      form.elements.namedItem("date").value = shift.date;
+      for (const [prefix, minutes] of [["start", shift.startMinutes], ["end", shift.endMinutes]]) {
+        const value = SalesShift.timeParts(minutes);
+        form.elements.namedItem(`${prefix}_time`).value = value.text;
+        form.elements.namedItem(`${prefix}_period`).value = value.period;
+      }
+      setCurrencyInputValue(form.elements.namedItem("amount"), action === "add" ? 0 : shift.base);
+    } else {
+      form.elements.namedItem("date").value = SalesShift.dateKey();
+      form.elements.namedItem("start_time").value = "";
+      form.elements.namedItem("end_time").value = "";
+      form.elements.namedItem("start_period").value = "PM";
+      form.elements.namedItem("end_period").value = "AM";
+      setCurrencyInputValue(form.elements.namedItem("amount"), 0);
+    }
+    $("#salesShiftError").textContent = "";
+  };
+  const bindSalesShiftDismissal = (dialog) => {
+    if (dialog.dataset.dismissBound) return;
+    dialog.dataset.dismissBound = "1";
+    // Close on the initial press so audio activation or a refreshed icon cannot delay the X.
+    dialog.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !event.target.closest("button[data-close-dialog]")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.salesShiftPrompted = true;
+      dialog.close("cancel");
+    }, true);
+    dialog.addEventListener("click", (event) => {
+      if (event.target !== dialog && !event.target.closest("[data-close-dialog]")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.salesShiftPrompted = true;
+      dialog.close("cancel");
+    }, true);
+    dialog.addEventListener("close", () => {
+      if (!state.incomeRenderAfterShift) return;
+      state.incomeRenderAfterShift = false;
+      window.requestAnimationFrame(() => { if (state.activeAdminSection === "income") renderIncomeReport(); });
+    });
+  };
+
+  const openSalesShift = (shiftId = "") => {
+    if (!canAccessAdminSection("income")) return;
+    const dialog = $("#salesShiftDialog"), form = $("#salesShiftForm");
+    if (!dialog || !form || dialog.open) return;
+    bindSalesShiftDismissal(dialog);
+    const chosen = shiftId ? (state.salesShiftHistory || []).find((item) => item.id === shiftId) : state.salesShift;
+    state.salesShiftFormSnapshot = chosen ? { ...chosen } : null;
+    const interval = SalesShift.bounds(state.salesShift);
+    const current = interval && Date.now() < interval.end;
+    const action = form.elements.namedItem("action");
+    const historical = Boolean(shiftId && shiftId !== state.salesShift?.id);
+    action.querySelector('[value="new"]').disabled = Boolean(current || shiftId);
+    action.querySelector('[value="replace"]').disabled = !state.salesShift || historical;
+    action.querySelector('[value="add"]').disabled = !state.salesShift || historical;
+    action.querySelector('[value="edit"]').disabled = !state.salesShiftFormSnapshot;
+    action.value = shiftId || current ? "edit" : "new";
+    updateSalesShiftForm();
+    bindCurrencyInputs(form);
+    dialog.showModal();
+  };
+  const saveSalesShift = async (form) => {
+    const errorBox = $("#salesShiftError"), button = form.querySelector('[type="submit"]');
+    if (button.disabled) return;
+    errorBox.textContent = "";
+    if (state.salesShiftPending) { errorBox.textContent = "Hay un cambio de base pendiente de compartir. Espera a que vuelva la conexión."; return; }
+    const action = form.elements.namedItem("action").value;
+    const amount = currencyInputNumber(form.elements.namedItem("amount"));
+    const previous = state.salesShiftFormSnapshot;
+    const start = SalesShift.parseTime(form.elements.namedItem("start_time").value, form.elements.namedItem("start_period").value);
+    const end = SalesShift.parseTime(form.elements.namedItem("end_time").value, form.elements.namedItem("end_period").value);
+    if (["new", "edit"].includes(action) && (!start || !end || start.minutes === end.minutes)) {
+      errorBox.textContent = "Escribe dos horas distintas entre 1:00 y 12:59, con AM o PM. Puedes escribir 800 o 8:00.";
+      return;
+    }
+    if (amount > 999999999999 || (action === "add" && amount <= 0)) { errorBox.textContent = "Escribe un valor válido en pesos; la base adicional debe ser mayor que cero."; return; }
+    if (action !== "new" && !previous) return;
+    const now = new Date().toISOString();
+    const operation = { id: uid(), action, amount, expectedId: previous?.id || "", expectedVersion: previous?.version || 0,
+      date: form.elements.namedItem("date").value, startMinutes: start?.minutes, endMinutes: end?.minutes };
+    const next = action === "new"
+      ? { id: operation.id, date: operation.date, startMinutes: start.minutes, endMinutes: end.minutes, initialBase: amount, base: amount, version: 1, createdAt: now, updatedAt: now }
+      : action === "edit"
+        ? { ...previous, date: operation.date, startMinutes: start.minutes, endMinutes: end.minutes, version: previous.version + 1, updatedAt: now }
+        : { ...previous, base: action === "add" ? previous.base + amount : amount, version: previous.version + 1, updatedAt: now };
+    if (!SalesShift.bounds(next) || next.base > 999999999999) { errorBox.textContent = "Revisa la fecha, el horario y el saldo base."; return; }
+    button.disabled = true;
+    try {
+      const shifts = [...(state.salesShiftHistory || [])];
+      const index = shifts.findIndex((item) => item.id === next.id);
+      if (index < 0) shifts.push(next); else shifts[index] = next;
+      await persistSalesShift(action === "edit" && previous.id !== state.salesShift?.id ? state.salesShift : next, operation, shifts);
+      $("#salesShiftDialog").close();
+      if (action === "new") setIncomeRange("today", state.activeAdminSection === "income");
+      else refreshSalesShiftRange();
+      void syncSalesShift();
+    } catch (error) { errorBox.textContent = friendlyMessage(error); }
+    finally { button.disabled = false; }
+  };
+  const bindSalesShift = () => {
+    $("#salesShiftBase")?.addEventListener("click", () => { void syncSalesShift(); openSalesShift(); });
+    $("#registerSalesShift")?.addEventListener("click", async () => {
+      await syncSalesShift();
+      if (SalesShift.needsNewShift(state.salesShift, new Date())) openSalesShift();
+    });
+    $("#salesShiftHistory")?.addEventListener("change", (event) => {
+      const id = event.currentTarget.value;
+      if (!id) { setIncomeRange("today"); return; }
+      state.selectedSalesShiftId = id;
+      setIncomeRange("shift");
+    });
+    $("#editSalesShiftHistory")?.addEventListener("click", () => openSalesShift($("#salesShiftHistory")?.value || state.selectedSalesShiftId));
+    const form = $("#salesShiftForm");
+    form?.addEventListener("submit", (event) => { event.preventDefault(); void saveSalesShift(form); });
+    form?.elements.namedItem("action").addEventListener("change", updateSalesShiftForm);
+    for (const prefix of ["start", "end"]) form?.elements.namedItem(`${prefix}_time`).addEventListener("blur", () => {
+      const input = form.elements.namedItem(`${prefix}_time`);
+      const parsed = SalesShift.parseTime(input.value, form.elements.namedItem(`${prefix}_period`).value);
+      if (parsed) input.value = parsed.text;
+    });
+  };
+  const startSalesShift = () => {
+    if (!canAccessAdminSection("income")) return;
+    try {
+      const saved = JSON.parse(localStorage.getItem(salesShiftStorageKey()) || "null");
+      state.salesShift = saved?.shift || null;
+      state.salesShiftPending = saved?.pending || null;
+      state.salesShiftHistory = saved?.shifts || (saved?.shift ? [saved.shift] : []);
+    } catch (_) { state.salesShift = null; state.salesShiftPending = null; state.salesShiftHistory = []; }
+    renderSalesShift();
+    void syncSalesShift().finally(() => {
+      if (!state.salesShiftPrompted && SalesShift.needsNewShift(state.salesShift, new Date())) { state.salesShiftPrompted = true; openSalesShift(); }
+    });
+    window.clearInterval(state.salesShiftTimer);
+    state.salesShiftTimer = window.setInterval(() => { refreshSalesShiftRange(); void syncSalesShift(); }, 15000);
+    for (const event of ["online", "focus"]) window.addEventListener(event, () => { refreshSalesShiftRange(); void syncSalesShift(); });
+  };
+
+  const incomeRangeDates = (preset = "today") => preset === "shift"
+    ? SalesShift.shiftRange((state.salesShiftHistory || []).find((item) => item.id === state.selectedSalesShiftId)) || SalesShift.range("today", state.salesShift, new Date(), state.salesShiftHistory)
+    : SalesShift.range(preset, state.salesShift, new Date(), state.salesShiftHistory);
+
+  const markIncomeRangePreset = () => {
+    $$('[data-income-range]').forEach((button) => {
+      const active = button.dataset.incomeRange === state.incomeRangePreset;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  };
+
+  const initializeIncomeFilters = () => {
+    const from = $("#incomeDateFrom");
+    const to = $("#incomeDateTo");
+    if (!from || !to) return;
+    if (!from.value || !to.value) {
+      const range = incomeRangeDates(state.incomeRangePreset);
+      from.value = range.dateFrom;
+      to.value = range.dateTo;
+    }
+    if (!state.incomeAppliedRange) state.incomeAppliedRange = { dateFrom: from.value, dateTo: to.value };
+    markIncomeRangePreset();
+  };
+
+  const setIncomeRange = (preset, refresh = true) => {
+    const range = incomeRangeDates(preset);
+    const from = $("#incomeDateFrom");
+    const to = $("#incomeDateTo");
+    if (!from || !to) return;
+    state.incomeRangePreset = preset;
+    from.value = range.dateFrom;
+    to.value = range.dateTo;
+    state.incomeAppliedRange = range;
+    state.salesShiftRangeSignature = JSON.stringify(range);
+    window.clearTimeout(state.salesShiftBoundaryTimer);
+    if (preset !== "shift") {
+      const now = Date.now();
+      const starts = preset === "today" ? [...(state.salesShiftHistory || []), state.salesShift]
+        .map(shift => SalesShift.bounds(shift)?.start).filter(start => start > now) : [];
+      const boundary = Math.min(Date.parse(range.endAt || SalesShift.range("today", null, new Date()).endAt), ...starts);
+      state.salesShiftBoundaryTimer = window.setTimeout(refreshSalesShiftRange, Math.max(25, Math.min(2147483647, boundary - now + 25)));
+    }
+    markIncomeRangePreset();
+    renderSalesShift();
+    if (refresh) void loadIncomeReport();
+  };
+
+  const incomeFiltersFromForm = () => {
+    initializeIncomeFilters();
+    const current = state.incomeRangePreset && state.incomeRangePreset !== "custom" ? incomeRangeDates(state.incomeRangePreset) : null;
+    if (current) {
+      $("#incomeDateFrom").value = current.dateFrom;
+      $("#incomeDateTo").value = current.dateTo;
+      state.incomeAppliedRange = current;
+    }
+    return {
+      dateFrom: state.incomeAppliedRange?.dateFrom || businessDateKey(),
+      dateTo: state.incomeAppliedRange?.dateTo || businessDateKey(),
+      ...(current || {}),
+      paymentMethod: $("#incomePaymentMethod")?.value || "all",
+      saleType: $("#incomeSaleType")?.value || "all",
+      query: $("#incomeSearch")?.value.trim() || "",
+      limit: 300
+    };
+  };
+
+  const incomeSaleTypeLabel = (type) => ({ all: "Todas las ventas", walk_in: "Venta individual", table: "Mesa", bar: "Barra", planter: "Matera" }[type] || "Todas las ventas");
+
+  const incomeRecordSaleType = (record) => {
+    const stored = (state.invoiceHistory || []).find((invoice) => String(invoice.id || invoice.sessionId) === String(record.saleId));
+    if (record.saleChannel === "walk_in" || stored?.saleChannel === "walk_in"
+      || normalizeText(record.table || "") === "venta individual" || String(record.sessionId || "").startsWith("walk-in-")) return "walk_in";
+    const tableId = record.tableId || stored?.tableId;
+    const table = (state.tables || []).find((entry) => tableId ? String(entry.id) === String(tableId) : normalizeText(tableLabel(entry)) === normalizeText(record.table || ""));
+    return servicePointKind(table || { table_name: record.table }) || "table";
+  };
+
+  const filterIncomeReportBySaleType = (report, filters) => {
+    if (!filters.saleType || filters.saleType === "all") return report;
+    const records = (report.records || []).filter((record) => incomeRecordSaleType(record) === filters.saleType);
+    const ids = new Set(records.map((record) => String(record.saleId)));
+    return { ...report, records, totals: incomeTotalsFromRecords(records), totalRecords: records.length,
+      recordRows: (report.recordRows || []).filter((row) => ids.has(String(row.saleId))),
+      nextIndex: records.length, truncated: false,
+      pendingCount: Math.min(Number(report.pendingCount || 0), records.length) };
+  };
+
+  const completeIncomeSaleTypeReport = async (report, filters, requestId) => {
+    if ((!filters.saleType || filters.saleType === "all") && !filters.complete) return report;
+    const records = new Map((report.records || []).map((record) => [String(record.saleId), record]));
+    const missing = (report.recordRows || []).filter((row) => !records.has(String(row.saleId)));
+    if (Number(report.totalRecords || 0) > records.size && !Array.isArray(report.recordRows)) {
+      throw new Error("El historial no devolvio las paginas necesarias para filtrar todas las ventas.");
+    }
+    for (let offset = 0; offset < missing.length; offset += 300) {
+      if (requestId !== state.incomeRequestId) return report;
+      const pageRows = missing.slice(offset, offset + 300);
+      const page = await appsScriptRequest("get_income_report", { filters: { ...filters, pageRows, revision: report.revision } }, APPS_SCRIPT_TIMEOUT_MS);
+      if (requestId !== state.incomeRequestId) return report;
+      if (!page?.ok || page.stale || !Array.isArray(page.records)
+        || (typeof page.revision === "string" && page.revision !== report.revision)
+        || (filters.startAt && page.intervalApplied !== true)) throw new Error(page?.error || "El historial cambio. Actualiza el filtro de ventas.");
+      const pageIds = new Set(page.records.map((record) => String(record.saleId)));
+      if (pageRows.some((row) => !pageIds.has(String(row.saleId)))) throw new Error("No se pudieron confirmar todas las ventas del filtro.");
+      page.records.forEach((record) => records.set(String(record.saleId), record));
+    }
+    if (Number(report.totalRecords || 0) > records.size) throw new Error("No se pudieron confirmar todas las ventas del filtro.");
+    return { ...report, truncated: false, records: [...records.values()].sort((left, right) => String(right.date).localeCompare(String(left.date)) || String(right.saleId).localeCompare(String(left.saleId))) };
+  };
+
+  const incomeSaleTypeFiltersKey = (filters) => JSON.stringify({ ...filters, saleType: "all" });
+
+  const applyIncomeSaleTypeFilter = () => {
+    const filters = incomeFiltersFromForm();
+    const snapshot = state.incomeSaleTypeSnapshot;
+    if (state.incomeLoading) state.incomeReloadRequested = true;
+    if (snapshot && snapshot.key === incomeSaleTypeFiltersKey(filters)) {
+      state.incomeReport = mergeIncomeReport(snapshot.report, filters);
+      renderIncomeReport();
+      void loadIncomeReport({ background: true });
+    } else {
+      void loadIncomeReport();
+    }
+  };
+
+  const previewIncomeSearch = () => {
+    const filters = incomeFiltersFromForm();
+    const snapshot = state.incomeSaleTypeSnapshot;
+    if (!snapshot || snapshot.key !== incomeSaleTypeFiltersKey({ ...filters, query: "" })
+      || !Array.isArray(snapshot.report.records)
+      || snapshot.report.records.length < Number(snapshot.report.totalRecords || 0)) return false;
+    const query = normalizeText(filters.query || "");
+    const records = snapshot.report.records.filter((record) => !query || normalizeText([
+      record.invoice, record.table, record.payer, record.waiter, record.reference,
+      (record.items || []).map((item) => item.name).join(" ")
+    ].join(" ")).includes(query));
+    const ids = new Set(records.map((record) => String(record.saleId)));
+    state.incomeReport = mergeIncomeReport({ ...snapshot.report, records,
+      totals: incomeTotalsFromRecords(records), totalRecords: records.length,
+      recordRows: (snapshot.report.recordRows || []).filter((row) => ids.has(String(row.saleId))),
+      nextIndex: records.length, truncated: false }, filters);
+    renderIncomeReport();
+    return true;
+  };
+
+  const incomePaymentLabel = (method) => ({
+    cash: "Efectivo",
+    transfer: "Transferencia",
+    breb: "Bre-B",
+    card: "Tarjeta",
+    mixed: "Mixto"
+  }[method] || "Otro");
+
+  const incomeRecordDateKey = (value) => {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? String(value || "").slice(0, 10) : businessDateKey(date);
+  };
+
+  const incomeTotalsFromRecords = (records = []) => {
+    const totals = records.reduce((summary, record) => {
+      summary.income += Number(record.total || 0);
+      summary.sales += 1;
+      summary.subtotal += Number(record.subtotal || 0);
+      summary.discount += Number(record.discount || 0);
+      summary.tax += Number(record.tax || 0);
+      summary.service += Number(record.service || 0);
+      summary.cost += Number(record.cost || 0);
+      summary.profit += Number(record.profit || 0);
+      (record.payments || []).forEach((payment) => {
+        const method = ["cash", "transfer", "breb", "card"].includes(payment.method) ? payment.method : "other";
+        summary[method] += Number(payment.amount || 0);
+      });
+      return summary;
+    }, { income: 0, sales: 0, subtotal: 0, discount: 0, tax: 0, service: 0, cost: 0, profit: 0, cash: 0, transfer: 0, breb: 0, card: 0, other: 0 });
+    totals.averageTicket = totals.sales ? totals.income / totals.sales : 0;
+    return totals;
+  };
+
+  const localIncomeRecords = (filters, invoices = state.invoiceHistory) => {
+    const query = normalizeText(filters.query || "");
+    return invoices.map((invoice) => {
+      const items = (invoice.items || []).map((line) => {
+        const quantity = Number(line.quantity || 0);
+        const unitPrice = Number(line.unit_price || 0);
+        const unitCost = Number(line.unit_cost ?? state.inventoryMeta[line.menu_item_id]?.costPrice ?? 0);
+        return {
+          lineId: line.id || "",
+          menuItemId: line.menu_item_id || null,
+          name: line.item_name || "Producto",
+          quantity,
+          unitPrice,
+          total: quantity * unitPrice,
+          cost: quantity * unitCost,
+          profit: quantity * (unitPrice - unitCost)
+        };
+      });
+      const cost = items.reduce((sum, item) => sum + item.cost, 0);
+      const total = Number(invoice.totals?.total || 0);
+      const payments = (invoice.payments || []).map((payment) => ({ method: payment.method, amount: Number(payment.amount || 0), reference: invoice.reference || "" }));
+      return {
+        saleId: invoice.id || invoice.sessionId,
+        invoice: invoice.number || "Factura",
+        sessionId: invoice.sessionId || "",
+        saleChannel: invoice.saleChannel,
+        tableId: invoice.tableId,
+        table: invoice.table || "Mesa",
+        date: invoice.createdAt || new Date().toISOString(),
+        payer: invoice.payerName || "",
+        waiter: invoice.waiterName || "",
+        subtotal: Number(invoice.totals?.subtotal || 0),
+        discount: Number(invoice.totals?.discount || 0),
+        tax: Number(invoice.totals?.tax || 0),
+        service: Number(invoice.totals?.serviceFee || 0),
+        total,
+        cost,
+        profit: total - cost,
+        reference: invoice.reference || "",
+        isMixed: invoice.paymentMethod === "mixed" || payments.length > 1,
+        payments,
+        items
+      };
+    }).filter((record) => {
+      if (!SalesShift.matches(record.date, filters)) return false;
+      if (filters.saleType && filters.saleType !== "all" && incomeRecordSaleType(record) !== filters.saleType) return false;
+      if (filters.paymentMethod === "mixed" && !record.isMixed) return false;
+      if (!["all", "mixed"].includes(filters.paymentMethod) && !record.payments.some((payment) => payment.method === filters.paymentMethod)) return false;
+      const haystack = normalizeText([record.invoice, record.table, record.payer, record.waiter, record.reference, record.items.map((item) => item.name).join(" ")].join(" "));
+      return !query || haystack.includes(query);
+    }).sort((left, right) => String(right.date).localeCompare(String(left.date)));
+  };
+
+  const localIncomeReport = (filters, error = "") => {
+    const allLocalRecords = localIncomeRecords(filters);
+    return {
+      filters,
+      totals: incomeTotalsFromRecords(allLocalRecords),
+      records: allLocalRecords.slice(0, 300),
+      recordKeys: allLocalRecords.map((record) => record.saleId),
+      allLocalRecords,
+      nextIndex: Math.min(300, allLocalRecords.length),
+      totalRecords: allLocalRecords.length,
+      truncated: allLocalRecords.length > 300,
+      localOnly: true,
+      error
+    };
+  };
+
+  const mergeIncomeReport = (remote, filters) => {
+    const jobs = readAppsScriptOutbox();
+    const history = new Map((state.invoiceHistory || []).map(invoice => [String(invoice.id || invoice.sessionId), invoice]));
+    const pendingInvoices = new Map(), pendingPrevious = new Map();
+    const completeInvoice = invoice => invoice?.totals?.total != null && Number.isFinite(Number(invoice.totals.total)) && Array.isArray(invoice.items) && Number.isFinite(Date.parse(invoice.createdAt || ""));
+    for (const job of jobs) {
+      if (!["record_sale", "edit_sale"].includes(job.action)) continue;
+      const queued = job.payload?.invoice, id = String(queued?.id || queued?.sessionId || "");
+      const invoice = completeInvoice(queued) ? queued : history.get(id);
+      if (!id || !completeInvoice(invoice)) continue;
+      pendingInvoices.set(id, invoice);
+      if (job.action === "edit_sale" && job.payload?.previousRecord && !pendingPrevious.has(id)) pendingPrevious.set(id, job.payload.previousRecord);
+    }
+    const pendingIds = new Set(pendingInvoices.keys());
+    const deletedIds = new Set(jobs.filter(job => job.action === "delete_sale").map(job => String(job.payload?.saleId || "")).filter(Boolean));
+    const excluded = (remote.records || []).filter(record => deletedIds.has(String(record.saleId)) || pendingIds.has(String(record.saleId)));
+    const visible = (remote.records || []).filter(record => !deletedIds.has(String(record.saleId)) && !pendingIds.has(String(record.saleId)));
+    const loadedIds = new Set((remote.records || []).map(record => String(record.saleId)));
+    const remoteIds = new Set([...(remote.recordRows || []).map(row => String(row.saleId)), ...(remote.recordKeys || []).map(String), ...loadedIds]);
+    const previousOutsidePage = [...pendingPrevious].filter(([id]) => remoteIds.has(id) && !loadedIds.has(id));
+    const previousIds = new Set(previousOutsidePage.map(([id]) => id));
+    const pending = localIncomeRecords(filters, [...pendingInvoices.values()]).filter(record => !deletedIds.has(String(record.saleId)));
+    const counted = pending.filter(record => !remoteIds.has(String(record.saleId)) || loadedIds.has(String(record.saleId)) || previousIds.has(String(record.saleId)));
+    const removed = [...excluded, ...previousOutsidePage.map(([, record]) => record)];
+    const addedTotals = incomeTotalsFromRecords(counted), removedTotals = incomeTotalsFromRecords(removed), totals = { ...(remote.totals || {}) };
+    for (const key of Object.keys(addedTotals)) if (key !== "averageTicket") totals[key] = Number(totals[key] || 0) - Number(removedTotals[key] || 0) + Number(addedTotals[key] || 0);
+    totals.averageTicket = totals.sales ? totals.income / totals.sales : 0;
+    const report = { ...remote, filters, totals,
+      appliedReportMutations: { ...(remote.appliedReportMutations || {}), ...Object.fromEntries(excluded.map(record => [String(record.saleId), deletedIds.has(String(record.saleId)) ? "deleted" : "edited"])) },
+      records: [...pending, ...visible].sort((a,b) => String(b.date).localeCompare(String(a.date))),
+      totalRecords: Math.max(0, Number(remote.totalRecords || 0) - removed.length + counted.length), pendingCount: pending.length, localOnly: false };
+    const merged = typeof mergeConfirmedIncomeReport === "function" ? mergeConfirmedIncomeReport(report, filters) : report;
+    return filters.saleType && filters.saleType !== "all" ? filterIncomeReportBySaleType(merged, filters) : merged;
+  };
+
+  const setIncomeReportStatus = (message, tone = "ready", iconName = "badge-check") => {
+    const target = $("#incomeReportStatus");
+    if (!target) return;
+    target.className = `income-report-status is-${tone}`;
+    target.innerHTML = `${icon(iconName, 15)} ${escapeHTML(friendlyMessage(message))}`;
+    refreshIcons();
+  };
+
+  const renderAdminAi = () => {
+    const chat = $("#adminAiChat");
+    const suggestions = $("#adminAiSuggestions");
+    if (!chat || !suggestions) return;
+    const renderSignature = JSON.stringify(state.adminAiMessages);
+    if (renderSignature === state.adminAiRenderSignature) return;
+    state.adminAiRenderSignature = renderSignature;
+    suggestions.innerHTML = ["¿Cuanto se vendio hoy?", "¿Que producto se vendio mas?", "¿Quien realizo las ventas?", "¿Que productos tienen stock bajo?"]
+      .map((question) => `<button class="chip" type="button" data-admin-ai-question="${escapeHTML(question)}">${escapeHTML(question)}</button>`).join("");
+    const messages = state.adminAiMessages.length ? state.adminAiMessages : [{ role: "bot", text: "Puedo cruzar el informe de ventas, el inventario y los movimientos visibles. Pregúntame por productos, cantidades, responsables, ventas o existencias." }];
+    chat.innerHTML = messages.map((message) => `<div class="admin-ai-message ${message.role}">${message.role === "bot" ? icon("sparkles", 17) : ""}<p>${escapeHTML(message.text)}</p></div>`).join("");
+    chat.scrollTop = chat.scrollHeight;
+    refreshIcons();
+  };
+
+  const askAdminAi = async (question) => {
+    const clean = String(question || "").trim();
+    if (!clean) return;
+    state.adminAiMessages.push({ role: "user", text: clean });
+    renderAdminAi();
+    if (!state.incomeReport) await loadIncomeReport();
+    const normalized = normalizeText(clean);
+    const mentionsEntries = includesAny(normalized, [
+      "ingreso al inventario", "se ingreso", "ingresaron", "entrada", "entraron",
+      "agrego al inventario", "sumo unidades", "movimiento"
+    ]);
+    if (mentionsEntries) await loadInventoryMovements();
+    const records = state.incomeReport?.records || localIncomeRecords(incomeFiltersFromForm());
+    const product = state.items
+      .filter((item) => normalized.includes(normalizeText(item.name)))
+      .sort((left, right) => String(right.name).length - String(left.name).length)[0] || null;
+    const mentionsInventory = includesAny(normalized, ["inventario", "existencia", "stock", "queda", "quedan"]);
+    let answer = "No encontre una coincidencia exacta. Prueba incluyendo el nombre del producto y palabras como vendio, ingreso, responsable, utilidad o stock.";
+    if (mentionsInventory && product) {
+      const inventory = inventoryFor(product);
+      answer = `${product.name} tiene ${inventory.stock.toLocaleString("es-CO", { maximumFractionDigits: 2 })} ${inventory.unit}${inventory.stock === 1 ? "" : "s"}. Su minimo es ${inventory.minStock} y su valor estimado a costo es ${money(inventory.stock * inventory.costPrice)}.`;
+    } else if (mentionsInventory) {
+      const low = state.items.filter((item) => inventoryStatus(item) !== "ok");
+      answer = low.length ? `Hay ${low.length} productos por revisar: ${low.slice(0, 8).map((item) => `${item.name} (${inventoryFor(item).stock})`).join(", ")}.` : "No hay productos agotados ni por debajo del stock minimo.";
+    } else if (mentionsEntries) {
+      const matching = state.inventoryMovements.filter((movement) => (!product || movement.productId === product.id) && Number(movement.delta || 0) > 0);
+      const units = matching.reduce((sum, movement) => sum + Number(movement.delta || 0), 0);
+      answer = `${product ? product.name : "El inventario"} registra ${units.toLocaleString("es-CO", { maximumFractionDigits: 2 })} unidades de entrada en ${matching.length} movimiento${matching.length === 1 ? "" : "s"}.`;
+    } else if (includesAny(normalized, ["quien", "responsable", "vendio"]) && product) {
+      const sellers = new Map();
+      records.forEach((record) => {
+        const quantity = (record.items || []).filter((item) => normalizeText(item.name).includes(normalizeText(product.name))).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        if (quantity) sellers.set(record.waiter || "Sin asignar", Number(sellers.get(record.waiter || "Sin asignar") || 0) + quantity);
+      });
+      answer = sellers.size ? `${product.name} fue vendido por ${Array.from(sellers).map(([name, quantity]) => `${name}: ${quantity} unidad${quantity === 1 ? "" : "es"}`).join("; ")}.` : `No encontre ventas de ${product.name} en el rango seleccionado.`;
+    } else if (product && includesAny(normalized, ["vendio", "vendieron", "unidades", "cuanto"])) {
+      const lines = records.flatMap((record) => (record.items || []).filter((item) => normalizeText(item.name).includes(normalizeText(product.name))));
+      const quantity = lines.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+      const total = lines.reduce((sum, item) => sum + Number(item.total || 0), 0);
+      answer = `En el rango actual se vendieron ${quantity.toLocaleString("es-CO", { maximumFractionDigits: 2 })} unidades de ${product.name}, por ${money(total)}.`;
+    } else if (includesAny(normalized, ["producto", "mas vendido", "vendio mas"])) {
+      const totals = new Map();
+      records.flatMap((record) => record.items || []).forEach((item) => totals.set(item.name, Number(totals.get(item.name) || 0) + Number(item.quantity || 0)));
+      const top = Array.from(totals).sort((a, b) => b[1] - a[1])[0];
+      answer = top ? `El producto mas vendido en el rango actual es ${top[0]}, con ${top[1].toLocaleString("es-CO", { maximumFractionDigits: 2 })} unidades.` : "No hay productos vendidos en el rango seleccionado.";
+    } else if (includesAny(normalized, ["utilidad", "ganancia"])) {
+      answer = `La ganancia aproximada del periodo es ${money(state.incomeReport?.totals?.profit || 0)}, sobre ventas de ${money(state.incomeReport?.totals?.income || 0)}.`;
+    } else if (includesAny(normalized, ["quien", "responsable", "vendedor", "mesero"])) {
+      const sellers = new Map();
+      records.forEach((record) => sellers.set(record.waiter || "Sin asignar", Number(sellers.get(record.waiter || "Sin asignar") || 0) + Number(record.total || 0)));
+      answer = sellers.size ? Array.from(sellers).sort((a, b) => b[1] - a[1]).map(([name, total]) => `${name}: ${money(total)}`).join("; ") : "No hay ventas con responsable en el rango seleccionado.";
+    } else if (includesAny(normalized, ["venta", "vendio", "ingreso", "facturo", "cuanto"])) {
+      const totals = state.incomeReport?.totals || {};
+      answer = `En el periodo seleccionado se registraron ${Number(totals.sales || 0)} ventas por ${money(totals.income || 0)}. El promedio por venta fue ${money(totals.averageTicket || 0)}.`;
+    }
+    state.adminAiMessages.push({ role: "bot", text: answer });
+    state.adminAiMessages = state.adminAiMessages.slice(-30);
+    renderAdminAi();
+  };
+
+  const formatIncomeDate = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value || "Sin fecha");
+    if (formatIncomeDate.zone !== state.businessTimeZone || !formatIncomeDate.formatter) {
+      formatIncomeDate.zone = state.businessTimeZone;
+      formatIncomeDate.formatter = new Intl.DateTimeFormat("es-CO", { dateStyle: "medium", timeStyle: "short", timeZone: state.businessTimeZone });
+    }
+    return formatIncomeDate.formatter.format(date);
+  };
+
+  const renderIncomeReport = (appendFrom = 0) => {
+    if (state.activeAdminSection && state.activeAdminSection !== "income") return;
+    if ($("#salesShiftDialog")?.open) { state.incomeRenderAfterShift = true; return; }
+    renderSalesShift();
+    const kpis = $("#incomeKpis");
+    const payments = $("#incomePaymentBreakdown");
+    const recordsTarget = $("#incomeRecords");
+    const summaryTarget = $("#incomeFilterSummary");
+    if (!kpis || !payments || !recordsTarget) return;
+    const report = state.incomeReport;
+    const shiftSignature = report ? JSON.stringify({
+      filters: report.filters, totals: report.totals, records: report.records,
+      recordRows: report.recordRows, recordKeys: report.recordKeys, totalRecords: report.totalRecords,
+      nextIndex: report.nextIndex, readError: !report.records?.length ? report.error : "",
+      truncated: report.truncated, visibleCount: state.incomeVisibleCount
+    }) : "";
+    if (shiftSignature && state.incomeRenderedShiftSignature === shiftSignature) {
+      if (state.incomeRenderedLocalOnly !== Boolean(report.localOnly)) {
+        setIncomeReportStatus(Number(report.totalRecords || 0).toLocaleString("es-CO") + " facturas", report.localOnly ? "warning" : "ready", report.localOnly ? "hard-drive" : "badge-check");
+        state.incomeRenderedLocalOnly = Boolean(report.localOnly);
+      }
+      state.incomeRenderedReport = report;
+      return;
+    }
+    if (!report) {
+      state.incomeRenderedShiftSignature = "";
+      recordsTarget.rowPaintRevision = (recordsTarget.rowPaintRevision || 0) + 1;
+      if ($("#moreIncomeRecords")) $("#moreIncomeRecords").hidden = true;
+      kpis.innerHTML = Array.from({ length: 3 }, () => '<article class="income-kpi is-loading"><span></span><strong></strong><small></small></article>').join("");
+      payments.innerHTML = "";
+      if (summaryTarget) summaryTarget.innerHTML = "";
+      recordsTarget.innerHTML = emptyState("Preparando contabilidad", "Estamos consultando las ventas cerradas.", "loader-circle");
+      setIncomeReportStatus("Consultando ventas", "loading", "loader-circle");
+      return;
+    }
+    if (report.error && !(report.records || []).length && report.localOnly) {
+      kpis.innerHTML = Array.from({ length: 3 }, () => '<article class="income-kpi"><span>Ventas sin confirmar</span><strong>—</strong><small>Usa Actualizar para reintentar</small></article>').join("");
+      payments.innerHTML = "";
+      recordsTarget.innerHTML = emptyState("No se pudo consultar este periodo", "El último intento no confirmó las ventas. Usa Actualizar para reintentar.", "cloud-off");
+      setIncomeReportStatus("Ventas sin confirmar", "warning", "cloud-off");
+      state.incomeRenderedReport = report;
+      state.incomeRenderedShiftSignature = shiftSignature;
+      return;
+    }
+    const totals = report.totals || {};
+    const margin = Number(totals.income || 0) > 0 ? Number(totals.profit || 0) / Number(totals.income) * 100 : 0;
+    const infoButton = (label, explanation) => `<button class="income-kpi-info" type="button" aria-label="Qué significa ${escapeHTML(label)}" data-tooltip="${escapeHTML(explanation)}">${icon("info", 15)}</button>`;
+    kpis.innerHTML = `
+        <article class="income-kpi is-primary">${infoButton("Dinero vendido", "Todo el dinero cobrado en las ventas de este periodo.")}<span>${icon("circle-dollar-sign", 19)} Dinero vendido</span><strong>${money(totals.income)}</strong><small>Total vendido en el periodo seleccionado</small></article>
+        <article class="income-kpi is-profit">${infoButton("Ganancia aproximada", "Lo que queda al restar del dinero vendido el costo de los productos.")}<span>${icon("trending-up", 19)} Ganancia aproximada</span><strong>${money(totals.profit)}</strong><small>${margin.toLocaleString("es-CO", { maximumFractionDigits: 1 })}% del dinero vendido</small></article>
+        <article class="income-kpi">${infoButton("Costo de los productos", "Lo que el negocio pagó por los productos que ya vendió.")}<span>${icon("package-search", 19)} Costo de los productos</span><strong>${money(totals.cost)}</strong><small>Valor de compra de lo que se vendió</small></article>`;
+    payments.innerHTML = [
+      ["cash", "banknote", "Efectivo"],
+      ["transfer", "landmark", "Transferencia"],
+      ["breb", "scan-line", "Bre-B"],
+      ["card", "credit-card", "Tarjeta"]
+    ].map(([key, iconName, label]) => `<article><span>${icon(iconName, 18)} ${label}</span><strong>${money(totals[key])}</strong><small><b>${Number(totals.income || 0) ? (Number(totals[key] || 0) / Number(totals.income) * 100).toLocaleString("es-CO", { maximumFractionDigits: 1 }) : "0"}% del total</b></small></article>`).join("");
+    const filters = report.filters || incomeFiltersFromForm();
+    if (summaryTarget) {
+      const methodText = filters.paymentMethod === "all" ? "todos los medios" : incomePaymentLabel(filters.paymentMethod);
+      const typeText = incomeSaleTypeLabel(filters.saleType);
+      summaryTarget.innerHTML = `${icon("calendar-range", 15)} <strong>${escapeHTML(filters.dateFrom)}</strong> a <strong>${escapeHTML(filters.dateTo)}</strong> · ${escapeHTML(methodText)} · ${escapeHTML(typeText)}${filters.query ? ` · Búsqueda: “${escapeHTML(filters.query)}”` : ""}${filters.startAt ? ` · ${escapeHTML(formatIncomeDate(filters.startAt))} — ${escapeHTML(formatIncomeDate(filters.endAt))}` : ""}`;
+    }
+    const appendOnly = appendFrom > 0 && recordsTarget.querySelectorAll(".income-record").length === appendFrom;
+    const visibleRecords = appendOnly ? report.records.slice(appendFrom) : report.records;
+    const rowRenderers = visibleRecords?.length
+      ? visibleRecords.map((record) => () => {
+          const paymentBadges = (record.payments || []).map((payment) => `<span>${escapeHTML(incomePaymentLabel(payment.method))} <strong>${money(payment.amount)}</strong></span>`).join("");
+          const itemRows = (record.items || []).map((item) => `<li><span>${Number(item.quantity || 0).toLocaleString("es-CO", { maximumFractionDigits: 2 })} × ${escapeHTML(item.name)}</span><strong>${money(item.total)}</strong></li>`).join("");
+          return `<article class="income-record">
+            <div class="income-record-main">
+              <div class="income-record-invoice${isBoss() ? " has-boss-actions" : ""}"><span>${escapeHTML(record.invoice || "Factura")}</span><small>${escapeHTML(formatIncomeDate(record.date))}</small><div class="income-record-actions"><button class="icon-btn" type="button" data-print-income="${escapeHTML(record.saleId)}" aria-label="Imprimir factura" title="Imprimir factura">${icon("printer", 15)}</button>${isBoss() ? `<button class="icon-btn" type="button" data-edit-income="${escapeHTML(record.saleId)}" aria-label="Editar venta">${icon("pencil", 15)}</button><button class="icon-btn danger" type="button" data-delete-income="${escapeHTML(record.saleId)}" aria-label="Eliminar venta completa">${icon("trash-2", 15)}</button>` : ""}</div></div>
+              <div><small class="income-sale-type" data-sale-type="${incomeRecordSaleType(record)}">${escapeHTML(incomeSaleTypeLabel(incomeRecordSaleType(record)))}</small><strong>${escapeHTML(record.table || "Mesa")}</strong><span>${escapeHTML(record.payer || "Sin responsable")}</span></div>
+              <div><small>Atendido por</small><strong>${escapeHTML(record.waiter || "Sin asignar")}</strong><span>${escapeHTML(record.reference || "Sin referencia")}</span></div>
+              <div class="income-record-total"><small>Total</small><strong>${money(record.total)}</strong><span class="income-record-profit">Ganancia ${money(record.profit)}</span></div>
+            </div>
+            <div class="income-payment-badges">${paymentBadges || "<span>Medio no registrado</span>"}</div>
+            <details>
+              <summary>${icon("list-collapse", 15)} Ver productos y desglose</summary>
+              <div class="income-record-detail">
+                <ul>${itemRows || "<li><span>Sin detalle de productos</span></li>"}</ul>
+                <dl class="income-total-only"><div><dt>Total pagado</dt><dd>${money(record.total)}</dd></div></dl>
+              </div>
+            </details>
+          </article>`;
+        })
+      : appendOnly ? [] : [() => emptyState("Sin ventas en este rango", "Prueba otro periodo, medio de pago o término de búsqueda.", "receipt-text")];
+    if (typeof paintRowsProgressively === "function") paintRowsProgressively(recordsTarget, rowRenderers, { append: appendOnly });
+    else if (appendOnly) recordsTarget.insertAdjacentHTML("beforeend", rowRenderers.map(render => render()).join(""));
+    else recordsTarget.innerHTML = rowRenderers.map(render => render()).join("");
+    const moreButton = $("#moreIncomeRecords");
+    const hasMore = report.localOnly
+      ? Number(report.nextIndex || 0) < (report.allLocalRecords || []).length
+      : Number(report.nextIndex || 0) < (report.recordRows || []).length;
+    if (moreButton) {
+      moreButton.hidden = !hasMore;
+      moreButton.disabled = state.incomePageLoading || state.incomeLoading;
+      moreButton.textContent = state.incomePageLoading ? "Cargando ventas..." : "Ver más ventas";
+    }
+    const limitedText = hasMore ? ` · mostrando ${report.records.length} ventas` : "";
+    setIncomeReportStatus(`${Number(report.totalRecords || 0).toLocaleString("es-CO")} factura${Number(report.totalRecords || 0) === 1 ? "" : "s"}${limitedText}`, report.localOnly ? "warning" : "ready", report.localOnly ? "hard-drive" : "badge-check");
+    state.incomeRenderedLocalOnly = Boolean(report.localOnly);
+    state.incomeRenderedReport = report;
+    state.incomeRenderedShiftSignature = shiftSignature;
+    refreshIcons();
+  };
+
+  const incomeReportVisibleSignature = (report) => JSON.stringify({
+    filters: report?.filters, totals: report?.totals, records: report?.records,
+    recordRows: report?.recordRows, totalRecords: report?.totalRecords,
+    nextIndex: report?.nextIndex, pendingCount: report?.pendingCount, localOnly: report?.localOnly
+  });
+
+  const loadIncomeReport = async ({ background = false, force = false, manual = false, verifiedConnection = false } = {}) => {
+    if (!$("#income") || !canAccessAdminSection("income") || state.pendingIncomeEdits?.size) return false;
+    const filters = incomeFiltersFromForm();
+    const key = JSON.stringify(filters);
+    if (filters.dateFrom > filters.dateTo) { toast("La fecha inicial no puede ser posterior a la fecha final.", "error", "invalid-income-range"); return false; }
+    if (state.incomeLoading && state.incomeLoadingFilters === key) {
+      if (force || manual) state.incomeReloadRequested = true;
+      return false;
+    }
+    const jobs = readAppsScriptOutbox();
+    if (jobs.some(job => job.action === "clear_income")) {
+      state.incomeAwaitingRemote = false;
+      state.incomeReport = localIncomeReport(filters);
+      renderIncomeReport();
+      setIncomeReportStatus("Reinicio pendiente de sincronización", "warning", "hard-drive");
+      return true;
+    }
+    const previousReport = state.incomeReport;
+    const samePrevious = previousReport?.filters && JSON.stringify(previousReport.filters) === key;
+    const snapshots = state.incomeReportSnapshots ||= new Map();
+    const stored = readLocalJson(INCOME_REPORT_CACHE_KEY, null);
+    if (stored?.filters && Array.isArray(stored.report?.records)) snapshots.set(JSON.stringify(stored.filters), { ...stored.report, filters: stored.filters });
+    let base = snapshots.get(key) || null;
+    // A complete wider period can immediately provide a narrower day/range without another download.
+    if (!base) for (const candidate of snapshots.values()) {
+      const range = candidate.filters;
+      if (!range || candidate.truncated || (candidate.records || []).length < Number(candidate.totalRecords || 0)
+        || range.dateFrom > filters.dateFrom || range.dateTo < filters.dateTo
+        || (range.startAt && Date.parse(range.startAt) > Date.parse(filters.startAt || filters.dateFrom + "T00:00:00-05:00"))
+        || (range.endAt && Date.parse(range.endAt) < Date.parse(filters.endAt || filters.dateTo + "T23:59:59.999-05:00"))
+        || (range.paymentMethod && range.paymentMethod !== "all" && range.paymentMethod !== filters.paymentMethod)
+        || (range.saleType && range.saleType !== "all" && range.saleType !== filters.saleType)
+        || (range.query && range.query !== filters.query)) continue;
+      if (JSON.stringify({ ...range, saleType: "all" }) === JSON.stringify({ ...filters, saleType: "all" })) {
+        base = candidate;
+        break;
+      }
+      const query = normalizeText(filters.query || "");
+      const records = candidate.records.filter(record => SalesShift.matches(record.date, filters)
+        && (!filters.saleType || filters.saleType === "all" || incomeRecordSaleType(record) === filters.saleType)
+        && (filters.paymentMethod === "all" || !filters.paymentMethod || (filters.paymentMethod === "mixed" ? record.isMixed : (record.payments || []).some(payment => payment.method === filters.paymentMethod)))
+        && (!query || normalizeText([record.invoice, record.table, record.payer, record.waiter, record.reference, (record.items || []).map(item => item.name).join(" ")].join(" ")).includes(query)));
+      const ids = new Set(records.map(record => String(record.saleId)));
+      base = { ...candidate, filters, records, totals: incomeTotalsFromRecords(records), totalRecords: records.length,
+        recordRows: (candidate.recordRows || []).filter(row => ids.has(String(row.saleId))), recordKeys: [...ids], truncated: false };
+      break;
+    }
+    let local;
+    const localReport = () => local ||= localIncomeReport(filters);
+    const available = samePrevious ? previousReport : base ? { ...mergeIncomeReport(base, filters), localOnly: true } : localReport().records.length ? local : null;
+    if (!navigator.onLine && !verifiedConnection) {
+      state.incomeAwaitingRemote = false;
+      state.incomeReport = available ? { ...available, localOnly: true } : localReport();
+      if (state.syncFresh) state.syncFresh.sales = false;
+      renderIncomeReport();
+      setIncomeReportStatus("Última copia disponible", "warning", "hard-drive");
+      if (typeof readAppsScriptStatus === "function" && !state.offlineSalesProbeBusy) {
+        state.offlineSalesProbeBusy = true;
+        void readAppsScriptStatus(true).then(status => status?.ok ? loadIncomeReport({ background: true, force: true, verifiedConnection: true }) : false)
+          .catch(() => false).finally(() => { state.offlineSalesProbeBusy = false; });
+      }
+      return true;
+    }
+    const requestId = ++state.incomeRequestId;
+    state.incomeLoading = true;
+    state.incomeLoadingFilters = key;
+    state.incomeAwaitingRemote = !available;
+    state.incomePageLoading = false;
+    state.incomeReport = available;
+    if (!samePrevious) state.incomeVisibleCount = 60;
+    renderIncomeReport();
+    if (!available || manual) setIncomeReportStatus(available ? "Actualizando informe desde el respaldo" : "Consultando ventas", "loading", "loader-circle");
+    try {
+      if (!isAppsScriptConfigured()) throw new Error("El historial remoto no está configurado.");
+      let result = null;
+      if (!force && base && typeof base.revision === "string") {
+        try {
+          const status = typeof readAppsScriptStatus === "function" ? await readAppsScriptStatus() : await appsScriptRequest("status", {}, 12000);
+          if (requestId !== state.incomeRequestId) return false;
+          if (status?.ok && String(status.historyRevision ?? "") === base.revision) result = base;
+        } catch (_) { /* La lectura completa sigue disponible si falla la comprobación ligera. */ }
+      }
+      if (!result) result = await appsScriptRequest("get_income_report", { filters }, APPS_SCRIPT_TIMEOUT_MS);
+      if (requestId !== state.incomeRequestId) return false;
+      if (result?.stale) result = await appsScriptRequest("get_income_report", { filters }, APPS_SCRIPT_TIMEOUT_MS);
+      if (!result?.ok && result !== base) throw new Error(result?.error || "No se pudo consultar el historial.");
+      if (result.stale || !Array.isArray(result.records) || !result.totals) throw new Error("El historial remoto no quedó confirmado; se reintentará.");
+      if (filters.startAt && result.intervalApplied !== true) throw new Error("El respaldo todavía no confirmó el horario consultado.");
+      const editIds = new Set(readAppsScriptOutbox().filter(job => job.action === "edit_sale").map(job => String(job.payload?.invoice?.id || "")));
+      const loaded = new Set(result.records.map(record => String(record.saleId)));
+      const pendingPages = (result.recordRows || []).some(row => editIds.has(String(row.saleId)) && !loaded.has(String(row.saleId)));
+      if ((filters.saleType && filters.saleType !== "all") || pendingPages) result = await completeIncomeSaleTypeReport(result, { ...filters, complete: true }, requestId);
+      if (requestId !== state.incomeRequestId) return false;
+      if (key !== JSON.stringify(incomeFiltersFromForm())) { state.incomeReloadRequested = true; return false; }
+      state.incomeLoading = false;
+      state.incomeAwaitingRemote = false;
+      state.incomeReport = mergeIncomeReport(result, filters);
+      if (manual) state.incomeRenderedLocalOnly = null;
+      state.incomeRevision = result.revision || "";
+      state.incomeFetchedAt = Date.now();
+      if (state.syncFresh) state.syncFresh.sales = true;
+      if (result.records.length >= Number(result.totalRecords || 0)) state.incomeSaleTypeSnapshot = { key: JSON.stringify({ ...filters, saleType: "all" }), report: result };
+      else state.incomeSaleTypeSnapshot = null;
+      const snapshot = { ...result, filters };
+      snapshots.set(key, snapshot);
+      while (snapshots.size > 8) snapshots.delete(snapshots.keys().next().value);
+      if (result !== base) void persistDurableJson(INCOME_REPORT_CACHE_KEY, { filters, report: snapshot, fetchedAt: new Date().toISOString() });
+      if (state.activeAdminSection === "income") renderIncomeReport();
+      if (typeof updateGlobalSyncStatus === "function") void updateGlobalSyncStatus();
+      return true;
+    } catch (error) {
+      if (requestId !== state.incomeRequestId) return false;
+      state.incomeLoading = false;
+      state.incomeAwaitingRemote = false;
+      state.incomeFetchedAt = Date.now();
+      if (state.syncFresh) state.syncFresh.sales = false;
+      state.incomeReport = available ? { ...available, localOnly: true, error: String(error?.message || error) } : localIncomeReport(filters, String(error?.message || error));
+      renderIncomeReport();
+      setIncomeReportStatus(available ? "Última copia disponible" : "No se pudo consultar este periodo. Usa Actualizar.", "warning", "hard-drive");
+      if (manual) toast(String(error?.message || error), "error", "manual-income-refresh-failed");
+      return false;
+    } finally {
+      if (requestId === state.incomeRequestId) {
+        state.incomeLoading = false;
+        state.incomeLoadingFilters = "";
+        if (state.incomeReloadRequested || state.incomeForceReloadRequested) {
+          state.incomeReloadRequested = false;
+          state.incomeForceReloadRequested = false;
+          window.setTimeout(() => void loadIncomeReport({ background: true, force: true }), 0);
+        }
+      }
+    }
+  };
+
+  const refreshBackgroundReports = async ({ force = false } = {}) => {
+    const canCheckIncome = canAccessAdminSection("income");
+    const canCheckMovements = canAccessAdminSection("movements");
+    const canCheckInventory = canAccessAdminSection("inventory");
+    const canCheckPurchases = canCheckInventory && Boolean($("#purchaseHistoryDialog")?.open);
+    if ((!canCheckIncome && !canCheckMovements && !canCheckInventory) || !state.currentUser || !isAppsScriptConfigured() || !navigator.onLine) return false;
+    const now = Date.now();
+    if (!force && state.activeAdminSection === "movements" && !state.movementLoading
+      && now - Number(state.movementFetchedAt || 0) >= 5000) void loadInventoryMovements({ background: true });
+    if (force) {
+      if (state.confirmedReportSyncBusy) { state.backgroundReportForcePending = true; return false; }
+      state.confirmedReportSyncBusy = true;
+      try {
+        const refreshes = [];
+        if (canCheckIncome && !readAppsScriptOutbox().some((job) => job.action === "clear_income")) {
+          refreshes.push(loadIncomeReport({ background: Boolean(state.incomeReport), force: true }));
+        }
+        if (canCheckMovements || (canCheckInventory && $("#purchaseHistoryDialog")?.open)) {
+          refreshes.push(loadInventoryMovements({ background: true, force: true }));
+        }
+        return (await Promise.all(refreshes)).some(Boolean);
+      } catch (_) { return false; }
+      finally {
+        state.confirmedReportSyncBusy = false;
+        if (state.backgroundReportForcePending) {
+          state.backgroundReportForcePending = false;
+          window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
+        }
+      }
+    }
+    if (state.confirmedReportSyncBusy) return false;
+    if (state.backgroundReportSyncBusy) return false;
+    if (!force && now - state.backgroundReportCheckedAt < 1500) return false;
+    if (canCheckIncome && state.activeAdminSection === "income" && !state.incomeLoading
+      && (state.incomeReport?.localOnly || state.incomeReport?.error)
+      && now - Number(state.incomeFetchedAt || 0) >= 5000
+      && !readAppsScriptOutbox().some(job => job.action === "clear_income")) {
+      return loadIncomeReport({ background: true, force: true });
+    }
+    state.backgroundReportSyncBusy = true;
+    state.backgroundReportCheckedAt = now;
+    try {
+      const status = await appsScriptRequest("status", {}, 12000);
+      if (!status?.ok) return false;
+      const hasIncomeRevision = Object.prototype.hasOwnProperty.call(status, "historyRevision");
+      const hasMovementRevision = Object.prototype.hasOwnProperty.call(status, "movementRevision");
+      const historyRevision = String(status.historyRevision || "");
+      const movementRevision = String(status.movementRevision || "");
+      const updates = [];
+      if (canCheckIncome && !state.incomeLoading && (!state.incomeReport || (hasIncomeRevision && state.incomeRevision !== historyRevision))) {
+        updates.push(loadIncomeReport({ background: Boolean(state.incomeReport) }));
+      }
+      if ((canCheckMovements || canCheckPurchases) && !state.movementLoading && (!state.movementLoaded || (hasMovementRevision && state.movementRevision !== movementRevision))) {
+        updates.push(loadInventoryMovements({ background: state.movementLoaded || Boolean(state.inventoryMovements.length) }));
+      }
+      if (canCheckInventory && state.activeAdminSection === "inventory" && hasMovementRevision
+        && state.appsScriptInventoryRevision !== movementRevision) {
+        updates.push(syncInventoryWithAppsScript().then((synced) => {
+          if (synced) state.appsScriptInventoryRevision = movementRevision;
+          return synced;
+        }));
+      }
+      if (updates.length) await Promise.all(updates);
+      if (canCheckPurchases && updates.length) renderPurchaseHistory();
+      return updates.length > 0;
+    } catch (error) {
+      return false;
+    } finally {
+      state.backgroundReportSyncBusy = false;
+    }
+  };
+
+  const loadMoreIncomeRecords = async () => {
+    if (state.pendingIncomeEdits?.size) return false;
+    const report = state.incomeReport;
+    if (!report || state.incomeLoading || state.incomePageLoading) return false;
+    const start = Number(report.nextIndex || 0);
+    if (report.localOnly) {
+      const previousLength = report.records.length;
+      report.records = [...report.records, ...(report.allLocalRecords || []).slice(start, start + 300)];
+      report.nextIndex = report.records.length;
+      renderIncomeReport(previousLength);
+      return true;
+    }
+    const pageRows = (report.recordRows || []).slice(start, start + 300);
+    if (!pageRows.length) return false;
+    const requestId = state.incomeRequestId;
+    state.incomePageLoading = true;
+    const moreButton = $("#moreIncomeRecords");
+    if (moreButton) { moreButton.disabled = true; moreButton.textContent = "Cargando ventas..."; }
+    try {
+      const result = await appsScriptRequest("get_income_report", { filters: { ...report.filters, pageRows, revision: report.revision } }, APPS_SCRIPT_TIMEOUT_MS);
+      if (!result?.ok) throw new Error(result?.error || "No se pudo consultar la siguiente página.");
+      if (report.filters?.startAt && result.intervalApplied !== true) throw new Error("El respaldo todavía no admite el horario del turno.");
+      if (requestId !== state.incomeRequestId || state.incomeReport !== report) return false;
+      if (result.stale) {
+        await loadIncomeReport();
+        return false;
+      }
+      const previousIds = report.records.map((record) => String(record.saleId));
+      const merged = new Map(report.records.map((record) => [String(record.saleId), record]));
+      result.records.forEach((record) => merged.set(String(record.saleId), record));
+      report.records = Array.from(merged.values()).sort((left, right) => String(right.date).localeCompare(String(left.date)) || String(right.saleId).localeCompare(String(left.saleId)));
+      report.nextIndex = start + pageRows.length;
+      const canAppend = previousIds.every((id, index) => String(report.records[index]?.saleId) === id);
+      renderIncomeReport(canAppend ? previousIds.length : 0);
+      return true;
+    } catch (error) {
+      if (requestId === state.incomeRequestId) toast(String(error?.message || error), "error", "income-page-failed");
+      return false;
+    } finally {
+      if (requestId === state.incomeRequestId) {
+        state.incomePageLoading = false;
+        const button = $("#moreIncomeRecords");
+        if (button) { button.disabled = false; button.textContent = "Ver más ventas"; }
+      }
+    }
+  };
+
+  const waitForRemoteQueue = async () => {
+    const deadline = Date.now() + 30000;
+    while (state.appsScriptOutboxBusy && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, 100));
+    }
+    if (state.appsScriptOutboxBusy) throw new Error("Hay cambios anteriores que todavía se están guardando. Intenta nuevamente en unos segundos.");
+    if (!readAppsScriptOutbox().length) return;
+    const synced = await flushAppsScriptOutbox();
+    if (!synced || readAppsScriptOutbox().length) throw new Error("No fue posible terminar de guardar los cambios anteriores.");
+  };
+
+  const resetSectionData = async (section) => {
+    if (!canDeleteRecords()) return;
+    const settings = {
+      inventory: {
+        eyebrow: "Reiniciar inventario",
+        title: "¿Eliminar todo el inventario?",
+        message: "Se eliminarán todos los productos y sus existencias. Ventas y movimientos conservarán su información.",
+        action: "clear_inventory",
+        success: "Inventario eliminado. Ya puedes empezar desde cero."
+      },
+      movements: {
+        eyebrow: "Reiniciar movimientos",
+        title: "¿Eliminar todos los movimientos?",
+        message: "Se eliminarán todos los movimientos de entradas y salidas. No se devolverán productos al inventario ni se modificarán las existencias actuales. Las ventas se conservarán.",
+        action: "clear_inventory_movements",
+        success: "Movimientos eliminados. El historial quedó en cero."
+      },
+      income: {
+        eyebrow: "Reiniciar ventas",
+        title: "¿Eliminar todas las ventas?",
+        message: "Se borrarán todas las ventas, pagos y totales históricos. El inventario actual no cambiará.",
+        action: "clear_income",
+        success: "Ventas eliminadas. Todos los valores quedaron en cero."
+      }
+    }[section];
+    if (!settings) return;
+
+    if (section === "inventory") {
+      const hasOpenProductAccounts = state.sessions.some((session) => session.status === "open" && (session.session_items || []).some((item) => item.status !== "cancelled" && item.menu_item_id));
+      if (hasOpenProductAccounts) {
+        toast("Cobra o elimina los productos de las cuentas abiertas antes de reiniciar el inventario.", "error", "inventory-reset-open-accounts");
+        return;
+      }
+    }
+
+    const confirmed = await askForConfirmation({
+      eyebrow: settings.eyebrow,
+      title: settings.title,
+      message: settings.message,
+      accept: "Sí, eliminar todo",
+      cancel: "Conservar información"
+    });
+    if (!confirmed) return;
+
+    const button = $(`[data-reset-section="${section}"]`);
+    const buttonMarkup = button?.innerHTML || "";
+    if (button) {
+      button.disabled = true;
+      button.classList.add("is-resetting");
+      button.innerHTML = `${icon("loader-circle", 17)} Eliminando...`;
+    }
+
+    const snapshot = {
+      items: state.items.map((item) => ({ ...item })),
+      inventoryMeta: JSON.parse(JSON.stringify(state.inventoryMeta)),
+      inventoryMovements: state.inventoryMovements.map((movement) => ({ ...movement })),
+      movementCursor: state.movementCursor,
+      movementRevision: state.movementRevision,
+      movementHasMore: state.movementHasMore,
+      movementLoaded: state.movementLoaded,
+      invoiceHistory: state.invoiceHistory.map((invoice) => ({ ...invoice })),
+      incomeReport: state.incomeReport,
+      lastPaidReceipt: state.lastPaidReceipt
+    };
+
+    const movementMirrorBefore = section === "movements" ? JSON.parse(JSON.stringify(reportMirror())) : null;
+
+    try {
+      if (section === "inventory") {
+        state.items = [];
+        state.inventoryMeta = {};
+        state.inventorySearch = "";
+        state.inventoryStatusFilter = "all";
+        state.inventoryCategoryFilter = "all";
+        state.productPickerMatches = [];
+        if ($("#inventorySearch")) $("#inventorySearch").value = "";
+        if ($("#inventoryStatusFilter")) $("#inventoryStatusFilter").value = "all";
+        if ($("#inventoryCategoryFilter")) $("#inventoryCategoryFilter").value = "all";
+        persistInventoryStore();
+        persistBootstrapCache();
+        resetInventoryForm();
+        $("#inventoryDialog")?.close();
+        renderInventory();
+        renderMenuManager();
+      }
+      if (section === "movements") {
+        state.movementRequestId += 1;
+        state.movementLoading = false;
+        state.movementCursor = null;
+        state.movementRevision = "";
+        state.movementHasMore = false;
+        state.movementLoaded = true;
+        const mirror = reportMirror();
+        mirror.movements = {};
+        mirror.movementsClearAt = new Date().toISOString();
+        if (!await saveReportSyncValue(reportMirrorKey(), mirror)) throw new Error("No se pudo guardar el reinicio de movimientos. Intenta de nuevo.");
+        state.inventoryMovements = [];
+        state.movementSearch = "";
+        state.movementTypeFilter = "all";
+        if ($("#movementSearch")) $("#movementSearch").value = "";
+        if ($("#movementTypeFilter")) $("#movementTypeFilter").value = "all";
+        persistInventoryMovements();
+        renderInventoryMovements();
+      }
+      if (section === "income") {
+        state.incomeRequestId += 1;
+        state.incomeLoading = false;
+        state.incomePageLoading = false;
+        state.invoiceHistory = [];
+        state.lastPaidReceipt = null;
+        persistInvoiceHistory();
+        state.incomeReport = localIncomeReport(incomeFiltersFromForm());
+        $("#incomeEditDialog")?.close();
+        $("#deleteIncomeDialog")?.close();
+        $("#receiptResultDialog")?.close();
+        renderIncomeReport();
+      }
+
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (!isAppsScriptConfigured()) throw new Error("El respaldo remoto no está configurado.");
+      await waitForRemoteQueue();
+      const result = await appsScriptRequest(settings.action, {}, 40000);
+      if (!result?.ok || result.cleared !== true) throw new Error(result?.error || "No fue posible completar el reinicio.");
+      if (section === "inventory") {
+        state.items = [];
+        state.inventoryMeta = {};
+        persistInventoryStore();
+        persistBootstrapCache();
+        renderInventory();
+        renderMenuManager();
+        setInventorySyncStatus("Inventario vacío y sincronizado", "synced", "cloud-check");
+      }
+      if (section === "movements") {
+        state.inventoryMovements = [];
+        persistInventoryMovements();
+        renderInventoryMovements();
+      }
+      if (section === "income") {
+        state.invoiceHistory = [];
+        state.lastPaidReceipt = null;
+        persistInvoiceHistory();
+        state.incomeReport = localIncomeReport(incomeFiltersFromForm());
+        renderIncomeReport();
+        setIncomeReportStatus("0 facturas", "ready", "badge-check");
+      }
+      toast(settings.success, "ok", `reset-complete:${section}`);
+    } catch (error) {
+      if (section === "inventory") {
+        state.items = snapshot.items;
+        state.inventoryMeta = snapshot.inventoryMeta;
+        persistInventoryStore();
+        persistBootstrapCache();
+        renderInventory();
+        renderMenuManager();
+      }
+      if (section === "movements") {
+        state.reportMirror = movementMirrorBefore;
+        await saveReportSyncValue(reportMirrorKey(), movementMirrorBefore);
+        state.inventoryMovements = snapshot.inventoryMovements;
+        state.movementCursor = snapshot.movementCursor;
+        state.movementRevision = snapshot.movementRevision;
+        state.movementHasMore = snapshot.movementHasMore;
+        state.movementLoaded = snapshot.movementLoaded;
+        persistInventoryMovements();
+        renderInventoryMovements();
+      }
+      if (section === "income") {
+        state.invoiceHistory = snapshot.invoiceHistory;
+        state.incomeReport = snapshot.incomeReport;
+        state.lastPaidReceipt = snapshot.lastPaidReceipt;
+        persistInvoiceHistory();
+        renderIncomeReport();
+      }
+      toast(String(error?.message || "No fue posible eliminar la información."), "error", `reset-failed:${section}`);
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.classList.remove("is-resetting");
+        button.innerHTML = buttonMarkup;
+      }
+      refreshIcons();
+    }
+  };
+
+  const dateTimeLocalValue = (value) => {
+    const date = new Date(value || Date.now());
+    if (Number.isNaN(date.getTime())) return "";
+    const offset = date.getTimezoneOffset() * 60000;
+    return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+  };
+
+  const incomeEditTotal = (form) => $$('[data-income-line]', form).reduce((total, row) =>
+    total + Number(row.querySelector('[data-line-field="quantity"]')?.value || 0) * currencyInputNumber(row.querySelector('[data-line-field="price"]')), 0);
+
+  const updateIncomeEditPayments = (form, initialize = false) => {
+    const mixed = form.payment_method.value === "mixed";
+    const panel = $("#incomeEditPayments");
+    if (!panel) return;
+    panel.hidden = !mixed;
+    const methods = ["cash", "transfer", "breb", "card"];
+    methods.forEach((method) => { form.elements.namedItem("edit_payment_" + method).disabled = !mixed; });
+    const total = incomeEditTotal(form);
+    if (mixed && initialize && methods.filter((method) => currencyInputNumber(form.elements.namedItem("edit_payment_" + method)) > 0).length < 2) {
+      setCurrencyInputValue(form.elements.namedItem("edit_payment_cash"), Math.round(total / 2));
+      setCurrencyInputValue(form.elements.namedItem("edit_payment_transfer"), total - Math.round(total / 2));
+      setCurrencyInputValue(form.elements.namedItem("edit_payment_breb"), 0);
+      setCurrencyInputValue(form.elements.namedItem("edit_payment_card"), 0);
+    }
+    const paid = methods.reduce((sum, method) => sum + currencyInputNumber(form.elements.namedItem("edit_payment_" + method)), 0);
+    const balance = $("#incomeEditPaymentBalance");
+    balance.textContent = "Total: " + money(total) + " · Distribuido: " + money(paid) + (paid === total ? "" : " · " + (paid < total ? "Faltan" : "Sobran") + " " + money(Math.abs(total - paid)));
+    balance.classList.toggle("is-unbalanced", paid !== total);
+  };
+
+  const openIncomeEdit = (saleId) => {
+    if (!isBoss()) return;
+    if (state.pendingIncomeEdits?.has(String(saleId))) {
+      toast("La correccion de esta venta se esta guardando.", "ok", `income-saving:${saleId}`);
+      return;
+    }
+    const record = state.incomeReport?.records?.find((entry) => String(entry.saleId) === String(saleId));
+    const form = $("#incomeEditForm");
+    if (!record || !form) return;
+    form.sale_id.value = record.saleId;
+    form.table.value = record.table || "Venta individual";
+    form.payer.value = record.payer || "";
+    form.waiter.value = record.waiter || state.currentUser?.full_name || "";
+    form.date.value = dateTimeLocalValue(record.date);
+    form.payment_method.value = record.isMixed || record.payments?.length > 1 ? "mixed" : (record.payments?.[0]?.method || "cash");
+    ["cash", "transfer", "breb", "card"].forEach((method) => {
+      setCurrencyInputValue(form.elements.namedItem(`edit_payment_${method}`), (record.payments || []).filter((payment) => payment.method === method).reduce((sum, payment) => sum + Number(payment.amount || 0), 0));
+    });
+    form.reference.value = record.reference || "";
+    const lines = $("#incomeEditLines");
+    lines.innerHTML = `<div class="income-edit-lines-head"><strong>Productos facturados</strong><small>Edita producto, cantidad o precio, o usa la canasta para retirar un articulo cobrado.</small></div>${(record.items || []).map((item, index) => `<div class="income-edit-line" data-income-line="${index}" data-line-id="${escapeHTML(item.lineId || item.id || "")}" data-menu-item-id="${escapeHTML(item.menuItemId || item.menu_item_id || "")}"><label>Producto<input data-line-field="name" value="${escapeHTML(item.name || "Producto")}" maxlength="100" required></label><label>Cantidad<input data-line-field="quantity" type="number" min="1" step="1" value="${Number(item.quantity || 0)}" required></label><label>Precio<input data-line-field="price" type="text" value="${formattedCurrencyInput(item.unitPrice || item.unit_price || 0)}" inputmode="numeric" data-currency-input required></label><button class="icon-btn danger income-line-delete" type="button" data-remove-income-line aria-label="Eliminar ${escapeHTML(item.name || "producto")}">${icon("trash-2", 17)}</button></div>`).join("")}`;
+    bindCurrencyInputs(lines);
+    updateIncomeEditPayments(form);
+    $("#incomeEditDialog")?.showModal();
+    refreshIcons();
+  };
+
+  const openDeleteIncomeDialog = (saleId) => {
+    if (!canDeleteRecords()) return;
+    const record = state.incomeReport?.records?.find((entry) => String(entry.saleId) === String(saleId));
+    const form = $("#deleteIncomeForm");
+    if (!record || !form) return;
+    form.sale_id.value = record.saleId;
+    $("#deleteIncomeTitle").textContent = "¿Eliminar esta venta?";
+    $("#deleteIncomeMessage").textContent = `Se borrará la venta completa de ${money(record.total)} y las unidades de sus productos volverán al inventario.`;
+    $("#deleteIncomeDialog")?.showModal();
+    refreshIcons();
+  };
+
+  const deleteIncomeSale = async (form) => {
+    if (!canDeleteRecords()) return;
+    const saleId = form.sale_id.value;
+    const record = state.incomeReport?.records?.find((entry) => String(entry.saleId) === String(saleId));
+    if (!record) return;
+    state.incomeSaleTypeSnapshot = null;
+    const reportBefore = state.incomeReport;
+    state.incomeRequestId = Number(state.incomeRequestId || 0) + 1;
+    state.incomeLoading = false;
+    state.incomePageLoading = false;
+    const remainingRecords = (reportBefore.records || []).filter((entry) => String(entry.saleId) !== String(saleId));
+    const updatedTotals = { ...(reportBefore.totals || {}) };
+    updatedTotals.income = Math.max(0, Number(updatedTotals.income || 0) - Number(record.total || 0));
+    updatedTotals.sales = Math.max(0, Number(updatedTotals.sales || 0) - 1);
+    updatedTotals.subtotal = Math.max(0, Number(updatedTotals.subtotal || 0) - Number(record.subtotal || 0));
+    updatedTotals.discount = Math.max(0, Number(updatedTotals.discount || 0) - Number(record.discount || 0));
+    updatedTotals.tax = Math.max(0, Number(updatedTotals.tax || 0) - Number(record.tax || 0));
+    updatedTotals.service = Math.max(0, Number(updatedTotals.service || 0) - Number(record.service || 0));
+    updatedTotals.cost = Math.max(0, Number(updatedTotals.cost || 0) - Number(record.cost || 0));
+    updatedTotals.profit = Number(updatedTotals.profit || 0) - Number(record.profit || 0);
+    (record.payments || []).forEach((payment) => {
+      const method = ["cash", "transfer", "breb", "card"].includes(payment.method) ? payment.method : "other";
+      updatedTotals[method] = Math.max(0, Number(updatedTotals[method] || 0) - Number(payment.amount || 0));
+    });
+    updatedTotals.averageTicket = updatedTotals.sales ? updatedTotals.income / updatedTotals.sales : 0;
+    state.incomeReport = { ...reportBefore, records: remainingRecords, totals: updatedTotals, totalRecords: Math.max(0, Number(reportBefore.totalRecords || 0) - 1), recordRows: (reportBefore.recordRows || []).filter(row => String(row.saleId) !== String(saleId)), nextIndex: Math.max(0, Number(reportBefore.nextIndex || 0) - 1) };
+    state.incomeReport = { ...state.incomeReport,
+      recordRows: (reportBefore.recordRows || []).filter(row => String(row.saleId) !== String(saleId)),
+      ...(reportBefore.allLocalRecords ? { allLocalRecords: reportBefore.allLocalRecords.filter(row => String(row.saleId) !== String(saleId)) } : {}),
+      appliedReportMutations: { ...(reportBefore.appliedReportMutations || {}), [String(saleId)]: "deleted" } };
+    const saleLink = { sessionId: record.sessionId, invoice: record.invoice };
+    const mirror = reportMirror();
+    mirror.deleted[String(saleId)] = new Date().toISOString();
+    mirror.deletedSaleLinks ||= {};
+    mirror.deletedSaleLinks[String(saleId)] = saleLink;
+    delete mirror.sales[String(saleId)];
+    void saveReportSyncValue(reportMirrorKey(), mirror);
+    state.inventoryMovements = removeDeletedSaleMovements(state.inventoryMovements);
+    persistInventoryMovements();
+    renderInventoryMovements();
+    state.invoiceHistory = state.invoiceHistory.filter((invoice) => String(invoice.id || invoice.sessionId) !== String(saleId));
+    (record.items || []).forEach((line) => {
+      const productId = line.menuItemId || line.menu_item_id;
+      const item = state.items.find((entry) => String(entry.id) === String(productId));
+      if (!item || !Object.prototype.hasOwnProperty.call(state.inventoryMeta, item.id)) return;
+      const current = inventoryFor(item);
+      state.inventoryMeta[item.id] = { ...current, stock: current.stock + Number(line.quantity || 0), updatedAt: new Date().toISOString() };
+    });
+    persistInvoiceHistory();
+    persistInventoryStore();
+    $("#deleteIncomeDialog")?.close();
+    renderIncomeReport();
+    renderInventory();
+    enqueueAppsScriptJob("delete_sale", { saleId, saleLink, previousRecord: record, productIds: (record.items || []).map(line => line.menuItemId || line.menu_item_id).filter(Boolean) }, `sale-delete:${saleId}`);
+    toast("Venta eliminada y existencias restauradas.", "ok", `income-deleted:${saleId}`);
+  };
+
+  const applyEditedSaleStock = (previous, invoice) => {
+    if (!state.items || !state.inventoryMeta) return;
+    const changes = new Map();
+    (previous.items || []).forEach(line => {
+      const id = String(line.menuItemId || line.menu_item_id || "");
+      if (id) changes.set(id, Number(changes.get(id) || 0) + Number(line.quantity || 0));
+    });
+    (invoice.items || []).forEach(line => {
+      const id = String(line.menu_item_id || "");
+      if (id) changes.set(id, Number(changes.get(id) || 0) - Number(line.quantity || 0));
+    });
+    for (const [id, delta] of changes) {
+      if (!delta || !Object.prototype.hasOwnProperty.call(state.inventoryMeta, id)) continue;
+      const current = state.inventoryMeta[id];
+      state.inventoryMeta[id] = { ...current, stock: Math.max(0, Number(current.stock || 0) + delta), updatedAt: new Date().toISOString() };
+    }
+    if (typeof persistInventoryStore === "function") persistInventoryStore();
+    if (state.activeAdminSection === "inventory" && typeof renderInventory === "function") renderInventory();
+  };
+
+  const replaceEditedIncomeRecord = (previous, next) => {
+    const report = state.incomeReport;
+    if (!report?.records?.some((entry) => String(entry.saleId) === String(previous.saleId))) return;
+    const before = incomeTotalsFromRecords([previous]);
+    const after = incomeTotalsFromRecords([next]);
+    const totals = { ...(report.totals || incomeTotalsFromRecords(report.records)) };
+    Object.keys(after).forEach((key) => {
+      if (key !== "averageTicket") totals[key] = Number(totals[key] || 0) - Number(before[key] || 0) + Number(after[key] || 0);
+    });
+    totals.averageTicket = totals.sales ? totals.income / totals.sales : 0;
+    const update = (records) => records.map((entry) => String(entry.saleId) === String(previous.saleId) ? next : entry);
+    state.incomeReport = {
+      ...report,
+      totals,
+      records: update(report.records),
+      ...(report.allLocalRecords ? { allLocalRecords: update(report.allLocalRecords) } : {})
+    };
+  };
+
+  const saveIncomeEdit = async (form) => {
+    if (!isBoss()) return;
+    const record = state.incomeReport?.records?.find((entry) => String(entry.saleId) === String(form.sale_id.value));
+    if (!record) return;
+    const items = $$('[data-income-line]', form).map((row) => ({
+      id: row.dataset.lineId || uid(),
+      menu_item_id: row.dataset.menuItemId || null,
+      item_name: row.querySelector('[data-line-field="name"]')?.value.trim() || "",
+      quantity: Number(row.querySelector('[data-line-field="quantity"]')?.value || 0),
+      unit_price: currencyInputNumber(row.querySelector('[data-line-field="price"]')),
+      unit_cost: Number(record.items?.[Number(row.dataset.incomeLine)]?.cost || 0) / Math.max(1, Number(record.items?.[Number(row.dataset.incomeLine)]?.quantity || 1))
+    })).filter((item) => item.item_name && item.quantity > 0);
+    if (!items.length || items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.unit_price < 0)) {
+      toast("La venta debe conservar al menos un producto con cantidad y precio validos.", "error", "invalid-income-edit");
+      return;
+    }
+    const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unit_price, 0);
+    const total = subtotal;
+    const selectedPaymentMethod = form.payment_method.value;
+    const mixedAmounts = ["cash", "transfer", "breb", "card"].map((method) => ({ method, amount: currencyInputNumber(form.elements.namedItem("edit_payment_" + method)) }));
+    const correctedPayments = selectedPaymentMethod === "mixed"
+      ? mixedAmounts.filter((payment) => payment.amount > 0)
+      : [{ method: selectedPaymentMethod, amount: total }];
+    if (selectedPaymentMethod === "mixed" && (mixedAmounts.some((payment) => !Number.isFinite(payment.amount) || payment.amount < 0)
+      || correctedPayments.length < 2 || correctedPayments.reduce((sum, payment) => sum + payment.amount, 0) !== total)) {
+      toast("Distribuye el total exacto de la venta entre al menos dos medios de pago.", "error", "invalid-income-payments");
+      return;
+    }
+    const correctedDate = new Date(form.date.value);
+    if (Number.isNaN(correctedDate.getTime())) {
+      toast("Selecciona una fecha y hora validas para la venta.", "error", "invalid-income-date");
+      return;
+    }
+    state.incomeSaleTypeSnapshot = null;
+    const corrected = {
+      id: record.saleId,
+      number: record.invoice,
+      sessionId: record.sessionId,
+      saleChannel: incomeRecordSaleType(record) === "walk_in" ? "walk_in" : "table",
+      table: form.table.value.trim(),
+      createdAt: correctedDate.toISOString(),
+      payerName: form.payer.value.trim(),
+      waiterName: form.waiter.value.trim(),
+      paymentMethod: selectedPaymentMethod,
+      payments: correctedPayments,
+      reference: form.reference.value.trim(),
+      totals: { subtotal, discount: 0, tax: 0, serviceFee: 0, total },
+      items
+    };
+    state.incomeRequestId += 1;
+    state.incomeLoading = false;
+    state.incomePageLoading = false;
+    enqueueAppsScriptJob("edit_sale", { invoice: corrected, previousRecord: record, productIds: [...new Set([...(record.items || []).map(line => line.menuItemId || line.menu_item_id), ...corrected.items.map(line => line.menu_item_id)].filter(Boolean))] }, `sale-edit:${record.saleId}:${uid()}`);
+    const localIndex = state.invoiceHistory.findIndex((invoice) => String(invoice.id || invoice.sessionId) === String(record.saleId));
+    if (localIndex >= 0) state.invoiceHistory[localIndex] = { ...state.invoiceHistory[localIndex], ...corrected };
+    else state.invoiceHistory.push(corrected);
+    persistInvoiceHistory();
+    const correctedCost = items.reduce((sum, item) => sum + Number(item.unit_cost || 0) * Number(item.quantity || 0), 0);
+    const correctedRecord = {
+      ...record,
+      saleChannel: corrected.saleChannel,
+      table: corrected.table,
+      date: corrected.createdAt,
+      payer: corrected.payerName,
+      waiter: corrected.waiterName,
+      payments: corrected.payments,
+      isMixed: corrected.paymentMethod === "mixed",
+      reference: corrected.reference,
+      subtotal,
+      discount: 0,
+      tax: 0,
+      service: 0,
+      total,
+      cost: correctedCost,
+      profit: total - correctedCost,
+      items: corrected.items.map((item) => ({
+        lineId: item.id,
+        menuItemId: item.menu_item_id,
+        name: item.item_name,
+        quantity: item.quantity,
+        unitPrice: item.unit_price,
+        total: item.quantity * item.unit_price,
+        cost: item.quantity * item.unit_cost,
+        profit: item.quantity * (item.unit_price - item.unit_cost)
+      }))
+    };
+    if (typeof applyEditedSaleStock === "function") applyEditedSaleStock(record, corrected);
+    replaceEditedIncomeRecord(record, correctedRecord);
+    $("#incomeEditDialog")?.close();
+    renderIncomeReport();
+    toast("Venta corregida. Se sincronizara automaticamente.", "ok", `income-edited:${record.saleId}`);
+  };
+
+  const exportIncomeCsv = async () => {
+    const button = $("#exportIncomeCsv");
+    if (button) button.disabled = true;
+    try {
+      const filters = { ...incomeFiltersFromForm(), complete: true };
+      if (filters.dateFrom > filters.dateTo) throw new Error("La fecha inicial debe ser anterior a la final.");
+      let report;
+      if (navigator.onLine) {
+        report = await appsScriptRequest("get_income_report", { filters });
+        if (!report?.ok || report.stale || !Array.isArray(report.records)) throw new Error("No se pudo confirmar el reporte. Vuelve a intentar.");
+        if (filters.startAt && report.intervalApplied !== true) throw new Error("El servidor todavía no permite exportar este turno.");
+        const requestId = state.incomeRequestId;
+        report = await completeIncomeSaleTypeReport(report, filters, requestId);
+        if (requestId !== state.incomeRequestId || report.records.length < Number(report.totalRecords || 0)) throw new Error("El historial cambió. Vuelve a exportar para obtener todas las ventas.");
+        report = mergeIncomeReport(report, filters);
+      } else {
+        const current = state.incomeReport;
+        const comparable = value => JSON.stringify({ ...value, complete: undefined });
+        if (current && comparable(current.filters) === comparable(filters)) report = current;
+        else report = localIncomeReport(filters);
+      }
+      const records = report.records || [];
+      if (!records.length) throw new Error("No hay ventas con estos filtros.");
+      const totals = incomeTotalsFromRecords(records);
+      const grouped = new Map();
+      records.forEach(record => (record.items || []).forEach(line => {
+        const id = String(line.menuItemId || line.name), row = grouped.get(id) || { name: line.name, quantity: 0, total: 0 };
+        row.quantity += Number(line.quantity || 0); row.total += Number(line.total || 0); grouped.set(id, row);
+      }));
+      const from = filters.startAt ? prettyDateTime(filters.startAt) : filters.dateFrom;
+      const to = filters.endAt ? prettyDateTime(new Date(new Date(filters.endAt).getTime()-1)) : filters.dateTo;
+      const partial = records.length < Number(report.totalRecords || 0);
+      buildBusinessReportPdf({title: state.incomeRangePreset === "shift" ? "Ventas del turno" : "Reporte de ventas", subtitle:`${from} a ${to}`,
+        metrics:[["Total vendido",money(totals.income)],["Ventas",records.length],["Ganancia estimada",money(totals.profit)]],
+        note:`${!navigator.onLine ? "Sin conexión: copia disponible en este equipo. " : ""}${partial ? `Reporte parcial: ${records.length} de ${report.totalRecords} ventas. Conéctate para descargarlo completo. ` : ""}Tipo: ${incomeSaleTypeLabel(filters.saleType)||"Todas"}. Pago: ${filters.paymentMethod === "all" ? "Todos" : incomePaymentLabel(filters.paymentMethod)}. Búsqueda: ${filters.query||"ninguna"}. ${report.pendingCount ? `Incluye ${report.pendingCount} venta(s) guardada(s), pendientes de respaldo. ` : ""}Ganancia = venta menos costo de productos; no descuenta otros gastos del negocio.`,
+        sections:[{title:"Dinero recibido por medio de pago",columns:[{label:"Medio de pago",width:120},{label:"Total",width:60}],rows:[["Efectivo",money(totals.cash)],["Transferencia",money(totals.transfer)],["Bre-B",money(totals.breb)],["Tarjeta",money(totals.card)],...(totals.other?[["Otros",money(totals.other)]]:[])]},
+        {title:"Productos vendidos",columns:[{label:"Producto",width:105},{label:"Unidades",width:30},{label:"Venta",width:45}],rows:[...grouped.values()].sort((a,b)=>b.quantity-a.quantity).map(row=>[row.name,reportNumber(row.quantity),money(row.total)])},
+        {title:"Detalle de cada venta",columns:[{label:"Factura / fecha",width:45},{label:"Mesa / responsable",width:43},{label:"Pago",width:38},{label:"Total",width:27},{label:"Ganancia",width:27}],rows:records.map(record=>[`${record.invoice}\n${prettyDateTime(record.date)}`,`${record.table}\n${record.payer||record.waiter||"Sin nombre"}`,(record.payments||[]).map(payment=>`${incomePaymentLabel(payment.method)}: ${money(payment.amount)}`).join("\n"),money(record.total),money(record.profit)])}],
+        filename:`ventas-${filters.dateFrom}-${filters.dateTo}.pdf`});
+      toast(partial ? "PDF generado con la copia disponible. Falta completar ventas al conectar." : "Reporte de ventas descargado en PDF.");
+    }catch(error){toast(error.message,"error","income-pdf-failed");}finally{if(button)button.disabled=false;}
+  };
+
+  const renderGeneratedTableQrs = () => {
+    $$("[data-table-qr]").forEach((target) => {
+      const table = state.tables.find((entry) => entry.id === target.dataset.tableQr);
+      if (!table) return;
+      renderQrImage(target, qrTextForTable(table), `QR ${tableLabel(table)}`);
+    });
+  };
+
+  const renderTableFormQr = () => {
+    const form = $("#tableForm");
+    const preview = $("#qrPreview");
+    const link = $("#qrPreviewLink");
+    if (!form || !preview || !link) return;
+    const number = Number(form.table_number.value);
+    const current = state.tables.find((table) => table.id === form.table_id.value);
+    const table = current || (number ? { table_number: number, qr_code: `mesa-${number}` } : null);
+    if (!table) {
+      preview.innerHTML = `${icon("qr-code", 28)}`;
+      link.textContent = "Define el numero de mesa para generar el enlace exacto.";
+      refreshIcons();
+      return;
+    }
+    const url = qrTextForTable(table);
+    link.textContent = "Enlace de la mesa listo para compartir.";
+    renderQrImage(preview, url, `QR ${tableLabel(table)}`);
+  };
+
+  const accountDateParts = (session) => {
+    const opened = new Date(session.opened_at || session.created_at);
+    return {
+      date: opened.toLocaleDateString("es-CO", { day: "2-digit", month: "short", year: "numeric" }),
+      time: opened.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    };
+  };
+
+  const renderAccountDetail = () => {
+    const dialog = $("#accountDetailDialog");
+    const target = $("#accountDetailContent");
+    if (!dialog || !target || !state.activeAccountDetailId) return;
+    const session = state.sessions.find((entry) => entry.id === state.activeAccountDetailId);
+    if (!session) {
+      if (dialog.open) dialog.close();
+      state.activeAccountDetailId = "";
+      return;
+    }
+    const items = newestSessionItems(session);
+    const total = sessionBalance(session);
+    const suggestedTip = tipsEnabled() && items.length ? tipAmountFor(sessionTotal(session)) : 0;
+    const suggestedTotal = total + suggestedTip;
+    const opened = accountDateParts(session);
+    const billRequest = state.requests.find((request) => request.session_id === session.id && request.request_type === "bill");
+    target.innerHTML = `
+      <div class="section-head account-detail-head">
+        <div><span class="eyebrow">Cuenta abierta</span><h2>Desglose de ${escapeHTML(sessionLabel(session))}</h2><p>#${sessionReference(session)} · ${opened.date}, ${opened.time}</p></div>
+        <button class="icon-btn" type="button" data-close-dialog aria-label="Cerrar desglose">${icon("x", 18)}</button>
+      </div>
+      <div class="account-detail-overview">
+        <div><small>Total actual</small><strong>${money(total)}</strong></div>
+        <div><small>Consumos</small><strong>${items.length}</strong></div>
+        <div><small>Negocio</small><strong>${escapeHTML(state.business?.business_name || "Restaurante")}</strong></div>
+        <div><small>Responsable</small><strong>${escapeHTML(session.payer_name || "Por definir")}</strong></div>
+        <div><small>Mesero</small><strong>${escapeHTML(session.assigned_waiter?.full_name || "Sin asignar")}</strong></div>
+      </div>
+      <div class="account-detail-breakdown">
+        <div class="account-detail-breakdown-head"><strong>Productos y desglose</strong><span>${items.length} ${items.length === 1 ? "consumo" : "consumos"}</span></div>
+        <div class="account-detail-lines">
+          ${items.map((item) => `
+            <div class="account-detail-line">
+              <div><strong>${escapeHTML(item.item_name)}</strong><span>${Number(item.quantity || 0)} × ${money(item.unit_price)}</span><small>${escapeHTML(item.created_by_user?.full_name || "Cliente")}${item.created_at ? ` · ${new Date(item.created_at).toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}` : ""}${item.notes ? ` · ${escapeHTML(item.notes)}` : ""}</small></div>
+              <strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong>
+              <button class="icon-btn" type="button" data-edit-consumption="${item.id}" data-session-id="${session.id}" aria-label="Editar consumo">${icon("pencil", 15)}</button>
+              <button class="icon-btn danger" type="button" data-delete-consumption="${item.id}" data-session-id="${session.id}" data-boss-only aria-label="Eliminar consumo">${icon("trash-2", 15)}</button>
+            </div>`).join("") || `<div class="invoice-empty">${icon("clipboard-list", 18)} Sin consumos registrados</div>`}
+        </div>
+        ${suggestedTip ? `<div class="account-detail-tip"><span><small>Propina voluntaria (${state.tipSettings.percentage}%)</small><strong>${money(suggestedTip)}</strong></span><span><small>Total sugerido con propina</small><strong>${money(suggestedTotal)}</strong></span></div>` : ""}
+        ${abonoRowsHtml(session)}
+        ${sessionTotal(session) > 0 && sessionPaid(session) ? `<div class="account-detail-total"><span>Consumo / abonado</span><strong>${money(sessionTotal(session))} / −${money(sessionPaid(session))}</strong></div>` : ""}
+        <div class="account-detail-total"><span>Saldo pendiente</span><strong>${money(total)}</strong></div>
+      </div>
+      <div class="invoice-actions account-detail-actions">
+        ${items.length ? `<button class="ghost abono-button" type="button" data-abono-session="${session.id}">${icon("hand-coins", 16)} Abonar</button>` : ""}
+        ${items.length ? `<button class="ghost small" type="button" data-add-manual="${session.id}">${icon("plus", 15)} Consumo</button>` : `<button class="ghost small danger-text" type="button" data-close-session="${session.id}">${icon("door-open", 15)} Liberar mesa</button>`}
+        ${session.sale_channel === "walk_in" || !session.table_id ? "" : `<button class="ghost small" type="button" data-move-session="${session.id}">${icon("replace", 15)} Cambiar mesa</button>`}
+        ${items.length ? `<button class="ghost small" type="button" data-print-session="${session.id}">${icon("printer", 15)} Imprimir pre-cuenta</button>` : ""}
+        ${billRequest ? `<button class="ghost small" type="button" data-send-bill="${billRequest.id}">${icon("send", 15)} ${billRequest.status === "acknowledged" ? "Reenviar" : "Aceptar"}</button>` : ""}
+        ${items.length ? `<button class="primary small invoice-close" type="button" data-charge-session="${session.id}">${icon("badge-dollar-sign", 18)} Cobrar y facturar</button>` : ""}
+      </div>`;
+    refreshIcons();
+  };
+
+  const openAccountDetailDialog = (sessionId) => {
+    const dialog = $("#accountDetailDialog");
+    if (!dialog) return;
+    state.activeAccountDetailId = String(sessionId || "");
+    renderAccountDetail();
+    if (!dialog.open) dialog.showModal();
+  };
+
+  const compareAccountNumbers = (left, right) => {
+    const table = (session) => state.tables.find((row) => String(row.id) === String(session.table_id)) || session.restaurant_tables;
+    const number = (session) => Number(String(sessionLabel(session)).match(/\d+/)?.[0] || table(session)?.table_number || Number.MAX_SAFE_INTEGER);
+    return number(left) - number(right) || sessionLabel(left).localeCompare(sessionLabel(right), "es", { numeric: true }) || String(left.opened_at || "").localeCompare(String(right.opened_at || ""));
+  };
+  const matchesAccountSearch = (session, query) => {
+    const normalized = normalizeText(query).trim();
+    if (!normalized) return true;
+    const digits = normalized.match(/^(?:mesa\s*|m\s*)?(\d+)$/);
+    if (digits) {
+      const table = state.tables.find((row) => String(row.id) === String(session.table_id)) || session.restaurant_tables;
+      const number = String(sessionLabel(session)).match(/\d+/)?.[0] || String(table?.table_number || "");
+      return Number(number) === Number(digits[1]);
+    }
+    return normalizeText(sessionLabel(session)).includes(normalized);
+  };
+
+  const renderAccounts = () => {
+    const box = $("#accountsPanel");
+    if (!box) return;
+    const accountSearch = $("#accountsSearch")?.value || "";
+    const accountSessions = state.sessions.filter((session) => !isLocalWalkInSession(session) && sessionHasConsumption(session) && matchesAccountSearch(session, accountSearch)).sort(compareAccountNumbers);
+    const renderSignature = JSON.stringify([
+      accountSearch,
+      state.business?.tax_rate,
+      state.business?.service_fee,
+      state.tipSettings?.enabled,
+      state.tipSettings?.percentage,
+      accountSessions.map((session) => [
+        session.id,
+        session.status,
+        session.payer_name,
+        session.assigned_waiter_id,
+        session.assigned_waiter?.full_name,
+        session.session_payments,
+        sessionLabel(session),
+        (session.session_items || []).map((item) => [
+          item.id, item.item_name, item.quantity, item.unit_price, item.notes, item.status, item.updated_at
+        ])
+      ])
+    ]);
+    if (renderSignature === state.accountsRenderSignature) return;
+    state.accountsRenderSignature = renderSignature;
+    box.innerHTML = accountSessions.length
+      ? accountSessions
+          .map((session) => {
+            const items = newestSessionItems(session);
+            const total = sessionBalance(session);
+            const suggestedTip = tipsEnabled() && items.length ? tipAmountFor(sessionTotal(session)) : 0;
+            const opened = accountDateParts(session);
+            return `
+              <article class="account-summary-card ${items.length ? "" : "is-empty"}" data-account-session="${session.id}">
+                <div class="account-summary-head"><div><span>${escapeHTML(sessionLabel(session))}</span><small>#${sessionReference(session)}</small></div><span class="account-summary-status">${items.length ? `${items.length} ${items.length === 1 ? "consumo" : "consumos"}` : "Cuenta en $0"}</span></div>
+                <div class="account-summary-total"><small>Saldo pendiente</small><strong>${money(total)}</strong></div>
+                ${sessionTotal(session) > 0 && sessionPaid(session) ? `<div class="account-abono-summary">Abonado: −${money(sessionPaid(session))} · Consumo: ${money(sessionTotal(session))}</div>` : ""}
+                ${suggestedTip ? `<div class="account-summary-tip"><span>Propina voluntaria (${state.tipSettings.percentage}%)</span><strong>${money(suggestedTip)}</strong><small>Total sugerido: ${money(total + suggestedTip)}</small></div>` : ""}
+                <div class="account-summary-meta"><span>${icon("user-round", 15)} ${escapeHTML(session.payer_name || "Por definir")}</span><span>${icon("contact", 15)} ${escapeHTML(session.assigned_waiter?.full_name || "Sin asignar")}</span><span>${icon("clock-3", 15)} ${opened.date} · ${opened.time}</span></div>
+                <div class="account-summary-actions">
+                  ${items.length ? `<button class="ghost abono-button" type="button" data-abono-session="${session.id}">${icon("hand-coins",16)} Abonar</button>` : ""}
+                  <button class="ghost" type="button" data-view-account="${session.id}">${icon("list-collapse", 16)} Ver desglose</button>
+                  ${items.length ? `<button class="primary" type="button" data-charge-session="${session.id}">${icon("badge-dollar-sign", 16)} Cobrar</button>` : `<button class="ghost danger-text" type="button" data-close-session="${session.id}">${icon("door-open", 16)} Liberar mesa</button>`}
+                </div>
+              </article>
+            `;
+          })
+          .join("")
+      : emptyState(accountSearch ? "No hay cuentas que coincidan" : "No hay cuentas abiertas", accountSearch ? "Busca por Mesa y número, o solo por el número." : "Las mesas con consumos apareceran aqui.", "receipt-text");
+    if (state.activeAccountDetailId) renderAccountDetail();
+    refreshIcons();
+  };
+
+  const renderTips = () => {
+    syncTipFeatureVisibility();
+    if (!tipsEnabled()) return;
+    const kpis = $("#tipsKpis");
+    const recordsBox = $("#tipsRecords");
+    const peopleInput = $("#tipSplitPeople");
+    const splitResult = $("#tipSplitResult");
+    if (!kpis || !recordsBox || !peopleInput || !splitResult) return;
+    const tipInvoices = state.invoiceHistory
+      .filter((invoice) => Number(invoice.tipAmount ?? invoice.totals?.tip ?? 0) > 0)
+      .sort((left, right) => new Date(right.createdAt || 0) - new Date(left.createdAt || 0));
+    const todayKey = localDateKey();
+    const todayInvoices = tipInvoices.filter((invoice) => localDateKey(invoice.createdAt) === todayKey);
+    const todayTotal = todayInvoices.reduce((sum, invoice) => sum + Number(invoice.tipAmount ?? invoice.totals?.tip ?? 0), 0);
+    const people = Math.min(100, Math.max(1, Number(state.tipSplitPeople || 1)));
+    state.tipSplitPeople = people;
+    peopleInput.value = String(people);
+    kpis.innerHTML = `
+      <article><span>${icon("hand-coins", 20)} Total de hoy</span><strong>${money(todayTotal)}</strong><small>${todayInvoices.length} ${todayInvoices.length === 1 ? "cuenta con propina" : "cuentas con propina"}</small></article>
+      <article><span>${icon("percent", 20)} Porcentaje activo</span><strong>${state.tipSettings.percentage}%</strong><small>Aplicado solo cuando el cliente lo acepta</small></article>
+      <article><span>${icon("users-round", 20)} Por persona</span><strong>${money(todayTotal / people)}</strong><small>Dividido entre ${people} ${people === 1 ? "persona" : "personas"}</small></article>`;
+    splitResult.innerHTML = `<span>A cada persona le corresponde</span><strong>${money(todayTotal / people)}</strong><small>${money(todayTotal)} ÷ ${people}</small>`;
+    recordsBox.innerHTML = tipInvoices.length
+      ? tipInvoices.map((invoice) => {
+          const date = new Date(invoice.createdAt || Date.now());
+          const tip = Number(invoice.tipAmount ?? invoice.totals?.tip ?? 0);
+          const chargedTotal = Number(invoice.totals?.total || 0);
+          const baseTotal = Number(invoice.baseTotal ?? invoice.totals?.baseTotal ?? chargedTotal - tip);
+          return `<article class="tip-record">
+            <span class="tip-record-icon">${icon("receipt-text", 18)}</span>
+            <div><strong>${escapeHTML(invoice.table || "Venta")}</strong><span>${escapeHTML(invoice.number || "Factura")}</span><small>${date.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · ${date.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</small><small>${escapeHTML(invoice.waiterName || "Equipo")} · Consumo ${money(baseTotal)} · Cobrado ${money(chargedTotal)}</small></div>
+            <strong>+${money(tip)}</strong>
+          </article>`;
+        }).join("")
+      : emptyState("Aún no hay propinas facturadas", "Cuando cobres una cuenta con propina aparecerá aquí con todos sus detalles.", "hand-coins");
+    refreshIcons();
+  };
+
+  const renderAdmin = () => {
+    renderAdminShell();
+    renderAlerts();
+    renderTables();
+    renderBusinessForm();
+    renderTableManager();
+    renderWaiterTableSelect();
+    renderServiceTables();
+    renderMenuManager();
+    renderInventory();
+    renderInventoryMovements();
+    renderIncomeReport();
+    renderAccounts();
+    renderTips();
+    renderAdminAi();
+  };
+
+  const renderAdminLive = () => {
+    renderAdminShell();
+    renderAlerts();
+    if (state.activeAdminSection === "dashboard" && tablesSignature() !== state.tableRenderSignature) renderTables();
+    if (state.activeAdminSection === "service") renderServiceTables();
+    if (state.activeAdminSection === "accounts") renderAccounts();
+    if (state.activeAdminSection === "tips") renderTips();
+  };
+
+  const updateTipSettingsFromForm = (form, { toggleChanged = false, renderForm = true } = {}) => {
+    if (!form?.tips_enabled || !form?.tip_percentage) return false;
+    const percentage = Number(form.tip_percentage.value);
+    if (!Number.isInteger(percentage) || percentage < 1 || percentage > 100) {
+      if (toggleChanged) form.tips_enabled.checked = false;
+      toast("El porcentaje de propina debe ser un número entero entre 1 y 100.", "error", "invalid-tip-percentage");
+      form.tip_percentage.focus({ preventScroll: true });
+      return false;
+    }
+    state.tipSettings = { enabled: form.tips_enabled.checked, percentage };
+    persistTipSettings();
+    state.accountsRenderSignature = "";
+    if (renderForm) renderBusinessForm();
+    syncTipFeatureVisibility();
+    renderAccounts();
+    if (state.activeAccountDetailId) renderAccountDetail();
+    if (state.activeAdminSection === "tips") {
+      if (tipsEnabled()) renderTips();
+      else {
+        history.replaceState(null, "", "#accounts");
+        showAdminSection("accounts");
+      }
+    }
+    return true;
+  };
+
+  const saveTipSettingsRemotely = async (settings = state.tipSettings) => {
+    const saved = await retryQuiet(
+      () => state.sb.from("business_settings").update({
+        tips_enabled: settings.enabled === true,
+        tip_percentage: Number(settings.percentage || 10)
+      }).eq("is_primary", true).select("*").maybeSingle(),
+      4
+    );
+    if (!saved) return false;
+    state.business = saved;
+    applyBusinessTipSettings();
+    persistBootstrapCache();
+    return true;
+  };
+
+  const saveBusiness = async (form) => {
+    const formRevision = Number(state.businessFormRevision || 0);
+    if (state.brandAssetUploads?.size) { toast("Espera a que termine de subir la imagen antes de guardar.", "error", "brand-upload-pending"); return false; }
+    if (!updateTipSettingsFromForm(form, { renderForm: false })) return;
+    const payload = {
+      is_primary: true,
+      business_name: form.business_name.value.trim() || "Tu restaurante",
+      subtitle: form.subtitle.value.trim(),
+      accent_color: form.accent_color.value || "#f05a28",
+      currency: DEFAULT_CURRENCY,
+      logo_url: form.logo_url.value.trim(),
+      cover_url: form.cover_url.value.trim(),
+      ...(Object.prototype.hasOwnProperty.call(state.business || {}, "client_bill_enabled") ? { client_bill_enabled: form.client_bill_enabled.checked } : {}),
+      ...Object.fromEntries(Object.values(CLIENT_ACTION_FIELDS).filter(field => field !== "client_bill_enabled" && Object.prototype.hasOwnProperty.call(state.business || {},field))
+        .map(field => [field, form.elements.namedItem(field).checked])),
+      tips_enabled: state.tipSettings.enabled === true,
+      tip_percentage: Number(state.tipSettings.percentage || 10)
+    };
+    const original = state.business;
+    state.business = { ...(state.business || {}), ...payload };
+    persistBootstrapCache();
+    renderBrand();
+    renderBusinessForm();
+    toast("Marca actualizada. El cliente ya vera esta personalizacion.");
+    return (async () => {
+      const saved = await retryQuiet(
+        () => state.sb.from("business_settings").upsert(payload, { onConflict: "is_primary" }).select("*").single(),
+        4
+      );
+      if (saved) {
+        state.business = saved;
+        if (Number(state.businessFormRevision || 0) === formRevision) state.businessFormDirty = false;
+        clearSavedBrandAssetDrafts(saved);
+        renderBrand();
+        renderBusinessForm();
+        applyBusinessTipSettings();
+        persistBootstrapCache();
+        return true;
+      }
+      state.business = original;
+      persistBootstrapCache();
+      renderBrand();
+      renderBusinessForm();
+      toast("No se pudo guardar la marca. Se restauro la informacion.", "error", "business-save-failed");
+      return false;
+    })();
+  };
+
+  const uploadAsset = async (file, fieldName) => {
+    if (!file) return;
+    state.brandAssetUploads ||= new Set();
+    if (state.brandAssetUploads.has(fieldName)) return;
+    state.brandAssetUploads.add(fieldName);
+    const form = $("#businessForm");
+    if (form) renderBrandAssetFields(form);
+    try {
+      const extension = file.name.split(".").pop() || "jpg";
+      const path = `brand/${fieldName}-${uid()}.${extension}`;
+      const { error } = await state.sb.storage.from("brand-assets").upload(path, file, { upsert: true });
+      if (error) throw new Error(error.message);
+      const { data } = state.sb.storage.from("brand-assets").getPublicUrl(path);
+      if (!data?.publicUrl) throw new Error("No se recibio la direccion de la imagen.");
+      state.brandAssetDrafts ||= {};
+      state.brandAssetDrafts[fieldName] = data.publicUrl;
+      toast("Imagen subida. Guarda la marca para aplicarla.");
+    } catch (error) {
+      toast(`No se pudo subir: ${error?.message || error}`, "error");
+    } finally {
+      state.brandAssetUploads.delete(fieldName);
+      if (form) renderBrandAssetFields(form);
+    }
+  };
+
+  const saveTable = async (form) => {
+    const number = Number(form.table_number.value);
+    const id = form.table_id.value;
+    const existing = id ? null : state.tables.find((table) => Number(table.table_number) === number);
+    const targetId = id || existing?.id;
+    const currentTable = state.tables.find((table) => table.id === targetId);
+    const payload = {
+      table_number: number,
+      table_name: form.table_name.value.trim().toLocaleUpperCase("es-CO") || null,
+      qr_code: currentTable?.qr_code || `mesa-${number}`,
+      qr_image_url: outdoorQrImageValue(currentTable, form.is_outdoor.checked),
+      is_outdoor: form.is_outdoor.checked,
+      is_active: form.is_active.checked
+    };
+    if (!payload.table_number) {
+      toast("El numero de mesa es obligatorio.", "error");
+      return;
+    }
+    const isUpdate = Boolean(targetId);
+    const recordId = targetId || uid();
+    const original = [...state.tables];
+    const optimistic = { ...(state.tables.find((table) => table.id === recordId) || {}), ...payload, id: recordId };
+    state.tables = isUpdate
+      ? state.tables.map((table) => table.id === recordId ? optimistic : table)
+      : [...state.tables, optimistic].sort((left, right) => Number(left.table_number || 0) - Number(right.table_number || 0));
+    form.reset();
+    form.table_id.value = "";
+    persistBootstrapCache();
+    renderTableManager();
+    renderTables();
+    renderTableFormQr();
+    toast(isUpdate ? "Mesa actualizada. QR listo para descargar." : "Mesa guardada. QR listo para descargar.");
+    form.table_number.focus({ preventScroll: true });
+    void (async () => {
+      const saved = await retryQuiet(
+        () => isUpdate
+          ? state.sb.from("restaurant_tables").update(payload).eq("id", recordId).select("*").single()
+          : state.sb.from("restaurant_tables").insert({ ...payload, id: recordId }).select("*").single(),
+        4
+      );
+      if (saved) {
+        state.tables = state.tables.map((table) => table.id === recordId ? saved : table);
+        persistBootstrapCache();
+        renderTableManager();
+        return;
+      }
+      state.tables = original;
+      persistBootstrapCache();
+      renderTableManager();
+      renderTables();
+      renderTableFormQr();
+      toast("No se pudo guardar la mesa. Se restauro la informacion.", "error", `table-save-failed:${recordId}`);
+    })();
+  };
+
+  const saveCategory = async (form) => {
+    const payload = {
+      name: form.category_name.value.trim(),
+      sort_order: Number(form.category_sort.value || 0),
+      is_active: form.category_active.checked
+    };
+    if (!payload.name) {
+      toast("La categoria necesita nombre.", "error");
+      return;
+    }
+    const id = form.category_id.value;
+    const query = id
+      ? state.sb.from("menu_categories").update(payload).eq("id", id).select("*").single()
+      : state.sb.from("menu_categories").insert(payload).select("*").single();
+    const saved = await db(query, null);
+    if (saved) {
+      form.reset();
+      form.category_id.value = "";
+      form.category_active.checked = true;
+      await loadCore();
+      renderAdmin();
+      toast("Categoria guardada.");
+    }
+  };
+
+  const saveItem = async (form) => {
+    let categoryId = form.category_id.value;
+    const newCategory = form.new_category.value.trim();
+    if (!categoryId && newCategory) {
+      const category = await db(
+        state.sb.from("menu_categories").insert({ name: newCategory, is_active: true }).select("*").single(),
+        null
+      );
+      categoryId = category?.id || "";
+    }
+    const payload = {
+      category_id: categoryId || null,
+      name: form.item_name.value.trim(),
+      description: form.description.value.trim(),
+      price: currencyInputNumber(form.price),
+      image_url: form.image_url.value.trim(),
+      is_available: form.is_available.checked,
+      sort_order: Number(form.sort_order.value || 0)
+    };
+    if (!payload.name || !payload.price) {
+      toast("Producto y precio son obligatorios.", "error");
+      return;
+    }
+    const id = form.item_id.value;
+    const query = id
+      ? state.sb.from("menu_items").update(payload).eq("id", id).select("*").single()
+      : state.sb.from("menu_items").insert(payload).select("*").single();
+    const saved = await db(query, null);
+    if (saved) {
+      form.reset();
+      form.item_id.value = "";
+      form.is_available.checked = true;
+      await loadCore();
+      renderAdmin();
+      toast("Producto guardado.");
+    }
+  };
+
+  const acknowledgeRequestOptimistically = (requestIds, payload, failureMessage) => {
+    const ids = Array.isArray(requestIds) ? requestIds : String(requestIds || "").split(",").filter(Boolean);
+    const idSet = new Set(ids);
+    const originals = state.requests.filter((request) => idSet.has(request.id));
+    if (!originals.length) return;
+    const optimistic = { ...payload, updated_at: new Date().toISOString() };
+    ids.forEach((id) => state.optimisticRequestStates.set(id, optimistic));
+    state.requests = state.requests.map((request) => idSet.has(request.id) ? { ...request, ...optimistic } : request);
+    renderAdminLive();
+
+    void (async () => {
+      const persist = () => state.sb.rpc("acknowledgeServiceRequests", {
+        auth_token: state.authToken,
+        ids,
+        acknowledged_at: payload.acknowledged_at,
+        message: payload.message
+      }).then((fastResult) => {
+        if (fastResult?.data && !fastResult?.error) return fastResult;
+        return state.sb.from("service_requests").update(payload).in("id", ids).select("*");
+      });
+      const saved = await retryQuiet(
+        persist,
+        4
+      );
+      const savedMap = new Map((Array.isArray(saved) ? saved : []).map((request) => [request.id, request]));
+      const restored = new Map(state.requests.map((request) => [request.id, request]));
+      const completed = rememberCompletedAdminRequests();
+      originals.forEach((request) => {
+        const confirmed = savedMap.get(request.id);
+        if (confirmed?.status === "acknowledged" || confirmed?.acknowledged_at) {
+          // Mantener la aceptación hasta que el snapshot también la confirme.
+          state.optimisticRequestStates.set(request.id, { ...optimistic, ...confirmed });
+          restored.set(request.id, { ...request, ...confirmed, restaurant_tables: request.restaurant_tables });
+        } else if (completed.has(request.id)) {
+          state.optimisticRequestStates.delete(request.id);
+          if (restored.get(request.id)?.status === "pending") restored.delete(request.id);
+        } else {
+          state.optimisticRequestStates.delete(request.id);
+          restored.set(request.id, request);
+        }
+      });
+      state.requests = [...restored.values()].sort(compareRequestArrival);
+      const confirmedIds = new Set(originals.filter((request) => completed.has(request.id) || savedMap.get(request.id)?.status === "acknowledged" || savedMap.get(request.id)?.acknowledged_at).map((request) => request.id));
+      rememberCompletedAdminRequests([...confirmedIds]);
+      persistPendingAdminRequests([...readPendingAdminRequests().filter((request) => !confirmedIds.has(request.id)), ...state.requests.filter((request) => request.status === "pending")]);
+      if (confirmedIds.size !== originals.length) toast(failureMessage, "error", `request-write-failed:${ids.join(":")}`);
+      renderAdminLive();
+    })();
+  };
+
+  const acceptRequest = async (ids) => {
+    stopAlarm();
+    const idList = String(ids || "").split(",").filter(Boolean);
+    const request = state.requests.find((entry) => idList.includes(entry.id));
+    if (!request || idList.some((id) => state.optimisticRequestStates.has(id))) return;
+    if (request.request_type === "bill") {
+      await sendBillToClient(ids);
+      return;
+    }
+    if (requestKind(request) === "chat" && requestOrigin(request).kind !== "waiter" && !await openAdminChat(ids)) return;
+    const sessionIds = [...new Set(state.requests.filter((request) => idList.includes(request.id)).map((request) => request.session_id).filter(Boolean))];
+    if (sessionIds.length && state.currentUser?.id) {
+      state.sessions = state.sessions.map((session) => {
+        if (!sessionIds.includes(session.id)) return session;
+        const optimisticSession = { ...session, assigned_waiter_id: state.currentUser.id, assigned_waiter: state.currentUser };
+        state.optimisticSessionStates.set(session.id, {
+          mode: "upsert",
+          session: optimisticSession,
+          expectedSession: { payer_name: optimisticSession.payer_name || "", assigned_waiter_id: state.currentUser.id }
+        });
+        return optimisticSession;
+      });
+      void (async () => {
+        const savedSessions = await retryQuiet(
+          () => state.sb.from("table_sessions").update({ assigned_waiter_id: state.currentUser.id }).in("id", sessionIds).select("*"),
+          4
+        );
+        if (!savedSessions) sessionIds.forEach((sessionId) => state.optimisticSessionStates.delete(sessionId));
+      })();
+    }
+    acknowledgeRequestOptimistically(
+      ids,
+      {
+        status: "acknowledged",
+        acknowledged_by_user_id: state.currentUser?.id || null,
+        acknowledged_at: new Date().toISOString()
+      },
+      "No se pudo confirmar la solicitud. Volvio a la lista."
+    );
+  };
+
+  const sendBillToClient = async (requestIds) => {
+    stopAlarm();
+    const ids = String(requestIds || "").split(",").filter(Boolean);
+    const requestId = ids[0];
+    const request = state.requests.find((entry) => entry.id === requestId);
+    const session = state.sessions.find((entry) => entry.id === request?.session_id);
+    if (!request || !session) {
+      toast("No se encontro la cuenta abierta de esta mesa.", "error");
+      return;
+    }
+    acknowledgeRequestOptimistically(
+      ids,
+      {
+        status: "acknowledged",
+        acknowledged_by_user_id: state.currentUser?.id || null,
+        acknowledged_at: new Date().toISOString(),
+        message: buildBillMessage(session)
+      },
+      "No se pudo enviar la cuenta. La solicitud volvio a la lista."
+    );
+  };
+
+  const openMoveSessionDialog = (sessionId) => {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!session?.table_id) return;
+    const form = $("#moveTableForm");
+    const options = $("#moveTableOptions");
+    if (!form || !options) return;
+    form.reset();
+    form.session_id.value = sessionId;
+    const occupiedIds = new Set(state.sessions.filter((entry) => entry.id !== sessionId && entry.status === "open").map((entry) => String(entry.table_id)));
+    const tables = state.tables.filter((table) => table.is_active !== false && String(table.id) !== String(session.table_id));
+    $("#moveTableHint").textContent = `${sessionLabel(session)} · elige una mesa libre para trasladar todos los consumos.`;
+    options.innerHTML = tables.length ? tables.map((table) => {
+      const occupied = occupiedIds.has(String(table.id));
+      return `<label class="move-table-option${occupied ? " is-occupied" : ""}"><input type="radio" name="target_table_id" value="${escapeHTML(table.id)}" ${occupied ? "disabled" : ""}><span>${icon("armchair", 20)}<strong>${escapeHTML(tableLabel(table))}</strong><small>${occupied ? "Ocupada" : "Libre"}</small></span></label>`;
+    }).join("") : emptyState("No hay otra mesa", "Crea o activa otra mesa para mover esta cuenta.", "armchair");
+    $("#moveTableDialog")?.showModal();
+    refreshIcons();
+  };
+
+  const moveSessionToTable = async (sessionId, targetTableId) => {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!session?.table_id) return;
+    const table = state.tables.find((entry) => String(entry.id) === String(targetTableId) && entry.is_active !== false);
+    if (!table) {
+      toast("Selecciona una mesa libre para continuar.", "error", "move-table-not-found");
+      return;
+    }
+    if (String(table.id) === String(session.table_id)) return;
+    if (state.sessions.some((entry) => entry.id !== sessionId && String(entry.table_id) === String(table.id) && entry.status === "open")) {
+      toast("La mesa elegida ya tiene una cuenta abierta.", "error", "move-table-occupied");
+      return;
+    }
+    $("#moveTableDialog")?.close();
+    const original = session;
+    state.sessions = state.sessions.map((entry) => entry.id === sessionId ? { ...entry, table_id: table.id, restaurant_tables: table } : entry);
+    state.accountsRenderSignature = "";
+    renderAdminLive();
+    const saved = await retryQuiet(() => state.sb.from("table_sessions").update({ table_id: table.id, sale_channel: "table" }).eq("id", sessionId).select("*").single(), 4);
+    if (!saved) {
+      state.sessions = state.sessions.map((entry) => entry.id === sessionId ? original : entry);
+      state.accountsRenderSignature = "";
+      renderAdminLive();
+      toast("No se pudo cambiar la mesa. La cuenta fue restaurada.", "error", `move-table:${sessionId}`);
+      return;
+    }
+    const relatedUpdates = await Promise.all([
+      dbQuiet(state.sb.from("session_items").update({ table_id: table.id, updated_by_user_id: state.currentUser?.id || null }).eq("session_id", sessionId).select("id"), null),
+      dbQuiet(state.sb.from("service_requests").update({ table_id: table.id }).eq("session_id", sessionId).select("id"), null)
+    ]);
+    if (relatedUpdates.some((result) => result === null)) {
+      await Promise.all([
+        dbQuiet(state.sb.from("table_sessions").update({ table_id: original.table_id, sale_channel: original.sale_channel || "table" }).eq("id", sessionId), null),
+        dbQuiet(state.sb.from("session_items").update({ table_id: original.table_id }).eq("session_id", sessionId), null),
+        dbQuiet(state.sb.from("service_requests").update({ table_id: original.table_id }).eq("session_id", sessionId), null)
+      ]);
+      state.sessions = state.sessions.map((entry) => entry.id === sessionId ? original : entry);
+      state.accountsRenderSignature = "";
+      renderAdminLive();
+      toast("No se pudo completar el cambio de mesa. La cuenta fue restaurada.", "error", `move-table-related:${sessionId}`);
+      return;
+    }
+    toast(`Cuenta movida a ${tableLabel(table)}.`, "ok", `moved-table:${sessionId}`);
+  };
+
+  const closeSession = async (id, checkout = null) => {
+    const session = state.sessions.find((entry) => entry.id === id) || checkout?.session;
+    if (!session) return null;
+    const totals = sessionTotals(session);
+    if (checkout && (Number(checkout.totals.total) !== Number(totals.total) || checkout.paid !== sessionPaid(session))) {
+      toast("La cuenta cambió durante el cobro. Actualiza y revisa el saldo.", "error", "close-session-changed"); return null;
+    }
+    if (isLocalWalkInSession(session)) {
+      const closedAt = checkout?.closedAt || new Date().toISOString();
+      const saved = {
+        ...session,
+        status: "closed",
+        closed_at: closedAt,
+        updated_at: closedAt,
+        subtotal: totals.subtotal,
+        discount: totals.discount,
+        tax: totals.tax,
+        service_fee: totals.serviceFee,
+        total: totals.total
+      };
+      state.sessions = state.sessions.filter((entry) => entry.id !== id);
+      state.optimisticSessionStates.delete(id);
+      persistWalkInDrafts();
+      renderAdminLive();
+      return { session, saved, totals };
+    }
+    const originalSessions = state.sessions;
+    const originalRequests = state.requests;
+    const belongsToClosingTable = (request) => session.table_id ? request.table_id === session.table_id : request.session_id === id;
+    state.optimisticSessionStates.set(id, { mode: "remove", session });
+    state.sessions = state.sessions.filter((entry) => entry.id !== id);
+    state.requests = state.requests.map((request) => belongsToClosingTable(request) ? { ...request, status: "resolved" } : request);
+    renderAdminLive();
+    const closedAt = checkout?.closedAt || new Date().toISOString();
+    const closure = { status: "closed", closed_at: closedAt, subtotal: totals.subtotal,
+      discount: totals.discount, tax: totals.tax, service_fee: totals.serviceFee, total: totals.total };
+    let saved;
+    if (state.posFeatures?.abonos) {
+      const result = await retryPosMutation(() => state.sb.rpc("replay_table_session_change", {
+        auth_token: state.authToken, p_session_id: id, p_patch: closure,
+        p_expected_status: "open", p_expected_paid: checkout?.paid ?? sessionPaid(session)
+      }), 4);
+      saved = result?.session || null;
+    } else {
+      saved = await retryPosMutation(() => state.sb.from("table_sessions").update(closure).eq("id",id).eq("status","open").select("*").single(), 4);
+    }
+    if (!saved) {
+      const confirmed = await readRealtimeData(state.sb.from("table_sessions").select("*").eq("id", id).maybeSingle(), 5000);
+      if (confirmed?.status === "closed" && String(confirmed.closed_at || "") === closedAt) saved = confirmed;
+    }
+    if (!saved) {
+      state.optimisticSessionStates.delete(id);
+      state.sessions = originalSessions;
+      const originalMap = new Map(originalRequests.map((request) => [request.id, request]));
+      state.requests = state.requests.map((request) => belongsToClosingTable(request) && originalMap.has(request.id) ? originalMap.get(request.id) : request);
+      persistPendingAdminRequests([...readPendingAdminRequests(), ...state.requests]);
+      renderAdmin();
+      toast("No se pudo cerrar la cuenta. Se restauro la informacion.", "error", `close-session-failed:${id}`);
+      return null;
+    }
+    state.optimisticSessionStates.set(id, { mode: "remove", session: { ...session, ...saved } });
+    void retryPosMutation(() => state.sb.from("service_requests").update({ status: "resolved" }).eq(session.table_id ? "table_id" : "session_id", session.table_id || id).select("id")).then(result => {
+      if (!result) toast("Cuenta cerrada; falta actualizar sus solicitudes. Se verificarán en el próximo refresco.", "error", "checkout-requests-pending:" + id);
+    });
+    state.requests = state.requests.map((request) => belongsToClosingTable(request) ? { ...request, status: "resolved" } : request);
+    rememberCompletedAdminRequests([...originalRequests, ...readPendingAdminRequests(), ...state.requests].filter(belongsToClosingTable).map((request) => request.id));
+    persistPendingAdminRequests([...readPendingAdminRequests().filter((request) => !belongsToClosingTable(request)), ...state.requests]);
+    return { session, saved, totals };
+  };
+
+  const thermalReceiptHtml = (session, invoice = null) => {
+    const businessName = String(state.business?.business_name || "Tu restaurante").trim() || "Tu restaurante";
+    const totals = invoice?.totals || sessionTotals(session);
+    const chargedTip = invoice ? Number(invoice.tipAmount ?? totals.tip ?? 0) : 0;
+    const baseTotal = invoice
+      ? Number(invoice.baseTotal ?? totals.baseTotal ?? Number(totals.total || 0) - chargedTip)
+      : Number(totals.total || 0);
+    const suggestedTip = !invoice && tipsEnabled() ? tipAmountFor(baseTotal) : 0;
+    const receiptTotal = invoice ? Number(totals.total || baseTotal + chargedTip) : baseTotal + suggestedTip;
+    const items = (invoice?.items || session.session_items || []).filter((item) => item.status !== "cancelled");
+    const isPaid = Boolean(invoice);
+    const receiptNumber = invoice?.number || `FACT-${sessionReference(session)}`;
+    const issuedAt = new Date(invoice?.createdAt || Date.now());
+    const payments = invoice?.payments || [];
+    return `<!doctype html>
+      <html lang="es"><head><meta charset="utf-8"><title>${isPaid ? "Factura" : "Pre-cuenta"} ${escapeHTML(receiptNumber)}</title>
+      <style>
+        @page { size: 80mm auto; margin: 3mm; }
+        * { box-sizing: border-box; color: #000; font-weight: 800; }
+        body { width: 72mm; margin: 0 auto; color: #000; background: #fff; font: 800 12px/1.35 "Courier New", monospace; }
+        .logo { margin: 2mm 0 0; text-align: center; font: 900 22px/1 Arial, sans-serif; letter-spacing: .7px; }
+        .subtitle, .center { text-align: center; }
+        .subtitle { margin: 1mm 0 3mm; font-weight: 700; }
+        .rule { margin: 2.5mm 0; border-top: 1px dashed #000; }
+        .meta, .totals { display: grid; grid-template-columns: 1fr auto; gap: 1mm 3mm; }
+        .items { display: grid; gap: 2mm; }
+        .item { display: grid; grid-template-columns: 1fr auto; gap: 2mm; }
+        .item small { display: block; font-weight: 800; }
+        strong { font-weight: 900; }
+        .meta > *, .totals > *, .item > * { min-width: 0; overflow-wrap: anywhere; }
+        .totals strong, .item > strong { white-space: nowrap; }
+        .meta, .totals, .item { grid-template-columns: minmax(0, 1fr) max-content; }
+        @media print { body { margin: 0 auto; padding: 0; width: 72mm; color: #000 !important; font-weight: 800 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+        .total { margin-top: 1.5mm; font-size: 16px; font-weight: 900; }
+        .paid { padding: 1.5mm; border: 2px solid #000; text-align: center; font-weight: 900; }
+        .footer { margin-top: 3mm; text-align: center; }
+        .devnex-credit { display: grid; justify-items: center; gap: 1mm; margin-top: 2.5mm; padding-top: 2.5mm; border-top: 1px dashed #000; text-align: center; font-size: 10px; }
+        .devnex-contact { display: inline-flex; align-items: center; gap: 1mm; }
+        .devnex-contact svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+        @media screen { body { padding: 8mm 4mm; box-shadow: 0 0 22px #bbb; } }
+      </style></head><body>
+        <div class="logo">${escapeHTML(businessName)}</div>
+        <div class="subtitle">FACTURA DE VENTA</div>
+        <div class="rule"></div>
+        <div class="meta">
+          <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
+          <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
+          <span>Fecha:</span><strong>${issuedAt.toLocaleDateString("es-CO")}</strong>
+          <span>Hora:</span><strong>${issuedAt.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" })}</strong>
+          <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
+          <span>Mesero:</span><strong>${escapeHTML(session.assigned_waiter?.full_name || state.currentUser?.full_name || "Equipo")}</strong>
+        </div>
+        <div class="rule"></div>
+        <div class="items">
+          ${items.map((item) => `<div class="item"><span>${Number(item.quantity || 0)} x ${escapeHTML(item.item_name)}<small>${money(item.unit_price)} c/u</small></span><strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong></div>`).join("") || "<div class=\"center\">Sin consumos</div>"}
+        </div>
+        <div class="rule"></div>
+        <div class="totals">
+          <span>Subtotal</span><strong>${money(totals.subtotal)}</strong>
+          ${totals.discount ? `<span>Descuento</span><strong>-${money(totals.discount)}</strong>` : ""}
+          ${totals.tax ? `<span>Impuestos</span><strong>${money(totals.tax)}</strong>` : ""}
+          ${totals.serviceFee ? `<span>Servicio</span><strong>${money(totals.serviceFee)}</strong>` : ""}
+          ${chargedTip ? `<span>Propina voluntaria${invoice.tipPercentage ? ` (${Number(invoice.tipPercentage)}%)` : ""}</span><strong>${money(chargedTip)}</strong>` : ""}
+          ${suggestedTip ? `<span>Propina voluntaria sugerida (${state.tipSettings.percentage}%)</span><strong>${money(suggestedTip)}</strong>` : ""}
+          ${(invoice?.prepayments?.length || sessionPaid(session)) ? `<span>Abonos previos</span><strong>−${money((invoice?.prepayments || sessionPayments(session)).reduce((sum,row) => sum + Number(row.amount || 0),0))}</strong><span>Saldo ${isPaid ? "cobrado al cierre" : "pendiente"}</span><strong>${money(invoice?.remainingPaid ?? Math.max(0,receiptTotal-sessionPaid(session)))}</strong>` : ""}
+          <span class="total">${suggestedTip ? "TOTAL SUGERIDO" : "TOTAL"}</span><strong class="total">${money(receiptTotal)}</strong>
+        </div>
+        ${suggestedTip ? `<p class="center"><strong>La propina es voluntaria.</strong><br>El cliente puede pagar el consumo sin propina: ${money(baseTotal)}.</p>` : ""}
+        ${isPaid && invoice.prepayments?.length ? `<div class="rule"></div><div class="center">ABONOS REGISTRADOS</div>${invoice.prepayments.map((row) => `<div class="meta"><span>${escapeHTML(new Date(row.created_at).toLocaleString("es-CO"))} · ${escapeHTML(paymentMethodLabel(row.payment_method))}</span><strong>${money(row.amount)}</strong></div>`).join("")}` : ""}
+        ${isPaid ? `<div class="rule"></div><div class="paid">PAGADO</div><div class="meta" style="margin-top:2mm">${payments.map((payment) => `<span>${escapeHTML(paymentMethodLabel(payment.method))}</span><strong>${money(payment.amount)}</strong>`).join("")}${Number(invoice.cashReceived || 0) ? `<span>Recibido</span><strong>${money(invoice.cashReceived)}</strong><span>Cambio</span><strong>${money(invoice.changeDue)}</strong>` : ""}${invoice.reference ? `<span>Referencia</span><strong>${escapeHTML(invoice.reference)}</strong>` : ""}</div>` : ""}
+        <div class="rule"></div>
+        <div class="footer">Gracias por su compra<br><strong>${escapeHTML(businessName)}</strong></div>
+        ${isPaid ? `<div class="devnex-credit"><strong>Devnex Soluciones Tecnologicas - Devnex.tech</strong><span class="devnex-contact"><svg viewBox="0 0 24 24" aria-label="Instagram"><rect width="18" height="18" x="3" y="3" rx="5"></rect><circle cx="12" cy="12" r="4"></circle><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"></circle></svg>3246394689 <svg viewBox="0 0 24 24" aria-label="WhatsApp"><path d="M20.5 11.6a8.6 8.6 0 0 1-12.7 7.6L3 20.5l1.3-4.7a8.6 8.6 0 1 1 16.2-4.2Z"></path><path d="M8 7.5c-.8 1.2-.2 3.3 1.8 5.3s4.1 2.6 5.3 1.8l.5-1.7-2.2-1-1 1c-1.2-.5-2.6-1.9-3.1-3.1l1-1-1-2.2Z"></path></svg></span></div>` : ""}
+      </body></html>`;
+  };
+
+  const printThermalReceipt = (session, invoice = null, receiptWindow = null) => {
+    const popup = receiptWindow || window.open("", "_blank", "width=420,height=720");
+    if (!popup) {
+      toast("El navegador bloqueo la ventana de impresion. Habilita ventanas emergentes e intenta de nuevo.", "error", "receipt-popup-blocked");
+      return false;
+    }
+    popup.document.open();
+    popup.document.write(thermalReceiptHtml(session, invoice));
+    popup.document.close();
+    popup.requestAnimationFrame(() => {
+      if (!popup.closed) {
+        try { popup.focus(); popup.print(); }
+        catch (error) {
+          console.error("Falló la impresión del comprobante", error);
+          toast(invoice ? "Cobro guardado. No se pudo imprimir; reimprime desde Ventas." : "No se pudo imprimir la pre-cuenta.", "error", "receipt-print-failed");
+        }
+      }
+    });
+    return true;
+  };
+
+  const updateMixedPayment = (changedField = "mixed_amount_one") => {
+    const form = $("#paymentForm");
+    const box = $("#paymentBalance");
+    if (!form || !box) return;
+    const total = integerMoney(state.activePaymentTotal);
+    const first = currencyInputNumber(form.mixed_amount_one);
+    const second = currencyInputNumber(form.mixed_amount_two);
+    if (changedField === "mixed_amount_one") setCurrencyInputValue(form.mixed_amount_two, Math.max(0, total - first));
+    if (changedField === "mixed_amount_two") setCurrencyInputValue(form.mixed_amount_one, Math.max(0, total - second));
+    const currentFirst = currencyInputNumber(form.mixed_amount_one);
+    const currentSecond = currencyInputNumber(form.mixed_amount_two);
+    const difference = total - currentFirst - currentSecond;
+    box.className = `payment-balance wide ${difference === 0 ? "is-balanced" : "is-unbalanced"}`;
+    box.innerHTML = difference === 0
+      ? `${icon("badge-check", 17)} Pago distribuido correctamente: ${money(total)}`
+      : `${icon("circle-alert", 17)} ${difference > 0 ? "Faltan" : "Sobran"} ${money(Math.abs(difference))}`;
+    refreshIcons();
+  };
+
+  const updateCashChange = () => {
+    const form = $("#paymentForm");
+    const box = $("#cashChange");
+    if (!form || !box) return;
+    const total = integerMoney(state.activePaymentTotal);
+    const received = currencyInputNumber(form.cash_received);
+    const change = received - total;
+    box.className = `cash-change ${received >= total ? "is-sufficient" : "is-insufficient"}`;
+    box.innerHTML = `<span>Vueltas / cambio</span><strong>${money(Math.max(0, change))}</strong><small>${received >= total ? `Recibido ${money(received)}` : `Faltan ${money(total - received)}`}</small>`;
+  };
+
+  const syncMixedMethods = (changedName) => {
+    const form = $("#paymentForm");
+    if (!form || form.mixed_method_one.value !== form.mixed_method_two.value) return;
+    const other = changedName === "mixed_method_one" ? form.mixed_method_two : form.mixed_method_one;
+    other.value = ["cash", "transfer", "breb", "card"].find((method) => method !== form[changedName].value) || "cash";
+  };
+
+  const updatePaymentTipChoice = () => {
+    const form = $("#paymentForm");
+    if (!form) return;
+    const baseTotal = integerMoney(state.activePaymentBase);
+    const enabled = tipsEnabled();
+    const choice = form.tip_choice?.value || "";
+    const tip = enabled && choice === "with" ? tipAmountFor(baseTotal) : 0;
+    const activeSession = state.sessions.find((row) => row.id === form.session_id.value);
+    const paid = sessionPaid(activeSession);
+    const total = Math.max(0, baseTotal + tip - paid);
+    state.activePaymentTip = tip;
+    state.activePaymentTotal = total;
+    if ($("#paymentAbonoSummary")) $("#paymentAbonoSummary").textContent = paid ? "Consumo: " + money(baseTotal) + " · Abonos: −" + money(paid) + " · Saldo por cobrar: " + money(total) : "";
+    if ($("#paymentTotal")) $("#paymentTotal").textContent = money(total);
+    if ($("#paymentTotalHint")) $("#paymentTotalHint").textContent = enabled && !choice
+      ? "Selecciona si el cliente paga con o sin propina para continuar."
+      : tip
+        ? `Incluye ${money(tip)} de propina voluntaria.`
+        : "Total del consumo sin propina.";
+    if ($("#paymentWithoutTipAmount")) $("#paymentWithoutTipAmount").textContent = money(baseTotal);
+    if ($("#paymentWithTipLabel")) $("#paymentWithTipLabel").textContent = `Con propina (${state.tipSettings.percentage}%)`;
+    if ($("#paymentWithTipAmount")) $("#paymentWithTipAmount").textContent = `${money(tipAmountFor(baseTotal))} · Total ${money(baseTotal + tipAmountFor(baseTotal))}`;
+    setCurrencyInputValue(form.cash_received, total);
+    setCurrencyInputValue(form.mixed_amount_one, total);
+    setCurrencyInputValue(form.mixed_amount_two, 0);
+    const canSubmit = form.dataset.hasItems === "1" && (!enabled || Boolean(choice));
+    $$('button[type="submit"]', form).forEach((button) => { button.disabled = !canSubmit; });
+    updateMixedPayment("mixed_amount_one");
+    updateCashChange();
+  };
+
+  const openPaymentDialog = (sessionId) => {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    const dialog = $("#paymentDialog");
+    const form = $("#paymentForm");
+    if (!session || !dialog || !form) return;
+    const quickSale = isLocalWalkInSession(session);
+    const activeItems = (session.session_items || []).filter((item) => item.status !== "cancelled");
+    const total = sessionTotal(session);
+    if (!activeItems.length && !quickSale) {
+      toast("Agrega al menos un consumo antes de cobrar la mesa.", "error", `empty-payment:${sessionId}`);
+      return;
+    }
+    form.reset();
+    form.session_id.value = session.id;
+    form.payment_method.value = "cash";
+    form.mixed_method_one.value = "cash";
+    form.mixed_method_two.value = "transfer";
+    form.dataset.hasItems = activeItems.length ? "1" : "0";
+    state.activePaymentBase = total;
+    state.activePaymentTip = 0;
+    setCurrencyInputValue(form.mixed_amount_one, total);
+    setCurrencyInputValue(form.mixed_amount_two, 0);
+    setCurrencyInputValue(form.cash_received, total);
+    state.activePaymentTotal = total;
+    $("#paymentTableLabel").textContent = sessionLabel(session);
+    $("#paymentTotal").textContent = money(total);
+    const paymentLines = $("#paymentSaleLines");
+    if (paymentLines) paymentLines.innerHTML = activeItems.length
+      ? activeItems.map((item) => `<div class="${quickSale && state.individualProductFlashes?.get(item) > Date.now() ? "consumption-just-added" : ""}"><span>${Number(item.quantity || 0)} &times; ${escapeHTML(item.item_name)}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong></div>`).join("")
+      : '<p class="payment-empty-sale">Agrega el producto para continuar con el cobro.</p>';
+    const addItemButton = $("#paymentAddItem");
+    if (addItemButton) {
+      addItemButton.hidden = !quickSale;
+      addItemButton.innerHTML = `<i data-lucide="plus"></i> ${activeItems.length ? "Agregar otro producto" : "Agregar producto"}`;
+    }
+    const tipChoice = $("#paymentTipChoice");
+    if (tipChoice) tipChoice.hidden = !tipsEnabled();
+    if ($("#paymentDialogTitle")) $("#paymentDialogTitle").textContent = quickSale ? "Cobrar venta individual" : "Cobrar mesa";
+    $("#mixedPaymentFields").hidden = true;
+    $("#cashReceivedFields").hidden = false;
+    updatePaymentTipChoice();
+    dialog.showModal();
+    void refreshConsumptionInventory();
+    refreshIcons();
+  };
+
+  const discardLocalWalkInSession = (sessionId) => {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    if (!isLocalWalkInSession(session)) return;
+    state.sessions = state.sessions.filter((entry) => entry.id !== session.id);
+    state.optimisticSessionStates.delete(session.id);
+    persistWalkInDrafts();
+    renderAdminLive();
+  };
+
+  const cancelPayment = () => {
+    if (state.paymentProcessing) { toast("El cobro se está guardando. Espera el resultado.", "error", "payment-busy"); return; }
+    const sessionId = $("#paymentForm")?.session_id?.value || "";
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    $("#paymentDialog")?.close();
+    if (isLocalWalkInSession(session)) {
+      discardLocalWalkInSession(sessionId);
+      toast("Venta individual cancelada. El inventario no fue modificado.", "ok", `walk-in-cancelled:${sessionId}`);
+    }
+  };
+
+  const paymentFromForm = (form) => {
+    const method = form.payment_method.value;
+    const total = integerMoney(state.activePaymentTotal);
+    if (method !== "mixed") return { method, payments: [{ method, amount: total }] };
+    const firstMethod = form.mixed_method_one.value;
+    const secondMethod = form.mixed_method_two.value;
+    const firstAmount = currencyInputNumber(form.mixed_amount_one);
+    const secondAmount = currencyInputNumber(form.mixed_amount_two);
+    if (firstMethod === secondMethod || firstAmount <= 0 || secondAmount <= 0 || firstAmount + secondAmount !== total) return null;
+    return { method, payments: [{ method: firstMethod, amount: firstAmount }, { method: secondMethod, amount: secondAmount }] };
+  };
+
+  const applyInvoiceToInventory = (invoice) => {
+    if (state.invoiceHistory.some((entry) => entry.sessionId === invoice.sessionId)) return false;
+    state.invoiceHistory.push(invoice);
+    persistInvoiceHistory();
+    state.incomeReport = null;
+    enqueueAppsScriptJob("record_sale", { invoice }, `sale:${invoice.sessionId}`);
+    return true;
+  };
+
+  const paidInventoryPlan = (session) => {
+    const quantities = new Map();
+    newestSessionItems(session).forEach((line) => {
+      if (!line.menu_item_id || !Object.prototype.hasOwnProperty.call(state.inventoryMeta, line.menu_item_id)) return;
+      quantities.set(line.menu_item_id, Number(quantities.get(line.menu_item_id) || 0) + Number(line.quantity || 0));
+    });
+    const legacyAdjusted = new Map();
+    state.inventoryMovements.forEach((movement) => {
+      if (String(movement.sessionId || "") !== String(session.id)) return;
+      if (!["CONSUMO_MESA", "DEVOLUCION_CONSUMO"].includes(String(movement.type || "").toUpperCase())) return;
+      legacyAdjusted.set(movement.productId, Number(legacyAdjusted.get(movement.productId) || 0) - Number(movement.delta || 0));
+    });
+    const itemById = new Map(state.items.map(item => [item.id, item]));
+    return Array.from(quantities.entries()).map(([productId, quantity]) => {
+      const item = itemById.get(productId);
+      const alreadyAdjusted = Math.max(0, Number(legacyAdjusted.get(productId) || 0));
+      return { item, quantity: Math.max(0, quantity - alreadyAdjusted) };
+    }).filter((entry) => entry.item && entry.quantity > 0);
+  };
+
+  const validatePaidInventory = (plan) => {
+    const insufficient = plan.find((entry) => inventoryFor(entry.item).stock < entry.quantity);
+    if (!insufficient) return true;
+    const available = inventoryFor(insufficient.item).stock;
+    toast(`${insufficient.item.name} requiere ${insufficient.quantity} y solo hay ${available}. Corrige la cuenta o el inventario antes de cobrar.`, "error", `payment-stock:${insufficient.item.id}`);
+    return false;
+  };
+
+  const applyPaidInventoryLocally = (invoice, plan) => {
+    const movementIds = new Set(state.inventoryMovements.map(row => row.movementId));
+    plan.forEach(({ item, quantity }) => {
+      const eventId = `SALE-${invoice.id}-${item.id}`;
+      if (movementIds.has(eventId)) return;
+      const current = inventoryFor(item);
+      const nextStock = Math.max(0, current.stock - quantity);
+      state.inventoryMeta[item.id] = { ...current, stock: nextStock, updatedAt: invoice.createdAt };
+      recordLocalInventoryMovement({ eventId, item, delta: -quantity, before: current.stock, after: nextStock, type: "SALIDA_VENTA", reference: invoice.number, occurredAt: invoice.createdAt, sessionId: invoice.sessionId, deferPersist: true, knownMovementIds: movementIds });
+    });
+    persistInventoryStore();
+    persistInventoryMovements();
+  };
+
+  const openReceiptResult = (session, invoice) => {
+    state.lastPaidReceipt = { session, invoice };
+    if ($("#receiptResultTitle")) $("#receiptResultTitle").textContent = `Factura ${invoice.number}`;
+    if ($("#receiptResultMessage")) $("#receiptResultMessage").textContent = `${sessionLabel(session)} · ${money(invoice.totals.total)} · ${paymentMethodLabel(invoice.paymentMethod)}.`;
+    $("#receiptResultDialog")?.showModal();
+    refreshIcons();
+  };
+
+  const printLastPaidReceipt = () => {
+    const receipt = state.lastPaidReceipt;
+    if (!receipt) {
+      toast("No hay una factura reciente disponible para imprimir.", "error", "receipt-missing");
+      return false;
+    }
+    return printThermalReceipt(receipt.session, receipt.invoice);
+  };
+
+  const printIncomeReceipt = async (saleId) => {
+    const record = state.incomeReport?.records?.find((entry) => String(entry.saleId) === String(saleId));
+    if (!record) {
+      toast("No se encontro la venta para imprimir.", "error", `income-receipt-missing:${saleId}`);
+      return false;
+    }
+    const receiptWindow = window.open("", "_blank", "width=420,height=720");
+    const storedInvoice = state.invoiceHistory.find((entry) => String(entry.id || entry.sessionId) === String(record.saleId));
+    const tableName = String(record.table || storedInvoice?.table || "Venta individual").trim() || "Venta individual";
+    const isWalkIn = normalizeText(tableName) === "venta individual";
+    const items = (record.items || []).map((item) => ({
+      id: item.lineId || item.id || "",
+      menu_item_id: item.menuItemId || item.menu_item_id || null,
+      item_name: item.name || item.item_name || "Producto",
+      quantity: Number(item.quantity || 0),
+      unit_price: Number(item.unitPrice ?? item.unit_price ?? 0),
+      status: "confirmed"
+    }));
+    const subtotal = Number(record.subtotal || 0);
+    const discount = Number(record.discount || 0);
+    const tax = Number(record.tax || 0);
+    const serviceFee = Number(record.service || 0);
+    const total = Number(record.total || 0);
+    const baseTotal = Math.max(0, subtotal - discount + tax + serviceFee);
+    const tipAmount = Math.max(0, total - baseTotal);
+    const payments = (record.payments || []).map((payment) => ({
+      method: payment.method,
+      amount: Number(payment.amount || 0)
+    }));
+    const invoice = {
+      id: record.saleId,
+      number: record.invoice || "Factura",
+      sessionId: record.sessionId || storedInvoice?.sessionId || record.saleId,
+      table: tableName,
+      createdAt: record.date,
+      payerName: record.payer || "",
+      waiterName: record.waiter || "",
+      paymentMethod: record.isMixed || payments.length > 1 ? "mixed" : (payments[0]?.method || storedInvoice?.paymentMethod || "cash"),
+      payments,
+      reference: record.reference || "",
+      withTip: tipAmount > 0,
+      tipAmount,
+      tipPercentage: baseTotal > 0 ? Math.round(tipAmount / baseTotal * 10000) / 100 : 0,
+      baseTotal,
+      cashReceived: storedInvoice?.cashReceived ?? null,
+      changeDue: storedInvoice?.changeDue ?? 0,
+      totals: { subtotal, discount, tax, serviceFee, total },
+      items
+    };
+    const session = {
+      id: invoice.sessionId,
+      table_id: isWalkIn ? null : (storedInvoice?.tableId || "income-history"),
+      sale_channel: isWalkIn ? "walk_in" : (storedInvoice?.saleChannel || "table"),
+      payer_name: record.payer || "",
+      assigned_waiter: { full_name: record.waiter || "Equipo" },
+      restaurant_tables: isWalkIn ? null : { table_name: tableName },
+      session_items: items
+    };
+    // Muestra el documento enseguida mientras se recuperan abonos no guardados localmente.
+    if (receiptWindow) { receiptWindow.document.open(); receiptWindow.document.write(thermalReceiptHtml(session, invoice)); receiptWindow.document.close(); }
+    const ledger = Array.isArray(storedInvoice?.prepayments) ? { payments: storedInvoice.prepayments }
+      : invoice.sessionId ? await dbQuiet(state.sb.rpc("get_session_payments", { p_session_id: invoice.sessionId, auth_token: state.authToken }), null) : null;
+    if (ledger?.payments?.length) { invoice.prepayments = ledger.payments; invoice.remainingPaid = Math.max(0, Number(invoice.totals.total || 0) - ledger.payments.reduce((sum,row) => sum + Number(row.amount || 0),0)); }
+    return printThermalReceipt(session, invoice, receiptWindow);
+  };
+
+  const bindPaymentConfirmShortcut = () => {
+    const dialog = $("#paymentDialog");
+    const form = $("#paymentForm");
+    const save = form?.querySelector('button[type="submit"][value="save"]');
+    if (!dialog || !form || !save) return;
+    dialog.addEventListener("keydown", (event) => {
+      if (!dialog.open || event.isComposing || event.ctrlKey || event.altKey || event.metaKey
+        || (event.key !== "Enter" && event.code !== "NumpadEnter")) return;
+      // Evita que Enter active Imprimir si ese boton conserva el foco.
+      event.preventDefault();
+      if (event.repeat || state.paymentProcessing || save.disabled) return;
+      form.requestSubmit(save);
+    }, { capture: true });
+  };
+
+  const CHECKOUT_INTENTS_KEY = "donpieros_checkout_intents_v1";
+  const saveCheckoutIntent = async (invoice, session, paid, stage) => {
+    const intents = readLocalJson(CHECKOUT_INTENTS_KEY, {});
+    intents[session.id] = { invoice, session, paid, stage, updatedAt: new Date().toISOString() };
+    await persistDurableJson(CHECKOUT_INTENTS_KEY, intents);
+    if (!await flushDurableWrites([CHECKOUT_INTENTS_KEY])) throw new Error("No pudimos conservar el cobro en este equipo. Libera espacio y vuelve a intentarlo.");
+  };
+
+  const commitCheckout = async (intent) => {
+    const { invoice, session } = intent;
+    const inventoryBefore = state.inventoryMeta;
+    const movementsBefore = state.inventoryMovements;
+    const invoicesBefore = state.invoiceHistory;
+    const reportBefore = state.incomeReport;
+    state.inventoryMeta = { ...inventoryBefore };
+    state.inventoryMovements = [...movementsBefore];
+    state.invoiceHistory = [...invoicesBefore];
+    let saved = false;
+    try {
+      saved = await persistCheckoutAtomically(() => {
+        const existing = state.invoiceHistory.find(row => String(row.sessionId) === String(session.id));
+        if (!existing) {
+          applyPaidInventoryLocally(invoice, paidInventoryPlan(session));
+          applyInvoiceToInventory(invoice);
+        }
+        invoice.checkoutAccepted = true;
+        persistInvoiceHistory();
+        // Preserve all existing queued operations and persist the same stable sale.
+        const jobs = readAppsScriptOutbox();
+        jobs.forEach(job => { if (job.action === "record_sale" && String(job.payload?.invoice?.sessionId) === String(session.id)) job.payload.invoice.checkoutAccepted = true; });
+        writeAppsScriptOutbox(jobs);
+        const intents = { ...readLocalJson(CHECKOUT_INTENTS_KEY, {}) };
+        delete intents[session.id];
+        void persistDurableJson(CHECKOUT_INTENTS_KEY, intents);
+      });
+      if (!saved) throw new Error("El cobro permanece protegido; no se pudo completar su guardado local.");
+      return true;
+    } finally {
+      if (!saved) {
+        state.inventoryMeta = inventoryBefore;
+        state.inventoryMovements = movementsBefore;
+        state.invoiceHistory = invoicesBefore;
+        state.incomeReport = reportBefore;
+      }
+    }
+  };
+
+  const finishCheckoutIntent = async (intent) => {
+    const { invoice, session, paid } = intent;
+    if (intent.stage !== "closed") {
+      const current = state.sessions.find(row => row.id === session.id);
+      if (current && (sessionPaid(current) !== paid || sessionTotals(current).total !== sessionTotals(session).total)) {
+        toast("La cuenta cambió durante el cobro. El intento sigue protegido para revisión.", "error", "checkout-changed");
+        return false;
+      }
+      const closed = await closeSession(session.id, { paid, totals: sessionTotals(session), session, closedAt: invoice.createdAt });
+      if (!closed) return false;
+      await saveCheckoutIntent(invoice, session, paid, "closed");
+    }
+    return commitCheckout(intent);
+  };
+
+  const withCheckoutLock = (work) => navigator.locks?.request
+    ? navigator.locks.request("donpieros-financial-checkout", { ifAvailable: true }, lock => {
+      if (lock) return work();
+      toast("Hay un cobro en proceso en otra pestaña. Espera su resultado.", "error", "checkout-other-tab");
+      return false;
+    }) : work();
+
+  let checkoutRecoveryBusy = false;
+  const recoverPendingCheckouts = async () => {
+    if (checkoutRecoveryBusy || state.paymentProcessing || checkoutSubmissionBusy || !state.currentUser || !isManager()) return false;
+    checkoutRecoveryBusy = true;
+    try {
+      return await withCheckoutLock(async () => {
+        await hydrateDurableKey(CHECKOUT_INTENTS_KEY);
+        const intents = Object.values(readLocalJson(CHECKOUT_INTENTS_KEY, {}));
+        for (const intent of intents) {
+          if (!await finishCheckoutIntent(intent)) {
+            toast("Un cobro guardado necesita revisión; se conserva para reintentar sin duplicarlo.", "error", "checkout-recovery-pending");
+            return false;
+          }
+          toast("Se recuperó el cobro pendiente de " + intent.invoice.number + ".", "ok", "checkout-recovered:" + intent.session.id);
+        }
+        if (intents.length) { renderAdminLive(); void flushAppsScriptOutbox(); }
+        return true;
+      });
+    } catch (error) {
+      toast(String(error?.message || error), "error", "checkout-recovery-error");
+      return false;
+    } finally { checkoutRecoveryBusy = false; }
+  };
+
+  let checkoutSubmissionBusy = false;
+  const processPayment = async (form, submitter) => {
+    if (state.paymentProcessing || checkoutRecoveryBusy || checkoutSubmissionBusy) return;
+    checkoutSubmissionBusy = true;
+    try { return await withCheckoutLock(async () => {
+      // Another tab may have completed this account while this form was open.
+      await Promise.all([INVENTORY_STORAGE_KEY, INVOICE_STORAGE_KEY, INVENTORY_MOVEMENTS_STORAGE_KEY,
+        APPS_SCRIPT_OUTBOX_KEY, CHECKOUT_INTENTS_KEY].map(hydrateDurableKey));
+      state.invoiceHistory = readLocalJson(INVOICE_STORAGE_KEY, state.invoiceHistory);
+      state.inventoryMeta = readLocalJson(INVENTORY_STORAGE_KEY, state.inventoryMeta);
+      state.inventoryMovements = readLocalJson(INVENTORY_MOVEMENTS_STORAGE_KEY, state.inventoryMovements);
+      if (state.invoiceHistory.some(invoice => String(invoice.sessionId) === String(form.session_id.value))) {
+        state.sessions = state.sessions.filter(session => String(session.id) !== String(form.session_id.value));
+        $("#paymentDialog")?.close();
+        renderAdminLive();
+        toast("Esta cuenta ya fue cobrada. Puedes reimprimir su factura desde Ventas.", "ok", "checkout-already-complete");
+        return;
+      }
+      const intent = readLocalJson(CHECKOUT_INTENTS_KEY, {})[form.session_id.value];
+      if (intent) {
+        state.paymentProcessing = true;
+        try {
+          if (await finishCheckoutIntent(intent)) {
+            $("#paymentDialog")?.close();
+            toast("Cobro recuperado. Factura " + intent.invoice.number + ". Puedes reimprimirla desde Ventas.", "ok", "checkout-recovered");
+            void flushAppsScriptOutbox();
+          } else toast("El cobro sigue protegido y requiere revisión de la cuenta.", "error", "checkout-pending");
+        } catch (error) { toast(String(error?.message || error), "error", "checkout-resume-error"); }
+        finally { state.paymentProcessing = false; }
+        return;
+      }
+      return performPayment(form, submitter);
+    }); } finally { checkoutSubmissionBusy = false; }
+  };
+
+  const performPayment = async (form, submitter) => {
+    if (state.paymentProcessing) return;
+    const session = state.sessions.find((entry) => entry.id === form.session_id.value);
+    if (!session) {
+      toast("La cuenta ya no esta abierta.", "error", "payment-session-missing");
+      return;
+    }
+    if (!(session.session_items || []).some((item) => item.status !== "cancelled")) {
+      toast("Agrega al menos un producto antes de cobrar.", "error", `empty-payment:${session.id}`);
+      return;
+    }
+    const checkoutPaid = sessionPaid(session);
+    const checkoutBase = integerMoney(sessionTotals(session).total);
+    if (checkoutPaid > checkoutBase) { toast("Los abonos superan el consumo actual. Revisa la cuenta antes de cobrar.", "error", "payment-credit"); return; }
+    const expectedBalance = Math.max(0, checkoutBase + Number(state.activePaymentTip || 0) - checkoutPaid);
+    if ((state.activePaymentBase != null && checkoutBase !== state.activePaymentBase) || expectedBalance !== integerMoney(state.activePaymentTotal)) {
+      state.activePaymentBase = checkoutBase; updatePaymentTipChoice();
+      const lines = $("#paymentSaleLines");
+      if (lines) lines.innerHTML = (session.session_items || []).filter((row) => row.status !== "cancelled").map((row) => '<div><span>' + row.quantity + ' × ' + escapeHTML(row.item_name) + '</span><strong>' + money(Number(row.quantity) * Number(row.unit_price)) + '</strong></div>').join('');
+      toast("La cuenta cambió en otra sesión. Revisa el saldo actualizado y confirma nuevamente.", "error", "payment-refreshed"); return;
+    }
+    if (tipsEnabled() && !form.tip_choice?.value) {
+      toast("Selecciona si el cliente paga con o sin propina.", "error", "tip-choice-required");
+      form.querySelector('input[name="tip_choice"]')?.focus({ preventScroll: true });
+      return;
+    }
+    const payment = paymentFromForm(form);
+    if (!payment) {
+      toast("En pago mixto usa dos medios diferentes y distribuye exactamente el total.", "error", "invalid-mixed-payment");
+      return;
+    }
+    if (payment.method === "cash" && currencyInputNumber(form.cash_received) < integerMoney(state.activePaymentTotal)) {
+      toast("El dinero recibido no alcanza para cubrir el total.", "error", "insufficient-cash");
+      form.cash_received.focus({ preventScroll: true });
+      return;
+    }
+    const shouldPrint = submitter?.value === "print";
+    const receiptWindow = shouldPrint ? window.open("", "_blank", "width=420,height=720") : null;
+    const buttons = $$('button[type="submit"]', form);
+    buttons.forEach((button) => { button.disabled = true; });
+    state.paymentProcessing = true;
+    let inventoryPlan = paidInventoryPlan(session);
+    if (inventoryPlan.some(entry => inventoryFor(entry.item).stock < entry.quantity)
+      && typeof refreshConsumptionInventory === "function" && navigator.onLine) {
+      await refreshConsumptionInventory();
+      inventoryPlan = paidInventoryPlan(session);
+    }
+    if (!validatePaidInventory(inventoryPlan)) {
+      receiptWindow?.close();
+      buttons.forEach((button) => { button.disabled = false; });
+      state.paymentProcessing = false;
+      return;
+    }
+    try {
+    const createdAt = new Date().toISOString();
+    const totals = sessionTotals(session);
+    const tipPercentage = tipsEnabled() && form.tip_choice.value === "with" ? Number(state.tipSettings.percentage) : 0;
+    const tipAmount = tipPercentage ? tipAmountFor(totals.total, tipPercentage) : 0;
+    const invoiceTotals = { ...totals, baseTotal: integerMoney(totals.total), tip: tipAmount, total: integerMoney(totals.total) + tipAmount };
+    const invoice = {
+      id: session.id,
+      number: `DP-${new Date(createdAt).toISOString().slice(0, 10).replace(/-/g, "")}-${sessionReference(session)}`,
+      sessionId: session.id,
+      tableId: session.table_id,
+      table: sessionLabel(session),
+      saleChannel: session.sale_channel || "table",
+      soldByUserId: state.currentUser?.id || session.assigned_waiter_id || null,
+      createdAt,
+      payerName: session.payer_name || "",
+      waiterName: state.currentUser?.full_name || session.assigned_waiter?.full_name || "",
+      paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
+      payments: aggregateAccountPayments(session, payment.payments),
+      prepayments: sessionPayments(session),
+      remainingPaid: integerMoney(state.activePaymentTotal),
+      withTip: tipAmount > 0,
+      tipPercentage,
+      tipAmount,
+      baseTotal: integerMoney(totals.total),
+      reference: form.payment_reference.value.trim(),
+      cashReceived: payment.method === "cash" ? currencyInputNumber(form.cash_received) : null,
+      changeDue: payment.method === "cash" ? currencyInputNumber(form.cash_received) - integerMoney(state.activePaymentTotal) : 0,
+      inventoryAdjustedOnConsumption: false,
+      totals: invoiceTotals,
+      items: (session.session_items || []).filter((item) => item.status !== "cancelled").map((item) => ({
+        id: item.id,
+        menu_item_id: item.menu_item_id || null,
+        item_name: item.item_name,
+        quantity: Number(item.quantity || 0),
+        unit_price: Number(item.unit_price || 0),
+        unit_cost: Number(state.inventoryMeta[item.menu_item_id]?.costPrice || 0),
+        status: item.status
+      }))
+    };
+
+    await saveCheckoutIntent(invoice, session, checkoutPaid, "prepared");
+    if (!await finishCheckoutIntent({ invoice, session, paid: checkoutPaid, stage: "prepared" })) {
+      receiptWindow?.close();
+      toast("El cobro está protegido, pero falta confirmar el cierre de la cuenta. Reintenta para recuperar la misma operación.", "error", "checkout-close-pending");
+      return;
+    }
+    if (payment.payments.some(row => row.method === "cash" && Number(row.amount) > 0)) void openCashDrawer({ localOnly: true });
+    $("#paymentDialog")?.close();
+    // Rendering and printing happen after financial commit. Their errors never roll it back.
+    try {
+      if (state.activeAdminSection === "inventory") renderInventory();
+      if (state.activeAdminSection === "movements") renderInventoryMovements();
+      if (state.activeAdminSection === "income") renderIncomeReport();
+      if (state.activeAdminSection === "tips") renderTips();
+    } catch (error) { console.error("No se pudo actualizar la vista del cobro guardado", error); }
+    toast(
+      "Cobro registrado; respaldo de la factura en proceso. Factura " + invoice.number + ".",
+      "ok", "paid:" + session.id);
+    if (shouldPrint) {
+      try { printThermalReceipt(session, invoice, receiptWindow); }
+      catch (error) { toast("Cobro guardado. No se pudo imprimir; reimprime desde Ventas.", "error", "checkout-print-error"); }
+    }
+    } catch (error) {
+      receiptWindow?.close();
+      toast(String(error?.message || error), "error", "checkout-save-error");
+    } finally {
+      state.paymentProcessing = false;
+      buttons.forEach(button => { button.disabled = false; });
+      void flushAppsScriptOutbox();
+    }
+  };
+
+  const renderConsumptionSelection = () => {
+    const box = $("#consumptionSelection");
+    const lines = $("#consumptionSelectionLines");
+    const count = $("#consumptionSelectionCount");
+    const total = $("#consumptionSelectionTotal");
+    if (!box || !lines || !count || !total) return;
+    const drafts = state.consumptionDrafts;
+    const canEditPrice = true;
+    box.hidden = drafts.length === 0;
+    count.textContent = `${drafts.length} ${drafts.length === 1 ? "producto" : "productos"}`;
+    total.textContent = money(drafts.reduce((sum, draft) => sum + draft.quantity * draft.unitPrice, 0));
+    lines.innerHTML = drafts.map((draft, index) => `<div class="${state.consumptionDraftEditIndex === index ? "is-editing" : ""} ${state.individualProductFlashes?.get(draft) > Date.now() ? "consumption-just-added" : ""}"><span class="consumption-draft-product" data-edit-consumption-product="${index}" title="Doble clic para cambiar este producto"><strong>${escapeHTML(draft.itemName)}</strong><small>${draft.quantity} × ${money(draft.unitPrice)}</small></span><strong${canEditPrice ? ` class="consumption-draft-price" data-edit-consumption-price="${index}" title="Doble clic para editar el precio unitario"` : ""}>${money(draft.quantity * draft.unitPrice)}</strong><button class="icon-btn danger" type="button" data-remove-consumption-draft="${index}" aria-label="Quitar ${escapeHTML(draft.itemName)}">${icon("x", 15)}</button></div>`).join("");
+    const form = $("#consumptionForm");
+    if (form) form.quantity.required = drafts.length === 0;
+    updateConsumptionDraftAction();
+    refreshIcons();
+  };
+
+  const updateConsumptionDraftAction = () => {
+    const queue = $("#consumptionQueueButton");
+    if (!queue) return;
+    queue.innerHTML = state.consumptionDraftEditIndex >= 0
+      ? `${icon("save", 16)} Guardar cambio`
+      : `${icon("list-plus", 16)} Añadir a selección`;
+    refreshIcons();
+  };
+
+  const editConsumptionDraftProduct = (index) => {
+    const draft = state.consumptionDrafts[index];
+    const form = $("#consumptionForm");
+    const search = $("#consumptionProductSearch");
+    if (!draft || !form || !search) return;
+    state.consumptionDraftEditIndex = index;
+    form.menu_item_id.value = draft.menuItemId || "";
+    form.item_name.value = draft.itemName || "";
+    form.quantity.value = draft.quantity || 1;
+    form.notes.value = draft.notes || "";
+    form.payer_name.value = draft.payerName || form.payer_name.value;
+    setCurrencyInputValue(form.unit_price, draft.unitPrice || 0);
+    const product = state.items.find((item) => item.id === draft.menuItemId);
+    search.value = product ? `${inventoryFor(product).code} · ${product.name}` : draft.itemName || "";
+    renderConsumptionProductOptions(product?.name || draft.itemName || "");
+    closeConsumptionProductOptions();
+    updateConsumptionDraftAction();
+    renderConsumptionSelection();
+    window.requestAnimationFrame(() => {
+      search.focus({ preventScroll: true });
+      search.select();
+    });
+  };
+
+  const editConsumptionDraftPrice = (priceElement) => {
+    const index = Number(priceElement?.dataset.editConsumptionPrice);
+    const draft = state.consumptionDrafts[index];
+    if (!Number.isInteger(index) || !draft) return;
+    const input = document.createElement("input");
+    input.className = "consumption-draft-price-editor";
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.autocomplete = "off";
+    input.setAttribute("aria-label", `Precio unitario de ${draft.itemName}`);
+    input.value = formattedCurrencyInput(draft.unitPrice);
+    let finished = false;
+    const save = () => {
+      if (finished) return;
+      finished = true;
+      draft.unitPrice = currencyInputNumber(input);
+      if (state.consumptionDraftEditIndex === index) {
+        const form = $("#consumptionForm");
+        if (form?.unit_price) setCurrencyInputValue(form.unit_price, draft.unitPrice);
+      }
+      renderConsumptionSelection();
+    };
+    input.addEventListener("input", () => {
+      input.value = formattedCurrencyInput(input.value, { allowEmpty: true });
+      input.setSelectionRange?.(input.value.length, input.value.length);
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        save();
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        finished = true;
+        renderConsumptionSelection();
+      }
+    });
+    input.addEventListener("blur", save, { once: true });
+    priceElement.replaceWith(input);
+    window.requestAnimationFrame(() => {
+      input.focus({ preventScroll: true });
+      input.select();
+    });
+  };
+
+  const currentConsumptionDraft = (form, { quiet = false } = {}) => {
+    const selectedItem = state.items.find((item) => item.id === form.menu_item_id.value);
+    const itemName = form.item_name.value.trim() || selectedItem?.name || "";
+    const quantity = Number(String(form.quantity.value || "").trim());
+    const unitPrice = form.unit_price.value.trim() ? currencyInputNumber(form.unit_price) : Number(selectedItem?.price || 0);
+    if (!itemName || !Number.isInteger(quantity) || quantity < 1 || quantity > 100 || !Number.isFinite(unitPrice) || unitPrice < 0) {
+      if (!quiet) toast("Selecciona un producto y revisa su cantidad antes de añadirlo.", "error", "invalid-consumption-draft");
+      return null;
+    }
+    return {
+      menuItemId: selectedItem?.id || null,
+      itemName,
+      quantity,
+      unitPrice,
+      notes: form.notes.value.trim(),
+      payerName: form.payer_name.value.trim()
+    };
+  };
+
+  const clearConsumptionEntry = (form) => {
+    form.menu_item_id.value = "";
+    form.item_name.value = "";
+    form.quantity.value = "";
+    form.notes.value = "";
+    setCurrencyInputValue(form.unit_price, 0);
+    if ($("#consumptionProductSearch")) $("#consumptionProductSearch").value = "";
+    renderConsumptionProductOptions("");
+    closeConsumptionProductOptions();
+    state.consumptionDraftEditIndex = -1;
+    updateConsumptionDraftAction();
+  };
+
+  const queueConsumptionDraft = () => {
+    const form = $("#consumptionForm");
+    if (!form || form.session_item_id.value) return false;
+    const draft = currentConsumptionDraft(form);
+    if (!draft) return false;
+    if (form.quick_checkout?.value === "1") {
+      state.individualProductFlashes ||= new WeakMap();
+      state.individualProductFlashes.set(draft, Date.now() + 2200);
+    }
+    if (state.consumptionDraftEditIndex >= 0 && state.consumptionDrafts[state.consumptionDraftEditIndex]) {
+      state.consumptionDrafts[state.consumptionDraftEditIndex] = draft;
+    } else {
+      state.consumptionDrafts.push(draft);
+    }
+    clearConsumptionEntry(form);
+    renderConsumptionSelection();
+    window.requestAnimationFrame(() => $("#consumptionProductSearch")?.focus({ preventScroll: true }));
+    return true;
+  };
+
+  const applyConsumptionRoleRestrictions = (form) => {
+    if (!form) return;
+    const waiter = isWaiter();
+    [form.item_name, form.unit_price].forEach((field) => {
+      if (!field) return;
+      field.readOnly = waiter;
+      field.setAttribute("aria-readonly", String(waiter));
+      field.title = waiter ? "Solo un administrador puede cambiar este dato." : "";
+    });
+  };
+
+  const setTableConsumptionPreviewVisible = (visible) => {
+    const preview = $("#tableConsumptionPreview");
+    const button = $("#viewTableConsumption");
+    if (!preview || !button) return;
+    visible = !window.matchMedia("(max-width: 640px)").matches || visible;
+    preview.hidden = !visible;
+    button.innerHTML = visible
+      ? `${icon("list-x", 17)} Ocultar desglose`
+      : `${icon("receipt-text", 17)} Ver desglose`;
+    button.setAttribute("aria-expanded", String(visible));
+    refreshIcons();
+  };
+
+  const formatConsumptionTimestamp = (value) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    const dateParts = new Intl.DateTimeFormat("es-CO", {
+      timeZone: "America/Bogota",
+      day: "numeric",
+      month: "short",
+      year: "numeric"
+    }).formatToParts(date).reduce((parts, part) => ({ ...parts, [part.type]: part.value }), {});
+    const dateText = `${dateParts.day} ${String(dateParts.month || "").replace(/\./g, "")} ${dateParts.year}`;
+    const timeText = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Bogota",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true
+    }).format(date).toLowerCase();
+    return `${dateText} · ${timeText}`;
+  };
+
+  const renderLastConsumptionTime = (session) => {
+    const target = $("#consumptionLastAdded");
+    if (!target) return;
+    const latest = newestSessionItems(session).find((item) => formatConsumptionTimestamp(item.created_at));
+    const timestamp = latest?.created_at || "";
+    const formatted = formatConsumptionTimestamp(timestamp);
+    target.hidden = !formatted;
+    target.textContent = formatted ? `Último consumo agregado: ${formatted}` : "";
+  };
+
+  const renderTableConsumptionPreview = (session) => {
+    const preview = $("#tableConsumptionPreview");
+    const actions = $("#tableSessionActions");
+    if (!preview || !actions) return;
+    const items = session ? newestSessionItems(session) : [];
+    const productCount = items.reduce((total, item) => total + Number(item.quantity || 0), 0);
+    const emptyAccount = Boolean(session) && !items.length && sessionTotal(session) <= 0;
+    actions.hidden = isWaiter() || !session || isLocalWalkInSession(session);
+    const viewButton = $("#viewTableConsumption");
+    const chargeButton = $("#chargeTableAccount");
+    const releaseButton = $("#releaseEmptyTable");
+    if (viewButton) viewButton.hidden = emptyAccount || !session || isLocalWalkInSession(session);
+    if (chargeButton) chargeButton.hidden = emptyAccount;
+    if (releaseButton) releaseButton.hidden = !emptyAccount;
+    actions.classList.toggle("is-single", emptyAccount);
+    const quickCheckout = $("#consumptionForm")?.quick_checkout.value === "1";
+    const previewWasVisible = $("#consumptionDialog")?.open && !preview.hidden;
+    preview.hidden = quickCheckout || (window.matchMedia("(max-width: 640px)").matches && !previewWasVisible);
+    $("#consumptionLayout")?.classList.toggle("without-consumption-preview", quickCheckout);
+    preview.innerHTML = `<div class="table-consumption-preview-head"><span class="table-consumption-preview-title"><span>Consumo actual</span><small>${productCount.toLocaleString("es-CO")} ${productCount === 1 ? "producto" : "productos"}</small></span><strong>${money(session ? sessionTotal(session) : 0)}</strong></div><div class="table-consumption-preview-lines">${items.map((item) => { const formatted = formatConsumptionTimestamp(item.created_at); return `<button class="table-consumption-edit" type="button" data-consumption-item="${escapeHTML(item.id)}" data-edit-consumption="${escapeHTML(item.id)}" data-session-id="${escapeHTML(session.id)}" aria-label="Editar ${escapeHTML(item.item_name)}" aria-pressed="${$("#consumptionForm")?.session_item_id.value === item.id}"><span class="table-consumption-item"><span>${Number(item.quantity || 0)} × ${escapeHTML(item.item_name)}</span>${formatted ? `<time datetime="${escapeHTML(item.created_at)}">${escapeHTML(formatted)}</time>` : ""}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong></button>`; }).join("") || "<small>Sin consumos registrados.</small>"}</div>`;
+    if (session) preview.innerHTML += abonoRowsHtml(session) + (sessionPaid(session) ? `<div class="account-abono-summary">Saldo pendiente: ${money(sessionBalance(session))}</div>` : "");
+    if (!quickCheckout) setTableConsumptionPreviewVisible(Boolean(previewWasVisible));
+  };
+
+  const notifyWaiterOrder = (session, items) => {
+    if (!isWaiter() || !session?.table_id || !items?.length || isLocalWalkInSession(session)) return;
+    const table = state.tables.find((entry) => String(entry.id) === String(session.table_id));
+    if (!table) return;
+    const name = String(state.currentUser.full_name || state.currentUser.username || "Mesero").replace(/[\]\r\n]/g, " ").trim().slice(0, 80);
+    const lines = items.map((item) => `${item.quantity} × ${item.item_name}${item.notes ? ` (${item.notes})` : ""}`).join("; ");
+    // Reuse the first saved line's UUID: retrying this notice cannot create a second request.
+    queueServiceRequest({ request_id: items[0].id, table_id: table.id, session_id: session.id,
+      request_type: "other", table_access_code: tableCode(table), staff_order_item_ids: items.map((item) => item.id),
+      staff_user_id: state.currentUser.id, message: `[MESERO: ${name}] ${lines}`.slice(0, 1000) });
+  };
+
+  const addConsumptionBatch = async (form, drafts) => {
+    let sessionId = form.session_id.value;
+    let session = state.sessions.find((entry) => entry.id === sessionId);
+    const pendingTableId = form.pending_table_id.value;
+    const table = state.tables.find((entry) => String(entry.id) === String(pendingTableId || session?.table_id));
+    if (!session && !table) return null;
+
+    const originalSession = session || null;
+    const optimisticSessionId = session?.id || uid();
+    const openedAt = new Date().toISOString();
+    if (!session) {
+      session = {
+        id: optimisticSessionId,
+        table_id: table.id,
+        status: "open",
+        sale_channel: "table",
+        payer_name: "",
+        assigned_waiter_id: state.currentUser?.id || null,
+        assigned_waiter: state.currentUser,
+        restaurant_tables: table,
+        session_items: [],
+        opened_at: openedAt,
+        created_at: openedAt,
+        updated_at: openedAt
+      };
+      state.sessions = [session, ...state.sessions];
+    }
+
+    const payerName = [...drafts].reverse().find((draft) => draft.payerName)?.payerName || form.payer_name.value.trim() || session.payer_name || "";
+    const optimisticItems = drafts.map((draft, index) => ({
+      id: `local-batch-${uid()}`,
+      session_id: optimisticSessionId,
+      table_id: session.table_id,
+      menu_item_id: draft.menuItemId || null,
+      item_name: draft.itemName,
+      unit_price: Number(draft.unitPrice || 0),
+      quantity: Number(draft.quantity || 0),
+      notes: draft.notes || "",
+      status: "served",
+      created_by_user_id: state.currentUser?.id || null,
+      updated_by_user_id: state.currentUser?.id || null,
+      created_by_user: state.currentUser,
+      created_at: new Date(Date.now() + index).toISOString(),
+      updated_at: new Date().toISOString()
+    }));
+    const optimisticSession = {
+      ...session,
+      payer_name: payerName,
+      assigned_waiter_id: state.currentUser?.id || session.assigned_waiter_id,
+      assigned_waiter: state.currentUser || session.assigned_waiter,
+      session_items: [...(session.session_items || []), ...optimisticItems]
+    };
+    state.sessions = state.sessions.map((entry) => entry.id === optimisticSessionId ? optimisticSession : entry);
+    state.optimisticSessionStates.set(optimisticSessionId, {
+      mode: "upsert",
+      session: optimisticSession,
+      expectedItems: optimisticItems,
+      expectedSession: {
+        payer_name: optimisticSession.payer_name || "",
+        assigned_waiter_id: optimisticSession.assigned_waiter_id || ""
+      }
+    });
+    form.session_id.value = optimisticSessionId;
+    form.pending_table_id.value = "";
+    state.accountsRenderSignature = "";
+    renderAdminLive();
+    toast(`${drafts.length} ${drafts.length === 1 ? "producto agregado" : "productos agregados"} a la cuenta.`, "ok", `consumption-batch-optimistic:${optimisticSessionId}`);
+
+    if (isLocalWalkInSession(session)) {
+      state.optimisticSessionStates.set(optimisticSessionId, { mode: "upsert", localOnly: true, session: optimisticSession });
+      persistWalkInDrafts();
+      return { sessionId: optimisticSessionId, items: optimisticItems };
+    }
+
+    let savedSession = null;
+    let persistedSessionId = optimisticSessionId;
+    if (!originalSession) {
+      savedSession = await retryPosMutation(
+        () => state.sb.from("table_sessions").insert({
+          id: optimisticSessionId,
+          table_id: session.table_id,
+          status: "open",
+          sale_channel: "table",
+          payer_name: payerName,
+          assigned_waiter_id: state.currentUser?.id || null
+        }).select("*").single(),
+        4
+      );
+      if (!savedSession) {
+        savedSession = await dbQuiet(
+          state.sb.from("table_sessions").select("*, session_items(*)")
+            .eq("table_id", session.table_id).eq("status", "open")
+            .order("opened_at", { ascending: false }).limit(1).maybeSingle(),
+          null
+        );
+      }
+      if (savedSession?.id && savedSession.id !== optimisticSessionId) {
+        persistedSessionId = savedSession.id;
+        const remappedItems = optimisticItems.map((item) => ({ ...item, session_id: persistedSessionId }));
+        const remappedSession = {
+          ...optimisticSession,
+          ...savedSession,
+          assigned_waiter: state.currentUser || optimisticSession.assigned_waiter,
+          restaurant_tables: table,
+          session_items: [...(savedSession.session_items || []), ...remappedItems]
+        };
+        state.sessions = state.sessions.map((entry) => entry.id === optimisticSessionId ? remappedSession : entry);
+        state.optimisticSessionStates.delete(optimisticSessionId);
+        state.optimisticSessionStates.set(persistedSessionId, {
+          mode: "upsert",
+          session: remappedSession,
+          expectedItems: remappedItems,
+          expectedSession: { payer_name: payerName, assigned_waiter_id: state.currentUser?.id || "" }
+        });
+        form.session_id.value = persistedSessionId;
+      }
+    }
+
+    if (!originalSession && !savedSession) {
+      state.optimisticSessionStates.delete(optimisticSessionId);
+      state.sessions = state.sessions.filter((entry) => entry.id !== optimisticSessionId);
+      form.session_id.value = "";
+      form.pending_table_id.value = table.id;
+      state.accountsRenderSignature = "";
+      renderAdminLive();
+      toast("No fue posible abrir la cuenta de la mesa. La selección fue restaurada.", "error", `batch-session-failed:${optimisticSessionId}`);
+      return null;
+    }
+
+    const payloads = drafts.map((draft) => ({
+      session_id: persistedSessionId,
+      table_id: session.table_id,
+      menu_item_id: draft.menuItemId || null,
+      item_name: draft.itemName,
+      unit_price: Number(draft.unitPrice || 0),
+      quantity: Number(draft.quantity || 0),
+      notes: draft.notes || "",
+      status: "served",
+      created_by_user_id: state.currentUser?.id || null,
+      updated_by_user_id: state.currentUser?.id || null
+    }));
+    const sessionUpdatePromise = originalSession && (payerName !== (originalSession.payer_name || "")
+      || (state.currentUser?.id || originalSession.assigned_waiter_id || null) !== (originalSession.assigned_waiter_id || null))
+      ? retryPosMutation(() => state.sb.from("table_sessions").update({
+          payer_name: payerName,
+          assigned_waiter_id: state.currentUser?.id || originalSession.assigned_waiter_id || null
+        }).eq("id", persistedSessionId).select("*").single(), 4)
+      : Promise.resolve(savedSession);
+    const itemsPromise = retryPosMutation(() => state.sb.from("session_items").insert(payloads).select("*"), 4);
+    const [sessionSaved, savedItems] = await Promise.all([sessionUpdatePromise, itemsPromise]);
+    if (!Array.isArray(savedItems) || savedItems.length !== drafts.length) {
+      state.optimisticSessionStates.delete(optimisticSessionId);
+      state.optimisticSessionStates.delete(persistedSessionId);
+      if (originalSession) {
+        state.sessions = state.sessions.map((entry) => entry.id === persistedSessionId ? originalSession : entry);
+      } else {
+        state.sessions = state.sessions.filter((entry) => ![optimisticSessionId, persistedSessionId].includes(entry.id));
+        form.session_id.value = "";
+        form.pending_table_id.value = table.id;
+        void dbQuiet(state.sb.from("table_sessions").update({ status: "closed", closed_at: new Date().toISOString() }).eq("id", persistedSessionId), null);
+      }
+      state.accountsRenderSignature = "";
+      renderAdminLive();
+      toast("No se pudo guardar la selección. La cuenta volvió a su valor anterior.", "error", `consumption-batch-failed:${persistedSessionId}`);
+      return null;
+    }
+
+    const temporaryIds = new Set(optimisticItems.map((item) => item.id));
+    let confirmedSession = null;
+    state.sessions = state.sessions.map((entry) => entry.id === persistedSessionId
+      ? (confirmedSession = {
+          ...entry,
+          ...(sessionSaved || {}),
+          restaurant_tables: entry.restaurant_tables || table,
+          assigned_waiter: state.currentUser || entry.assigned_waiter,
+          session_items: [
+            ...(entry.session_items || []).filter((item) => !temporaryIds.has(item.id)),
+            ...savedItems.map((item) => ({ ...item, created_by_user: state.currentUser }))
+          ]
+        })
+      : entry);
+    state.optimisticSessionStates.set(persistedSessionId, {
+      mode: "upsert",
+      session: confirmedSession,
+      expectedItems: savedItems,
+      expectedSession: sessionSaved ? {
+        payer_name: sessionSaved.payer_name || "",
+        assigned_waiter_id: sessionSaved.assigned_waiter_id || ""
+      } : null
+    });
+    notifyWaiterOrder(confirmedSession, savedItems);
+    return { sessionId: persistedSessionId, items: savedItems };
+  };
+
+  const confirmConsumptionSelection = async (form) => {
+    if (form.dataset.localSubmitInProgress === "1") return null;
+    if (form.session_item_id.value) return addManualConsumption(form);
+    const hasPendingEntry = Boolean(form.menu_item_id.value || form.item_name.value.trim() || form.quantity.value || $("#consumptionProductSearch")?.value.trim());
+    const pendingEntry = currentConsumptionDraft(form, { quiet: true });
+    if (hasPendingEntry && !pendingEntry) { currentConsumptionDraft(form); return null; }
+    if (pendingEntry) {
+      if (state.consumptionDraftEditIndex >= 0 && state.consumptionDrafts[state.consumptionDraftEditIndex]) state.consumptionDrafts[state.consumptionDraftEditIndex] = pendingEntry;
+      else state.consumptionDrafts.push(pendingEntry);
+      state.consumptionDraftEditIndex = -1;
+    }
+    if (!state.consumptionDrafts.length) {
+      toast("Añade al menos un producto a la selección.", "error", "empty-consumption-selection");
+      return null;
+    }
+    const drafts = [...state.consumptionDrafts];
+    const quickCheckout = form.quick_checkout.value === "1";
+    const dialog = $("#consumptionDialog");
+    form.dataset.localSubmitInProgress = "1";
+    form.inert = true;
+    let confirmed = false;
+    try {
+      const result = await addConsumptionBatch(form, drafts);
+      if (!result) {
+        state.consumptionDrafts = drafts;
+        clearConsumptionEntry(form);
+        renderConsumptionSelection();
+        return null;
+      }
+      confirmed = true;
+      state.consumptionDrafts = [];
+      state.consumptionDraftEditIndex = -1;
+      renderConsumptionSelection();
+      const sessionId = result.sessionId;
+      if (!quickCheckout && dialog?.open) {
+        const session = state.sessions.find((entry) => entry.id === sessionId);
+        renderTableConsumptionPreview(session);
+        setTableConsumptionPreviewVisible(true);
+        renderLastConsumptionTime(session);
+        const addedIds = new Set((result.items || []).map((item) => String(item.id)));
+        $$('[data-consumption-item]', $("#tableConsumptionPreview")).forEach((row) => {
+          if (addedIds.has(row.dataset.consumptionItem)) row.classList.add("consumption-just-added");
+        });
+        $("#tableConsumptionPreview .consumption-just-added")?.scrollIntoView({ block: "nearest" });
+        await new Promise((resolve) => window.setTimeout(resolve, 2200));
+      }
+      dialog?.close();
+      clearConsumptionEntry(form);
+      if (quickCheckout) {
+        state.individualProductFlashes ||= new WeakMap();
+        (result.items || []).forEach((item) => state.individualProductFlashes.set(item, Date.now() + 2200));
+        openPaymentDialog(sessionId);
+      }
+      return sessionId;
+    } catch (error) {
+      if (!confirmed) { state.consumptionDrafts = drafts; renderConsumptionSelection(); }
+      throw error;
+    } finally {
+      form.inert = false;
+      delete form.dataset.localSubmitInProgress;
+    }
+  };
+
+  const bindConsumptionConfirmShortcut = () => {
+    const dialog = $("#consumptionDialog");
+    const form = $("#consumptionForm");
+    const submit = $("#consumptionSubmitButton");
+    if (!dialog || !form || !submit || form.dataset?.confirmShortcutBound) return;
+    if (form.dataset) form.dataset.confirmShortcutBound = "1";
+    let lastSpaceAt = 0;
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== " " || event.repeat || event.isComposing || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) {
+        lastSpaceAt = 0;
+        return;
+      }
+      if (!dialog.open || form.session_item_id.value || submit.disabled) {
+        lastSpaceAt = 0;
+        return;
+      }
+      const target = event.target;
+      if (target !== document.body && target !== document && !dialog.contains(target)) {
+        lastSpaceAt = 0;
+        return;
+      }
+      const emptySearch = target === $("#consumptionProductSearch") && !target.value.trim();
+      const quantity = target === form.quantity;
+      const neutralFocus = !target?.closest?.('input, textarea, select, button, a[href], summary, [contenteditable], [role="button"]');
+      if ((!emptySearch && !quantity && !neutralFocus) || (!state.consumptionDrafts.length && !currentConsumptionDraft(form, { quiet: true }))) {
+        lastSpaceAt = 0;
+        return;
+      }
+      const now = Date.now();
+      const doubleSpace = now - lastSpaceAt <= 500;
+      event.preventDefault();
+      lastSpaceAt = doubleSpace ? 0 : now;
+      if (doubleSpace) submit.click();
+    });
+    dialog.addEventListener("close", () => { lastSpaceAt = 0; });
+  };
+
+  const openConsumptionDialog = (sessionId = "", { pendingTableId = "", quickCheckout = false } = {}) => {
+    const dialog = $("#consumptionDialog");
+    const form = $("#consumptionForm");
+    if (!dialog || !form) return;
+    form.reset();
+    form.session_id.value = sessionId;
+    form.session_item_id.value = "";
+    form.pending_table_id.value = pendingTableId;
+    form.quick_checkout.value = quickCheckout ? "1" : "0";
+    form.quantity.required = true;
+    applyConsumptionRoleRestrictions(form);
+    state.consumptionDrafts = [];
+    state.consumptionDraftEditIndex = -1;
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    form.payer_name.value = session?.payer_name || "";
+    form.quantity.value = "";
+    setCurrencyInputValue(form.unit_price, 0);
+    const productSearch = $("#consumptionProductSearch");
+    if (productSearch) productSearch.value = "";
+    const optionalFields = $("#consumptionOptionalFields");
+    if (optionalFields) optionalFields.open = false;
+    const table = state.tables.find((entry) => String(entry.id) === String(pendingTableId || session?.table_id));
+    if ($("#consumptionEyebrow")) $("#consumptionEyebrow").textContent = quickCheckout ? "Venta individual" : "Consumo";
+    if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = quickCheckout ? "Agregar producto y cobrar" : `Agregar a ${table ? tableLabel(table) : "la cuenta"}`;
+    const submitLabel = $("#consumptionSubmitButton span");
+    if (submitLabel) submitLabel.textContent = quickCheckout ? "Confirmar y cobrar" : "Confirmar selección";
+    if ($("#consumptionQueueButton")) $("#consumptionQueueButton").hidden = false;
+    renderConsumptionSelection();
+    renderTableConsumptionPreview(session);
+    renderLastConsumptionTime(session);
+    closeConsumptionProductOptions();
+    dialog.showModal();
+    void refreshConsumptionInventory();
+    window.setTimeout(() => {
+      productSearch?.focus({ preventScroll: true });
+    }, 0);
+  };
+
+  const cancelConsumption = () => {
+    const form = $("#consumptionForm");
+    if (!form || form.dataset.localSubmitInProgress === "1") return;
+    const session = state.sessions.find((entry) => entry.id === form.session_id.value);
+    const quickCheckout = form.quick_checkout.value === "1";
+    state.consumptionDrafts = [];
+    state.consumptionDraftEditIndex = -1;
+    renderConsumptionSelection();
+    $("#consumptionDialog")?.close();
+    if (!quickCheckout || !isLocalWalkInSession(session)) return;
+    const hasItems = (session.session_items || []).some((item) => item.status !== "cancelled");
+    if (hasItems) openPaymentDialog(session.id);
+    else {
+      discardLocalWalkInSession(session.id);
+      toast("Venta individual cancelada.", "ok", `walk-in-cancelled:${session.id}`);
+    }
+  };
+
+  const editConsumption = (sessionId, itemId) => {
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    const item = session?.session_items?.find((entry) => entry.id === itemId);
+    const form = $("#consumptionForm");
+    const dialog = $("#consumptionDialog");
+    if (!session || !item || item.status === "cancelled" || !form || !dialog || form.dataset.localSubmitInProgress === "1") return;
+    const keepPreview = dialog.open && !$("#tableConsumptionPreview")?.hidden && form.session_id.value === session.id;
+    if (keepPreview && state.consumptionDrafts.length) {
+      toast("Confirma o elimina la seleccion pendiente antes de editar un consumo.", "error", "pending-items-before-edit");
+      return;
+    }
+    form.reset();
+    form.session_id.value = session.id;
+    form.session_item_id.value = item.id;
+    form.pending_table_id.value = "";
+    form.quick_checkout.value = "0";
+    form.quantity.required = true;
+    applyConsumptionRoleRestrictions(form);
+    state.consumptionDrafts = [];
+    state.consumptionDraftEditIndex = -1;
+    renderConsumptionSelection();
+    if (!keepPreview && $("#tableConsumptionPreview")) $("#tableConsumptionPreview").hidden = true;
+    $("#consumptionLayout")?.classList.toggle("without-consumption-preview", !keepPreview);
+    if ($("#consumptionQueueButton")) $("#consumptionQueueButton").hidden = true;
+    if ($("#consumptionEyebrow")) $("#consumptionEyebrow").textContent = "Consumo";
+    if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = "Editar consumo";
+    const submitLabel = $("#consumptionSubmitButton span");
+    if (submitLabel) submitLabel.textContent = "Guardar cambios";
+    form.menu_item_id.value = item.menu_item_id || "";
+    form.item_name.value = item.item_name || "";
+    form.payer_name.value = session.payer_name || "";
+    form.quantity.value = item.quantity || 1;
+    setCurrencyInputValue(form.unit_price, item.unit_price || 0);
+    form.notes.value = item.notes || "";
+    const optionalFields = $("#consumptionOptionalFields");
+    if (optionalFields) optionalFields.open = true;
+    const product = state.items.find((entry) => entry.id === item.menu_item_id);
+    const productSearch = $("#consumptionProductSearch");
+    if (productSearch) productSearch.value = product ? `${inventoryFor(product).code} · ${product.name}` : item.item_name || "";
+    renderConsumptionProductOptions(product?.name || item.item_name || "");
+    closeConsumptionProductOptions();
+    if (keepPreview) renderTableConsumptionPreview(session);
+    if ($("#tableSessionActions")) $("#tableSessionActions").hidden = true;
+    if (!dialog.open) dialog.showModal();
+    void refreshConsumptionInventory();
+    form.quantity.focus({ preventScroll: true });
+    form.quantity.select();
+    refreshIcons();
+  };
+
+  const deleteConsumption = async (sessionId, itemId) => {
+    if (!canDeleteRecords()) return;
+    const session = state.sessions.find((entry) => entry.id === sessionId);
+    const item = session?.session_items?.find((entry) => entry.id === itemId && entry.status !== "cancelled");
+    if (!session || !item) return;
+    if (!await askForConfirmation({
+      eyebrow: "Cuenta abierta",
+      title: `¿Quitar ${item.item_name}?`,
+      message: "El producto se retirará de esta cuenta. El inventario no cambia porque todavía no se ha cobrado.",
+      accept: "Sí, quitar producto",
+      cancel: "Conservar producto"
+    })) return;
+    if (!consumptionChangeAllowed(session, itemId, { status: "cancelled" })) {
+      toast("No puedes quitar este producto: el consumo restante quedaría por debajo de los abonos.", "error", "consumption-below-payments");
+      return;
+    }
+    const originalSession = session;
+    state.sessions = state.sessions.map((entry) => entry.id === sessionId
+      ? clearPaymentsWithoutConsumption({ ...entry, session_items: (entry.session_items || []).map((line) => line.id === itemId ? { ...line, status: "cancelled", updated_at: new Date().toISOString() } : line) })
+      : entry);
+    state.accountsRenderSignature = "";
+    renderAdminLive();
+    if (isLocalWalkInSession(session)) {
+      const updatedSession = state.sessions.find((entry) => entry.id === sessionId);
+      state.optimisticSessionStates.set(sessionId, { mode: "upsert", localOnly: true, session: updatedSession });
+      persistWalkInDrafts();
+      toast("Consumo eliminado. El inventario permanece sin cambios.", "ok", `consumption-deleted:${itemId}`);
+      return;
+    }
+    const saved = await retryQuiet(() => state.sb.from("session_items").update({ status: "cancelled", updated_by_user_id: state.currentUser?.id || null }).eq("id", itemId).select("*").single(), 4);
+    if (!saved) {
+      state.sessions = state.sessions.map((entry) => entry.id === sessionId ? originalSession : entry);
+      state.accountsRenderSignature = "";
+      renderAdminLive();
+      toast("No se pudo eliminar el consumo. La cuenta fue restaurada.", "error", `delete-consumption:${itemId}`);
+      return;
+    }
+    toast("Consumo eliminado. El inventario permanece sin cambios.", "ok", `consumption-deleted:${itemId}`);
+  };
+
+  const showStockWarning = ({ item, current, change, remaining, minimum, insufficient = false }) => {
+    const dialog = $("#stockWarningDialog");
+    if (!dialog) return Promise.resolve(!insufficient);
+    const productName = item?.name || "Producto";
+    $("#stockWarningTitle").textContent = insufficient ? "Existencias insuficientes" : "Stock bajo";
+    $("#stockWarningMessage").textContent = insufficient
+      ? `${productName} necesita ${change} unidad${change === 1 ? "" : "es"} adicionales, pero solo quedan ${current}. No se agregara el consumo.`
+      : `${productName} quedara en ${remaining} unidad${remaining === 1 ? "" : "es"}, igual o por debajo del minimo configurado de ${minimum}.`;
+    $("#stockWarningCurrent").textContent = current.toLocaleString("es-CO", { maximumFractionDigits: 2 });
+    $("#stockWarningRequested").textContent = change.toLocaleString("es-CO", { maximumFractionDigits: 2 });
+    $("#stockWarningRemaining").textContent = Math.max(0, remaining).toLocaleString("es-CO", { maximumFractionDigits: 2 });
+    const cancel = $("#stockWarningCancel");
+    const confirm = $("#stockWarningConfirm");
+    cancel.textContent = insufficient ? "Entendido" : "Cancelar";
+    confirm.hidden = insufficient;
+    dialog.returnValue = "";
+    dialog.showModal();
+    refreshIcons();
+    return new Promise((resolve) => {
+      dialog.addEventListener("close", () => resolve(!insufficient && dialog.returnValue === "confirm"), { once: true });
+    });
+  };
+
+  const addManualConsumption = async (form, { keepOpen = false, silent = false, openPaymentAfter = form.quick_checkout.value === "1" } = {}) => {
+    let sessionId = form.session_id.value;
+    let session = state.sessions.find((entry) => entry.id === sessionId);
+    const pendingTableId = form.pending_table_id.value;
+    const selectedItem = state.items.find((item) => item.id === form.menu_item_id.value);
+    const name = form.item_name.value.trim() || selectedItem?.name;
+    const price = form.unit_price.value.trim() ? currencyInputNumber(form.unit_price) : Number(selectedItem?.price || 0);
+    const quantityText = String(form.quantity.value || "").trim();
+    const quantity = Number(quantityText);
+    const itemId = form.session_item_id.value || "";
+    const payerName = form.payer_name.value.trim();
+    const previousLine = itemId ? session?.session_items?.find((item) => item.id === itemId) : null;
+    if (!name) {
+      toast("El consumo necesita nombre o producto.", "error");
+      return;
+    }
+    if (!quantityText || !Number.isInteger(quantity) || quantity < 1 || quantity > 100 || !Number.isFinite(price) || price < 0) {
+      toast("Revisa cantidad y precio antes de guardar.", "error", "invalid-consumption-values");
+      form.quantity.focus({ preventScroll: true });
+      return;
+    }
+    if (session && itemId && !consumptionChangeAllowed(session, itemId, { quantity, unit_price: price, status: "served" })) {
+      toast("No puedes reducir este consumo por debajo de los abonos registrados.", "error", "consumption-below-payments");
+      return;
+    }
+    if (!session && !pendingTableId) return;
+    if (!session && pendingTableId) {
+      const table = state.tables.find((entry) => String(entry.id) === String(pendingTableId) && entry.is_active !== false);
+      session = await ensureAdminTableSession(table);
+      if (!session) {
+        toast("No fue posible abrir la cuenta de la mesa. No se descontó inventario.", "error", `open-table-failed:${pendingTableId}`);
+        return;
+      }
+      sessionId = session.id;
+      form.session_id.value = sessionId;
+      form.pending_table_id.value = "";
+    }
+    const payload = {
+      session_id: sessionId,
+      table_id: session.table_id,
+      menu_item_id: selectedItem?.id || null,
+      item_name: name,
+      unit_price: price,
+      quantity,
+      notes: form.notes.value.trim(),
+      status: "served",
+      created_by_user_id: itemId ? undefined : state.currentUser?.id || null,
+      updated_by_user_id: state.currentUser?.id || null
+    };
+    const temporaryId = itemId || `local-${uid()}`;
+    const optimisticItem = {
+      ...payload,
+      id: temporaryId,
+      created_by_user: previousLine?.created_by_user || state.currentUser,
+      created_at: previousLine?.created_at || new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    let optimisticSession = session;
+    state.sessions = state.sessions.map((entry) => entry.id === sessionId
+      ? (optimisticSession = {
+          ...entry,
+          payer_name: payerName || entry.payer_name,
+          assigned_waiter_id: state.currentUser?.id || entry.assigned_waiter_id,
+          assigned_waiter: state.currentUser || entry.assigned_waiter,
+          session_items: itemId
+            ? (entry.session_items || []).map((item) => item.id === itemId ? { ...item, ...optimisticItem } : item)
+            : [...(entry.session_items || []), optimisticItem]
+        })
+      : entry);
+    optimisticSession = clearPaymentsWithoutConsumption(optimisticSession);
+    state.sessions = state.sessions.map((entry) => entry.id === sessionId ? optimisticSession : entry);
+    state.optimisticSessionStates.set(sessionId, {
+      mode: "upsert",
+      session: optimisticSession,
+      expectedItem: optimisticItem,
+      expectedSession: {
+        payer_name: optimisticSession.payer_name || "",
+        assigned_waiter_id: optimisticSession.assigned_waiter_id || ""
+      }
+    });
+    if (!keepOpen) $("#consumptionDialog")?.close();
+    renderAdminLive();
+    if (isLocalWalkInSession(session)) {
+      state.optimisticSessionStates.set(sessionId, {
+        mode: "upsert",
+        localOnly: true,
+        session: optimisticSession
+      });
+      persistWalkInDrafts();
+      if (!silent) toast(itemId ? "Consumo actualizado." : "Producto agregado a la venta individual.", "ok", `walk-in-consumption:${temporaryId}`);
+      if (openPaymentAfter) openPaymentDialog(sessionId);
+      return { sessionId, item: optimisticItem };
+    }
+    const sessionSaved = await retryQuiet(
+        () => state.sb.from("table_sessions").update({
+          payer_name: payerName || session.payer_name || "",
+          assigned_waiter_id: state.currentUser?.id || session.assigned_waiter_id || null
+        }).eq("id", sessionId).select("*").single(),
+        4
+    );
+    const cleanPayload = Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== undefined));
+    const saved = await retryQuiet(
+        () => itemId
+          ? state.sb.from("session_items").update(cleanPayload).eq("id", itemId).select("*").single()
+          : state.sb.from("session_items").insert(cleanPayload).select("*").single(),
+        4
+    );
+    if (!saved) {
+      state.optimisticSessionStates.delete(sessionId);
+      state.sessions = state.sessions.map((entry) => entry.id === sessionId ? session : entry);
+      renderAdmin();
+      toast("No se pudo guardar el consumo. La cuenta fue restaurada y el inventario no cambio.", "error", `consumption-failed:${temporaryId}`);
+      return null;
+    }
+    let confirmedSession = null;
+    state.sessions = state.sessions.map((entry) => entry.id === sessionId
+        ? (confirmedSession = {
+            ...entry,
+            ...(sessionSaved || {}),
+            assigned_waiter: state.currentUser || entry.assigned_waiter,
+            session_items: (entry.session_items || []).map((item) => item.id === temporaryId
+              ? { ...saved, created_by_user: item.created_by_user || state.currentUser }
+              : item)
+          })
+      : entry);
+    state.optimisticSessionStates.set(sessionId, {
+      mode: "upsert",
+      session: confirmedSession,
+      expectedItem: saved,
+      expectedSession: sessionSaved ? {
+        payer_name: sessionSaved.payer_name || "",
+        assigned_waiter_id: sessionSaved.assigned_waiter_id || ""
+      } : null
+    });
+    if (!silent) toast(itemId ? "Consumo actualizado." : "Producto agregado a la cuenta.", "ok", `consumption-saved:${saved.id}`);
+    if (!itemId) notifyWaiterOrder(confirmedSession, [saved]);
+    if (openPaymentAfter) openPaymentDialog(sessionId);
+    return { sessionId, item: saved };
+  };
+
+  const copyQr = async (code) => {
+    const url = clientUrlForCode(code);
+    try {
+      await navigator.clipboard.writeText(url);
+      toast("Enlace de QR copiado.");
+    } catch (error) {
+      toast("No fue posible copiar el enlace del QR en este navegador.", "error", "qr-copy-failed");
+    }
+  };
+
+  const downloadFromUrl = async (url, filename) => {
+    try {
+      const response = await fetch(url, { mode: "cors" });
+      if (!response.ok) throw new Error("No se pudo descargar el archivo.");
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast("Abrimos el QR en una pestaña para guardarlo.", "ok");
+    }
+  };
+
+  const pdfSafeText = (value = "") => String(value)
+    .replace(/[Ⓡⓡ]/g, "®")
+    .replace(/[\r\n\t]+/g, " ")
+    .trim();
+
+  const pdfAccentColor = () => {
+    const value = String(state.business?.accent_color || "#f05a28").trim();
+    const match = /^#([0-9a-f]{6})$/i.exec(value);
+    if (!match) return [240, 90, 40];
+    return [
+      parseInt(match[1].slice(0, 2), 16),
+      parseInt(match[1].slice(2, 4), 16),
+      parseInt(match[1].slice(4, 6), 16)
+    ];
+  };
+
+  const fitPdfText = (pdf, text, maxWidth, maxFontSize, minFontSize = 6) => {
+    let fontSize = maxFontSize;
+    pdf.setFontSize(fontSize);
+    while (fontSize > minFontSize && pdf.getTextWidth(text) > maxWidth) {
+      fontSize -= 0.5;
+      pdf.setFontSize(fontSize);
+    }
+    return fontSize;
+  };
+
+  const drawQrCutMarks = (pdf, x, y, size) => {
+    const mark = 2;
+    const offset = 0.8;
+    pdf.setDrawColor(150, 156, 166);
+    pdf.setLineWidth(0.15);
+    [[x, y], [x + size, y], [x, y + size], [x + size, y + size]].forEach(([cornerX, cornerY], index) => {
+      const horizontalDirection = index % 2 === 0 ? -1 : 1;
+      const verticalDirection = index < 2 ? -1 : 1;
+      pdf.line(cornerX + horizontalDirection * offset, cornerY, cornerX + horizontalDirection * (offset + mark), cornerY);
+      pdf.line(cornerX, cornerY + verticalDirection * offset, cornerX, cornerY + verticalDirection * (offset + mark));
+    });
+  };
+
+  const drawQrPdfCard = async (pdf, table, x, y, preparedQrDataUrl = "") => {
+    const cardSize = 90;
+    const [red, green, blue] = [220, 45, 40];
+    const rawName = pdfSafeText(table.table_name);
+    const fallbackName = `MESA ${table.table_number}`;
+    const primaryName = (rawName || fallbackName).toUpperCase();
+    const normalizedPrimary = primaryName.replace(/\s+/g, "");
+    const normalizedFallback = fallbackName.replace(/\s+/g, "");
+    const secondaryName = normalizedPrimary === normalizedFallback ? "ESCANEA EL CODIGO" : fallbackName;
+    const businessName = pdfSafeText(state.business?.business_name || "Servicio a la mesa").toUpperCase();
+    const qrDataUrl = preparedQrDataUrl || await cachedQrDataUrl(qrTextForTable(table), 1000);
+
+    pdf.setFillColor(255, 255, 255);
+    pdf.setDrawColor(red, green, blue);
+    pdf.setLineWidth(0.45);
+    pdf.roundedRect(x, y, cardSize, cardSize, 1.2, 1.2, "FD");
+    pdf.setFillColor(red, green, blue);
+    pdf.rect(x, y, cardSize, 1.6, "F");
+
+    pdf.setTextColor(red, green, blue);
+    pdf.setFont("helvetica", "bold");
+    fitPdfText(pdf, businessName, 76, 12.5, 8);
+    pdf.text(businessName, x + cardSize / 2, y + 8.4, { align: "center" });
+
+    pdf.setTextColor(20, 23, 29);
+    fitPdfText(pdf, primaryName, 78, 17, 10);
+    pdf.text(primaryName, x + cardSize / 2, y + 15.2, { align: "center" });
+
+    pdf.setTextColor(red, green, blue);
+    pdf.setFont("helvetica", "bold");
+    fitPdfText(pdf, secondaryName, 72, 8.2, 6.5);
+    pdf.text(secondaryName, x + cardSize / 2, y + 19.2, { align: "center" });
+
+    pdf.addImage(qrDataUrl, "PNG", x + 15.3, y + 21.3, 59.4, 59.4, undefined, "FAST");
+
+    pdf.setTextColor(20, 23, 29);
+    pdf.setFont("helvetica", "bold");
+    const footerText = "ORDENA Y SOLICITA ATENCION";
+    fitPdfText(pdf, footerText, 82, 12.5, 11);
+    pdf.text(footerText, x + cardSize / 2, y + 84.6, { align: "center" });
+    pdf.text("DESDE TU MESA", x + cardSize / 2, y + 88.7, { align: "center" });
+    drawQrCutMarks(pdf, x, y, cardSize);
+  };
+
+  const downloadQrPdf = async (tables) => {
+    const jsPDF = window.jspdf?.jsPDF;
+    if (!jsPDF) {
+      toast("No se pudo cargar el generador de PDF. Revisa la conexion e intenta de nuevo.", "error", "pdf-library-missing");
+      return;
+    }
+    const printableTables = (tables || []).filter(Boolean);
+    if (!printableTables.length) {
+      toast("Selecciona al menos una mesa para generar el PDF.", "error", "no-qr-selection");
+      return;
+    }
+    const downloadButton = $("#downloadSelectedQrs");
+    if (downloadButton) {
+      downloadButton.disabled = true;
+      downloadButton.innerHTML = `${icon("loader-circle", 18)} Generando PDF...`;
+      refreshIcons();
+    }
+    try {
+      const preparedQrs = await Promise.all(printableTables.map((table) => cachedQrDataUrl(qrTextForTable(table), 1000)));
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4", compress: true });
+      const columns = 2;
+      const rows = 3;
+      const cardsPerPage = columns * rows;
+      const cardSize = 90;
+      const gap = 8;
+      const startX = 11;
+      const startY = 8;
+      for (let index = 0; index < printableTables.length; index += 1) {
+        if (index > 0 && index % cardsPerPage === 0) pdf.addPage("a4", "portrait");
+        const pageIndex = index % cardsPerPage;
+        const column = pageIndex % columns;
+        const row = Math.floor(pageIndex / columns);
+        await drawQrPdfCard(pdf, printableTables[index], startX + column * (cardSize + gap), startY + row * (cardSize + gap), preparedQrs[index]);
+      }
+      const filename = printableTables.length === 1
+        ? `qr-mesa-${printableTables[0].table_number}-9x9.pdf`
+        : `qr-${printableTables.length}-mesas-9x9.pdf`;
+      pdf.save(filename);
+      toast(`${printableTables.length} ${printableTables.length === 1 ? "QR listo" : "QR listos"} en PDF de 9 x 9 cm.`);
+    } catch (error) {
+      console.error(error);
+      toast("No se pudo generar el PDF de los QR. Intenta de nuevo.", "error", "qr-pdf-failed");
+    } finally {
+      renderQrBatchControls();
+    }
+  };
+
+  const downloadInventoryPdf = () => {
+    const jsPDF = window.jspdf?.jsPDF;
+    if (!jsPDF) {
+      toast("No se pudo cargar el generador de PDF. Revisa la conexion e intenta de nuevo.", "error", "pdf-library-missing");
+      return;
+    }
+    const products = matchingProducts(state.inventorySearch, { includeUnavailable: true })
+      .filter((item) => state.inventoryStatusFilter === "all" || inventoryStatus(item) === state.inventoryStatusFilter)
+      .filter((item) => state.inventoryCategoryFilter === "all"
+        || (state.inventoryCategoryFilter === "uncategorized" ? !item.category_id : String(item.category_id || "") === String(state.inventoryCategoryFilter)))
+      .sort((left, right) => {
+        const categoryComparison = String(left.menu_categories?.name || "").localeCompare(String(right.menu_categories?.name || ""), "es");
+        return categoryComparison || String(left.name || "").localeCompare(String(right.name || ""), "es");
+      });
+    if (!products.length) {
+      toast("No hay productos que coincidan con los filtros activos.", "error", "empty-inventory-pdf");
+      return;
+    }
+
+    const button = $("#downloadInventoryPdf");
+    if (button) {
+      button.disabled = true;
+      button.innerHTML = `${icon("loader-circle", 18)} Generando PDF...`;
+      refreshIcons();
+    }
+
+    try {
+      const pdf = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4", compress: true });
+      const [red, green, blue] = pdfAccentColor();
+      const summary = products.reduce((totals, item) => {
+        const inventory = inventoryFor(item);
+        totals.units += inventory.stock;
+        totals.costValue += inventory.stock * inventory.costPrice;
+        totals.saleValue += inventory.stock * Number(item.price || 0);
+        return totals;
+      }, { units: 0, costValue: 0, saleValue: 0 });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 11;
+      const rowHeight = 18;
+      const columns = [
+        { label: "Codigo", x: 13 },
+        { label: "Producto", x: 35 },
+        { label: "Existencia", x: 112 },
+        { label: "Costo", x: 151 },
+        { label: "Venta", x: 188 },
+        { label: "Utilidad", x: 225 }
+      ];
+
+      const drawPageHeading = (includeSummary) => {
+        pdf.setTextColor(20, 23, 29);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(15);
+        pdf.text(pdfSafeText(state.business?.business_name || "Inventario"), margin, 12);
+        pdf.setFontSize(9);
+        pdf.setTextColor(red, green, blue);
+        pdf.text("INVENTARIO COMPLETO", margin, 18);
+        pdf.setFont("helvetica", "normal");
+        pdf.setTextColor(92, 99, 112);
+        pdf.setFontSize(8);
+        pdf.text(`Generado: ${pdfSafeText(new Date().toLocaleString("es-CO"))}`, pageWidth - margin, 12, { align: "right" });
+        if (includeSummary) {
+          pdf.text(
+            `${products.length} productos  |  ${summary.units.toLocaleString("es-CO", { maximumFractionDigits: 2 })} unidades  |  Inversion ${pdfSafeText(money(summary.costValue))}  |  Venta potencial ${pdfSafeText(money(summary.saleValue))}`,
+            margin,
+            24
+          );
+        }
+        const headerY = includeSummary ? 29 : 23;
+        pdf.setFillColor(27, 31, 38);
+        pdf.roundedRect(margin, headerY, pageWidth - margin * 2, 8, 1.5, 1.5, "F");
+        pdf.setTextColor(255, 255, 255);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(7.5);
+        columns.forEach((column) => pdf.text(column.label, column.x, headerY + 5.2));
+        return headerY + 8;
+      };
+
+      let y = drawPageHeading(true);
+      products.forEach((item, index) => {
+        if (y + rowHeight > pageHeight - 10) {
+          pdf.addPage("a4", "landscape");
+          y = drawPageHeading(false);
+        }
+        const inventory = inventoryFor(item);
+        const status = inventoryStatus(item);
+        const statusLabel = status === "out" ? "AGOTADO" : status === "low" ? "STOCK BAJO" : "DISPONIBLE";
+        const statusColor = status === "out" ? [206, 47, 47] : status === "low" ? [224, 151, 25] : [34, 197, 94];
+        const salePrice = Number(item.price || 0);
+        const profit = salePrice - inventory.costPrice;
+        const marginPercent = salePrice > 0 ? profit / salePrice * 100 : 0;
+        if (index % 2 === 1) {
+          pdf.setFillColor(249, 250, 251);
+          pdf.rect(margin, y, pageWidth - margin * 2, rowHeight, "F");
+        }
+        pdf.setFillColor(...statusColor);
+        pdf.rect(margin, y, 1.2, rowHeight, "F");
+        pdf.setDrawColor(225, 228, 232);
+        pdf.line(margin, y + rowHeight, pageWidth - margin, y + rowHeight);
+
+        pdf.setTextColor(20, 23, 29);
+        pdf.setFont("helvetica", "bold");
+        fitPdfText(pdf, pdfSafeText(inventory.code), 18, 9.5, 6.5);
+        pdf.text(pdfSafeText(inventory.code), 13, y + 10.5);
+        fitPdfText(pdf, pdfSafeText(item.name), 73, 9.5, 6.5);
+        pdf.text(pdfSafeText(item.name), 35, y + 7.4);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7);
+        pdf.setTextColor(92, 99, 112);
+        pdf.text(`${pdfSafeText(item.menu_categories?.name || "Sin categoria")} - ${pdfSafeText(inventory.unit)}`, 35, y + 12.5);
+
+        pdf.setTextColor(20, 23, 29);
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(11.5);
+        pdf.text(inventory.stock.toLocaleString("es-CO", { maximumFractionDigits: 2 }), 112, y + 8.4);
+        pdf.setFontSize(6.7);
+        pdf.setTextColor(...statusColor);
+        pdf.text(statusLabel, 112, y + 13.1);
+
+        pdf.setTextColor(20, 23, 29);
+        pdf.setFontSize(9.5);
+        pdf.text(pdfSafeText(money(inventory.costPrice)), 151, y + 9.9);
+        pdf.text(pdfSafeText(money(salePrice)), 188, y + 9.9);
+        pdf.text(pdfSafeText(money(profit)), 225, y + 7.5);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7);
+        pdf.setTextColor(92, 99, 112);
+        pdf.text(`${marginPercent.toLocaleString("es-CO", { maximumFractionDigits: 1 })}% margen`, 225, y + 12.4);
+        y += rowHeight;
+      });
+
+      const pageCount = pdf.getNumberOfPages();
+      for (let page = 1; page <= pageCount; page += 1) {
+        pdf.setPage(page);
+        pdf.setFont("helvetica", "normal");
+        pdf.setFontSize(7);
+        pdf.setTextColor(120, 126, 136);
+        pdf.text(`Pagina ${page} de ${pageCount}`, pageWidth - margin, pageHeight - 4.5, { align: "right" });
+      }
+      const date = new Date();
+      const filenameDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      pdf.save(`inventario-${filenameDate}.pdf`);
+      toast(`Inventario completo descargado: ${products.length} productos.`);
+    } catch (error) {
+      console.error(error);
+      toast("No se pudo generar el PDF del inventario. Intenta de nuevo.", "error", "inventory-pdf-failed");
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = `${icon("download", 18)} Descargar PDF`;
+        refreshIcons();
+      }
+    }
+  };
+
+  const downloadQr = async (id) => {
+    const table = state.tables.find((entry) => String(entry.id) === String(id));
+    if (table) await downloadQrPdf([table]);
+  };
+
+  const downloadSelectedQrs = async () => {
+    const tables = visibleManagerTables().filter((table) => state.selectedTableQrIds.has(String(table.id)));
+    await downloadQrPdf(tables);
+  };
+
+  const regenerateQr = async (id) => {
+    if (!qrRegenerationEnabled()) return;
+    const table = state.tables.find((entry) => entry.id === id);
+    if (!table) return;
+    if (!await askForConfirmation({
+      eyebrow: "Cambiar código QR",
+      title: `¿Rehacer el QR de ${tableLabel(table)}?`,
+      message: "El QR que ya esté impreso dejará de funcionar y tendrás que imprimir el nuevo.",
+      accept: "Sí, crear QR nuevo",
+      cancel: "Conservar el actual"
+    })) return;
+    const nextCode = `mesa-${table.table_number}-${uid().slice(0, 8)}`;
+    const saved = await db(
+      state.sb
+        .from("restaurant_tables")
+        .update({ qr_code: nextCode, qr_image_url: isOutdoorTable(table) ? outdoorQrImageValue(null, true) : null })
+        .eq("id", id)
+        .select("*")
+        .single(),
+      null
+    );
+    if (saved) {
+      await loadCore();
+      renderAdmin();
+      showAdminSection("menu");
+      toast("QR regenerado. Descarga el nuevo antes de imprimir.");
+    }
+  };
+
+  const editTable = (id) => {
+    const table = state.tables.find((entry) => entry.id === id);
+    const form = $("#tableForm");
+    if (!table || !form) return;
+    form.table_id.value = table.id;
+    form.table_number.value = table.table_number;
+    form.table_name.value = (table.table_name || "").toLocaleUpperCase("es-CO");
+    form.is_active.checked = table.is_active;
+    form.is_outdoor.checked = isOutdoorTable(table);
+    renderTableFormQr();
+    history.replaceState(null, "", "#menu");
+    showAdminSection("menu");
+    form.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const editCategory = (id) => {
+    const category = state.categories.find((entry) => entry.id === id);
+    const form = $("#categoryForm");
+    if (!category || !form) return;
+    form.category_id.value = category.id;
+    form.category_name.value = category.name;
+    form.category_sort.value = category.sort_order || 0;
+    form.category_active.checked = category.is_active;
+    history.replaceState(null, "", "#menu");
+    showAdminSection("menu");
+  };
+
+  const editItem = (id) => {
+    const item = state.items.find((entry) => entry.id === id);
+    const form = $("#itemForm");
+    if (!item || !form) return;
+    form.item_id.value = item.id;
+    form.category_id.value = item.category_id || "";
+    form.new_category.value = "";
+    form.item_name.value = item.name;
+    form.description.value = item.description || "";
+    setCurrencyInputValue(form.price, item.price);
+    form.image_url.value = item.image_url || "";
+    form.is_available.checked = item.is_available;
+    form.sort_order.value = item.sort_order || 0;
+    history.replaceState(null, "", "#menu");
+    showAdminSection("menu");
+    form.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const deleteRow = async (table, id, label) => {
+    if (!canDeleteRecords()) return;
+    const rowBeforeDelete = table === "restaurant_tables" ? state.tables.find((entry) => entry.id === id) : null;
+    const quickServicePointDelete = Boolean(rowBeforeDelete && isServicePoint(rowBeforeDelete));
+    if (table === "menu_items") {
+      const product = state.items.find((entry) => entry.id === id);
+      const unitsInOpenTables = state.sessions.reduce((sum, session) => sum + (session.session_items || [])
+        .filter((entry) => entry.status !== "cancelled" && entry.menu_item_id === id)
+        .reduce((lineSum, entry) => lineSum + Number(entry.quantity || 0), 0), 0);
+      if (unitsInOpenTables > 0) {
+        toast(`No puedes eliminar ${product?.name || "este producto"}: tiene ${unitsInOpenTables} unidad${unitsInOpenTables === 1 ? "" : "es"} en mesas abiertas.`, "error", `product-in-open-table:${id}`);
+        return;
+      }
+      if (!await askForConfirmation({ eyebrow: "Eliminar producto", title: `¿Eliminar ${product?.name || "este producto"}?`, message: "Se retirará del menú y del inventario. Las ventas anteriores conservarán su detalle.", accept: "Sí, eliminar producto", cancel: "Conservar producto" })) return;
+    } else if (!await askForConfirmation({ eyebrow: "Eliminar registro", title: `¿Eliminar ${label}?`, message: "Esta acción retirará el registro del sistema.", accept: "Sí, eliminar", cancel: "Cancelar" })) return;
+    const property = {
+      restaurant_tables: "tables",
+      menu_categories: "categories",
+      menu_items: "items"
+    }[table];
+    const original = property ? state[property] : null;
+    if (property) state[property] = state[property].filter((entry) => entry.id !== id);
+    if (property) persistBootstrapCache();
+    if (quickServicePointDelete) renderServicePoints();
+    else renderAdmin();
+    void (async () => {
+      const removed = await retryQuiet(
+        () => state.sb.from(table).delete().eq("id", id).select("*").single(),
+        4
+      );
+      if (removed) {
+        if (table === "menu_items") {
+          if (state.inventoryMeta[id]) {
+            delete state.inventoryMeta[id];
+            if (state.reportMirror?.inventoryBase) delete state.reportMirror.inventoryBase[id];
+            persistInventoryStore();
+          }
+          enqueueAppsScriptJob("delete_inventory", { productId: id }, `inventory-delete:${id}`);
+        }
+        if (table === "menu_items") resetInventoryForm();
+        return;
+      }
+      if (property) state[property] = original;
+      if (property) persistBootstrapCache();
+      if (quickServicePointDelete) renderServicePoints();
+      else renderAdmin();
+      toast("No se pudo eliminar. Se restauro el registro.", "error", `delete-failed:${table}:${id}`);
+    })();
+  };
+
+  const runManualRefreshButton = async (button, action) => {
+    if (button.disabled) return;
+    const originalMarkup = button.innerHTML;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.classList.add("is-refreshing");
+    button.innerHTML = `${icon("loader-circle", 17)} Actualizando...`;
+    refreshIcons();
+    try {
+      return await action();
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+      button.classList.remove("is-refreshing");
+      button.innerHTML = originalMarkup;
+      refreshIcons();
+    }
+  };
+
+  const bindAdmin = () => {
+    $("#toggleOpenBalance")?.addEventListener("click", () => {
+      openBalanceHidden = !openBalanceHidden;
+      try { localStorage.setItem(OPEN_BALANCE_PRIVACY_KEY, openBalanceHidden ? "1" : "0"); } catch (_) { /* La preferencia se mantiene en memoria. */ }
+      renderOpenBalance();
+    });
+    $("#businessForm")?.addEventListener("input",event=>{
+      if (["business_name","subtitle","accent_color"].includes(event.target.name)) {
+        state.businessFormDirty = true;
+        state.businessFormRevision = Number(state.businessFormRevision || 0) + 1;
+      }
+    });
+    bindSalesShift();
+    bindAccountFeatures();
+    $("#accountsSearch")?.addEventListener("input", () => renderAccounts());
+    $("#openCashDrawer")?.addEventListener("click", () => void openCashDrawer());
+    $("#configureCashDrawer")?.addEventListener("click", () => void configureCashDrawer());
+    $("#cashDrawerForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      await sendCashDrawerPulse({ printer: form.elements.namedItem("printer").value, pin: Number(form.elements.namedItem("pin").value) }, true);
+    });
+    bindCurrencyInputs();
+    $("#businessForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget;
+      if (form.dataset.saving === "1") return;
+      form.dataset.saving = "1";
+      const buttons = [...form.querySelectorAll('button[type="submit"]')].map(button => ({ button, markup: button.innerHTML, disabled: button.disabled }));
+      buttons.forEach(({ button }) => { button.disabled = true; button.innerHTML = icon("loader-circle", 17) + " Guardando..."; });
+      refreshIcons();
+      try {
+        if (await saveBusiness(form) === false) return;
+        if (await saveOutdoorChoice()) toast("Marca y ubicación de mesas guardadas.");
+      } finally {
+        delete form.dataset.saving;
+        buttons.forEach(({ button, markup, disabled }) => { button.innerHTML = markup; button.disabled = disabled; });
+        refreshIcons();
+      }
+    });
+    $("#businessForm")?.addEventListener("change", async (event) => {
+      if (Object.values(CLIENT_ACTION_FIELDS).includes(event.target.name)) { await saveClientActionVisibility(event.target); renderBusinessForm(); return; }
+      if (event.target.name === "qr_regeneration_enabled") {
+        try {
+          localStorage.setItem(QR_REGENERATION_STORAGE_KEY, event.target.checked ? "1" : "0");
+          renderTableManager();
+        } catch (error) {
+          event.target.checked = false;
+          toast("No se pudo guardar el permiso local para regenerar QR.", "error");
+        }
+        return;
+      }
+      if (event.target.name === "tips_enabled") {
+        const previous = { ...state.tipSettings };
+        if (updateTipSettingsFromForm(event.currentTarget, { toggleChanged: true })) {
+          const desired = { ...state.tipSettings };
+          if (await saveTipSettingsRemotely(desired)) {
+            toast(desired.enabled ? `Propina voluntaria activada al ${desired.percentage}% en todos los dispositivos.` : "Propina voluntaria desactivada en todos los dispositivos.");
+          } else {
+            state.tipSettings = previous;
+            persistTipSettings();
+            renderBusinessForm();
+            syncTipFeatureVisibility();
+            toast("No se pudo guardar la propina. Se restauró la configuración anterior.", "error", "tip-save-failed");
+          }
+        }
+      }
+      if (event.target.name === "tip_percentage" && !event.currentTarget.tips_enabled.checked) {
+        const previous = { ...state.tipSettings };
+        if (updateTipSettingsFromForm(event.currentTarget) && !await saveTipSettingsRemotely({ ...state.tipSettings })) {
+          state.tipSettings = previous;
+          persistTipSettings();
+          renderBusinessForm();
+          toast("No se pudo guardar el porcentaje. Se restauró el valor anterior.", "error", "tip-percentage-save-failed");
+        }
+      }
+    });
+    $("#tipSplitPeople")?.addEventListener("input", (event) => {
+      if (!event.currentTarget.value) return;
+      const people = Math.min(100, Math.max(1, Number(event.currentTarget.value || 1)));
+      state.tipSplitPeople = people;
+      localStorage.setItem(TIP_SPLIT_STORAGE_KEY, String(people));
+      renderTips();
+    });
+    $("#tableForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveTable(event.currentTarget);
+    });
+    $("#tableForm")?.addEventListener("input", (event) => {
+      if (event.target.name === "table_number") renderTableFormQr();
+      if (event.target.name === "table_name") {
+        const input = event.target;
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        const uppercase = input.value.toLocaleUpperCase("es-CO");
+        if (input.value !== uppercase) {
+          input.value = uppercase;
+          if (start !== null && end !== null) input.setSelectionRange(start, end);
+        }
+      }
+    });
+    $("#tableForm")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && event.target.matches('input[name="table_number"], input[name="table_name"]')) {
+        event.preventDefault();
+        event.currentTarget.requestSubmit();
+      }
+    });
+    $("#tableManagerSearch")?.addEventListener("input", renderTableManager);
+    $("#tableManagerGroupFilter")?.addEventListener("change", (event) => {
+      state.tableManagerGroupFilter = event.currentTarget.value || "all";
+      renderTableManager();
+    });
+    $("#dashboardTableGroupFilter")?.addEventListener("change", (event) => {
+      state.dashboardTableGroupFilter = event.currentTarget.value || "all";
+      renderTables();
+    });
+    $("#dashboardTableSearch")?.addEventListener("input", renderTables);
+    $("#categoryForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveCategory(event.currentTarget);
+    });
+    $("#itemForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveItem(event.currentTarget);
+    });
+    $("#inventoryForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveInventoryProduct(event.currentTarget);
+    });
+    $("#inventoryForm")?.addEventListener("input", renderInventoryLiveCalculation);
+    $("#downloadInventoryPdf")?.addEventListener("click", downloadInventoryPdf);
+    $("#inventoryAdjustForm")?.addEventListener("input", renderInventoryAdjustmentPreview);
+    $("#inventoryAdjustForm")?.addEventListener("change", renderInventoryAdjustmentPreview);
+    $("#inventoryAdjustForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveInventoryAdjustment(event.currentTarget);
+    });
+    $("#incomeFilterForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const dateFrom = $("#incomeDateFrom")?.value || "";
+      const dateTo = $("#incomeDateTo")?.value || "";
+      if (dateFrom > dateTo) {
+        toast("La fecha inicial no puede ser posterior a la fecha final.", "error", "invalid-income-range");
+        return;
+      }
+      state.incomeAppliedRange = { dateFrom, dateTo };
+      markIncomeRangePreset();
+      void loadIncomeReport();
+    });
+    $("#incomeEditForm")?.addEventListener("change", (event) => {
+      updateIncomeEditPayments(event.currentTarget, event.target.name === "payment_method");
+    });
+    $("#incomeEditForm")?.addEventListener("input", (event) => updateIncomeEditPayments(event.currentTarget));
+    $("#incomeEditForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveIncomeEdit(event.currentTarget);
+    });
+    $("#deleteIncomeForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await deleteIncomeSale(event.currentTarget);
+    });
+    $("#moveTableForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const targetTableId = new FormData(event.currentTarget).get("target_table_id");
+      await moveSessionToTable(event.currentTarget.session_id.value, targetTableId);
+    });
+    $("#incomeSearch")?.addEventListener("input", () => {
+      clearTimeout(state.incomeSearchTimer);
+      state.incomeRequestId += 1;
+      state.incomePageLoading = false;
+      const previewed = previewIncomeSearch();
+      state.incomeSearchTimer = window.setTimeout(() => void loadIncomeReport({ background: previewed }), previewed ? 150 : 0);
+    });
+    $("#incomePaymentMethod")?.addEventListener("change", () => void loadIncomeReport());
+    $("#incomeSaleType")?.addEventListener("change", applyIncomeSaleTypeFilter);
+    [$("#incomeDateFrom"), $("#incomeDateTo")].filter(Boolean).forEach((input) => input.addEventListener("change", () => {
+      state.incomeRangePreset = "custom";
+      markIncomeRangePreset();
+    }));
+    $("#inventorySearch")?.addEventListener("input", (event) => {
+      state.inventorySearch = event.currentTarget.value;
+      renderInventory();
+    });
+    $("#inventoryStatusFilter")?.addEventListener("change", (event) => {
+      state.inventoryStatusFilter = event.currentTarget.value || "all";
+      renderInventory();
+    });
+    $("#inventoryCategoryFilter")?.addEventListener("change", (event) => {
+      state.inventoryCategoryFilter = event.currentTarget.value || "all";
+      renderInventory();
+    });
+    bindMovementProductPicker();
+    $("#movementProductFilter")?.addEventListener("change", event => {
+      state.movementProductFilter = event.currentTarget.value || "all";
+      renderInventoryMovements();
+    });
+    $("#exportPurchasesPdf")?.addEventListener("click", () => void exportPurchasesPdf());
+    $("#movementSearch")?.addEventListener("input", (event) => {
+      state.movementSearch = event.currentTarget.value;
+      renderInventoryMovements();
+    });
+    $("#movementTypeFilter")?.addEventListener("change", (event) => {
+      state.movementTypeFilter = event.currentTarget.value || "all";
+      renderInventoryMovements();
+    });
+    $("#purchaseFilters")?.addEventListener("submit", (event) => event.preventDefault());
+    $("#purchaseSearch")?.addEventListener("input", (event) => {
+      state.purchaseSearch = event.currentTarget.value;
+      renderPurchaseHistory();
+    });
+    $("#purchaseProductFilter")?.addEventListener("change", (event) => {
+      state.purchaseProductFilter = event.currentTarget.value || "all";
+      renderPurchaseHistory();
+    });
+    $("#purchaseDateFrom")?.addEventListener("change", (event) => {
+      state.purchaseDateFrom = event.currentTarget.value;
+      renderPurchaseHistory();
+    });
+    $("#purchaseDateTo")?.addEventListener("change", (event) => {
+      state.purchaseDateTo = event.currentTarget.value;
+      renderPurchaseHistory();
+    });
+    $("#purchaseHistoryList")?.addEventListener("input", (event) => {
+      const input = event.target.closest("[data-purchase-unit-cost]");
+      if (!input) return;
+      const total = input.closest(".purchase-record")?.querySelector("[data-purchase-total]");
+      if (total) total.textContent = money(currencyInputNumber(input) * Number(input.dataset.purchaseQuantity || 0));
+    });
+    $("#consumptionForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await confirmConsumptionSelection(event.currentTarget);
+    });
+    bindConsumptionConfirmShortcut();
+    $("#consumptionForm")?.elements.quantity?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      if (event.currentTarget.form?.session_item_id.value) event.currentTarget.form.requestSubmit();
+      else queueConsumptionDraft();
+    });
+    $("#consumptionQueueButton")?.addEventListener("click", queueConsumptionDraft);
+    $("#consumptionSelectionLines")?.addEventListener("dblclick", (event) => {
+      const price = event.target.closest("[data-edit-consumption-price]");
+      if (price) {
+        editConsumptionDraftPrice(price);
+        return;
+      }
+      const product = event.target.closest("[data-edit-consumption-product]");
+      if (product) editConsumptionDraftProduct(Number(product.dataset.editConsumptionProduct));
+    });
+    $("#paymentForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await processPayment(event.currentTarget, event.submitter);
+    });
+    bindPaymentConfirmShortcut();
+    $("#paymentForm")?.addEventListener("change", (event) => {
+      if (event.target.name === "tip_choice") updatePaymentTipChoice();
+      if (event.target.name === "payment_method") {
+        const mixed = event.target.value === "mixed";
+        $("#mixedPaymentFields").hidden = !mixed;
+        $("#cashReceivedFields").hidden = event.target.value !== "cash";
+        if (mixed) updateMixedPayment("mixed_amount_one");
+        if (event.target.value === "cash") updateCashChange();
+      }
+      if (event.target.name === "mixed_method_one" || event.target.name === "mixed_method_two") syncMixedMethods(event.target.name);
+    });
+    $("#paymentForm")?.addEventListener("input", (event) => {
+      if (event.target.name === "mixed_amount_one" || event.target.name === "mixed_amount_two") updateMixedPayment(event.target.name);
+      if (event.target.name === "cash_received") updateCashChange();
+    });
+    $("#paymentPrintPreview")?.addEventListener("click", () => {
+      const sessionId = $("#paymentForm")?.session_id?.value || "";
+      const session = state.sessions.find((entry) => entry.id === sessionId);
+      if (session) printThermalReceipt(session);
+    });
+    $("#receiptPrintButton")?.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      printLastPaidReceipt();
+    });
+    $("#consumptionDialog")?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      cancelConsumption();
+    });
+    $("#accountDetailDialog")?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      event.currentTarget.close();
+    });
+    $("#accountDetailDialog")?.addEventListener("close", () => {
+      state.activeAccountDetailId = "";
+    });
+    $("#paymentDialog")?.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      cancelPayment();
+    });
+    $$("dialog.modal").forEach((dialog) => dialog.addEventListener("click", (event) => {
+      if (event.target !== dialog || !dialog.open) return;
+      if (dialog.id === "consumptionDialog") cancelConsumption();
+      else if (dialog.id === "paymentDialog") cancelPayment();
+      else dialog.close("cancel");
+    }));
+    const productSearch = $("#consumptionProductSearch");
+    productSearch?.addEventListener("input", (event) => {
+      const form = event.currentTarget.form;
+      if (form) {
+        form.menu_item_id.value = "";
+        form.item_name.value = event.currentTarget.value.trim();
+      }
+      $("#consumptionProductCombobox").dataset.activeProduct = "";
+      $("#consumptionProductCombobox").dataset.renderSignature = "";
+      renderConsumptionProductOptions(event.currentTarget.value);
+      showConsumptionProductOptions();
+    });
+    productSearch?.addEventListener("focus", () => {
+      renderConsumptionProductOptions(productSearch.value);
+      showConsumptionProductOptions();
+    });
+    productSearch?.addEventListener("keydown", (event) => {
+      const availableButtons = $$('[data-consumption-product]:not(:disabled)', $("#consumptionProductOptions"));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        showConsumptionProductOptions();
+        const currentIndex = Number($("#consumptionProductCombobox")?.dataset.activeIndex ?? -1);
+        setConsumptionProductActiveIndex(currentIndex < 0 ? (event.key === "ArrowDown" ? 0 : availableButtons.length - 1) : currentIndex + (event.key === "ArrowDown" ? 1 : -1));
+      }
+      if (event.key === "Enter" && !$("#consumptionProductOptions")?.hidden) {
+        const index = Number($("#consumptionProductCombobox")?.dataset.activeIndex ?? -1);
+        const selected = index >= 0 ? availableButtons[index] : (availableButtons.length === 1 ? availableButtons[0] : null);
+        if (selected) {
+          event.preventDefault();
+          selectConsumptionProduct(selected.dataset.consumptionProduct);
+        }
+      }
+      if (event.key === "Escape") closeConsumptionProductOptions();
+    });
+    $("#consumptionProductOptions")?.addEventListener("click", (event) => {
+      const option = event.target.closest("[data-consumption-product]");
+      if (option && !option.disabled) selectConsumptionProduct(option.dataset.consumptionProduct);
+    });
+    $("#userForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await saveUser(event.currentTarget);
+    });
+    $("#userForm")?.role?.addEventListener("change", (event) => syncUserPermissionsForm(event.currentTarget.form));
+    $("#adminChatDock")?.addEventListener("submit", async (event) => {
+      const form = event.target.closest("[data-admin-chat-form]");
+      if (!form) return;
+      event.preventDefault();
+      const sessionId = String(form.dataset.adminChatForm || "");
+      const chat = state.adminChats.get(sessionId);
+      const input = form.elements.message;
+      const body = input.value.trim();
+      if (!body || !chat) return;
+      input.value = "";
+      const saved = await persistChatMessage("staff", body, { sessionId, table: chat.table });
+      if (saved) broadcastChatEvent("chat-refresh", {}, sessionId);
+      else toast("No se pudo enviar el mensaje. Intenta nuevamente.", "error", `chat-message-failed:${sessionId}`);
+    });
+    $("#adminChatDock")?.addEventListener("input", (event) => {
+      const form = event.target.closest("[data-admin-chat-form]");
+      if (form && event.target.name === "message") broadcastTyping("staff", form.dataset.adminChatForm);
+    });
+    $("#adminChatDock")?.addEventListener("keydown", (event) => {
+      const minimizedChat = event.target.closest(".admin-chat-window.is-minimized");
+      if (!minimizedChat || event.target.closest("button") || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      setAdminChatMinimized(minimizedChat.dataset.adminChatWindow, false);
+    });
+    $("#adminAiForm")?.addEventListener("submit", (event) => {
+      event.preventDefault();
+      askAdminAi(event.currentTarget.question.value);
+      event.currentTarget.reset();
+    });
+    const waiterTableSearch = $("#waiterTableSearch");
+    waiterTableSearch?.addEventListener("input", (event) => {
+      renderWaiterTableSelect(event.currentTarget.value);
+      showWaiterTableOptions();
+    });
+    waiterTableSearch?.addEventListener("focus", () => {
+      renderWaiterTableSelect();
+      showWaiterTableOptions();
+    });
+    waiterTableSearch?.addEventListener("click", showWaiterTableOptions);
+    waiterTableSearch?.addEventListener("keydown", async (event) => {
+      const combobox = $("#waiterTableCombobox");
+      const buttons = $$('[data-waiter-table]', $("#waiterTableOptions"));
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        showWaiterTableOptions();
+        const currentIndex = Number(combobox?.dataset.activeIndex ?? -1);
+        const nextIndex = currentIndex < 0
+          ? (event.key === "ArrowDown" ? 0 : buttons.length - 1)
+          : (event.key === "ArrowDown" ? currentIndex + 1 : currentIndex - 1);
+        setWaiterTableActiveIndex(nextIndex);
+        return;
+      }
+      if (event.key === "Enter") {
+        event.preventDefault();
+        const selectedId = combobox?.dataset.selectedId || (buttons.length === 1 ? buttons[0].dataset.waiterTable : "");
+        if (selectedId) await openWaiterTableChoice(selectedId);
+        else showWaiterTableOptions();
+        return;
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeWaiterTableOptions();
+      }
+    });
+    $("#waiterTableOptions")?.addEventListener("click", async (event) => {
+      const option = event.target.closest("[data-waiter-table]");
+      if (option) await openWaiterTableChoice(option.dataset.waiterTable);
+    });
+    $("#waiterTableForm")?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const selectedId = $("#waiterTableCombobox")?.dataset.selectedId;
+      if (selectedId) await openWaiterTableChoice(selectedId);
+      else showWaiterTableOptions();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (event.button === 0 && event.target.closest('#consumptionDialog [data-cancel-consumption]')) {
+        event.preventDefault();
+        // En tactil el modal debe seguir abierto hasta el clic para que
+        // al soltar el dedo no se active una mesa que estaba debajo.
+        if (event.pointerType !== "touch") cancelConsumption();
+        return;
+      }
+      if (!event.target.closest("#waiterTableCombobox")) closeWaiterTableOptions();
+      if (!event.target.closest("#consumptionProductCombobox, #viewTableConsumption")) closeConsumptionProductOptions();
+    });
+    $("#logoutButton")?.addEventListener("click", logoutAdmin);
+
+    document.addEventListener("change", async (event) => {
+      if (event.target.matches("[data-outdoor-table]")) {
+        if (!(state.outdoorTableDraftIds instanceof Set)) state.outdoorTableDraftIds = new Set();
+        const id = String(event.target.dataset.outdoorTable || "");
+        if (event.target.checked) state.outdoorTableDraftIds.add(id);
+        else state.outdoorTableDraftIds.delete(id);
+        state.outdoorTableDraftDirty = true;
+        renderOutdoorTableConfigurator();
+        return;
+      }
+      if (event.target.matches("[data-user-access]")) {
+        await toggleUserAccess(event.target.dataset.userAccess, event.target.checked, event.target);
+        return;
+      }
+      if (event.target.matches("[data-select-table-qr]")) {
+        const id = String(event.target.dataset.selectTableQr);
+        if (event.target.checked) state.selectedTableQrIds.add(id);
+        else state.selectedTableQrIds.delete(id);
+        event.target.closest(".table-manager-row")?.classList.toggle("is-selected", event.target.checked);
+        renderQrBatchControls();
+        return;
+      }
+      if (event.target.id === "alertFilter") {
+        state.alertFilter = event.target.value || "all";
+        renderAlerts();
+        return;
+      }
+      if (event.target.matches("[data-upload]")) {
+        await uploadAsset(event.target.files[0], event.target.dataset.upload);
+        event.target.value = "";
+      }
+      if (event.target.name === "menu_item_id" && event.target.closest("#consumptionForm")) {
+        const item = state.items.find((entry) => entry.id === event.target.value);
+        const form = event.target.form;
+        form.item_name.value = item?.name || "";
+        setCurrencyInputValue(form.unit_price, item?.price || 0);
+      }
+    });
+
+    document.addEventListener("click", async (event) => {
+      const navLink = event.target.closest(".admin-sidebar nav a");
+      if (navLink) {
+        event.preventDefault();
+        const section = navLink.getAttribute("href")?.replace("#", "") || "dashboard";
+        history.replaceState(null, "", `#${section}`);
+        showAdminSection(section);
+        if (section === "users" && isBoss()) {
+          void loadUsers().then(renderUsers);
+        }
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+        return;
+      }
+
+      if (event.target.closest("[data-alert-card]")) stopAlarm();
+
+      const finishChatButton = event.target.closest("[data-finish-admin-chat]");
+      if (finishChatButton) {
+        await requestFinishAdminChat(finishChatButton.dataset.finishAdminChat);
+        return;
+      }
+
+      const minimizedChat = event.target.closest(".admin-chat-window.is-minimized");
+      if (minimizedChat) {
+        setAdminChatMinimized(minimizedChat.dataset.adminChatWindow, false);
+        return;
+      }
+
+      const target = event.target.closest("button");
+      if (!target) return;
+      if (target.dataset.toggleUserPin !== undefined) {
+        const pin = target.closest("form")?.elements.pin;
+        if (pin) {
+          const visible = pin.type === "text";
+          pin.type = visible ? "password" : "text";
+          target.title = visible ? "Mostrar PIN" : "Ocultar PIN";
+          target.setAttribute("aria-label", target.title);
+          target.innerHTML = icon(visible ? "eye-off" : "eye", 18);
+          refreshIcons();
+        }
+        return;
+      }
+      if (target.dataset.shareUser) {
+        await shareUserCredentials(target.dataset.shareUser);
+        return;
+      }
+      if (target.id === "enableSound") {
+        if (state.soundEnabled && state.soundPrimed) {
+          if (await confirmDisableAlarm()) disableAlarm();
+        } else {
+          await unlockAlarm();
+        }
+      }
+      if (target.id === "selectAllTableQrs") {
+        setAllQrSelections(true);
+      }
+      if (target.id === "selectOutdoorRange" || target.id === "clearOutdoorRange") {
+        const fromId = $("#outdoorTableFrom")?.value || "";
+        const toId = $("#outdoorTableTo")?.value || "";
+        const ordered = normalTables()
+          .filter((table) => table.is_active !== false)
+          .sort((left, right) => Number(left.table_number || 0) - Number(right.table_number || 0));
+        const fromIndex = ordered.findIndex((table) => String(table.id) === String(fromId));
+        const toIndex = ordered.findIndex((table) => String(table.id) === String(toId));
+        if (fromIndex >= 0 && toIndex >= 0) {
+          if (!(state.outdoorTableDraftIds instanceof Set)) state.outdoorTableDraftIds = new Set();
+          const first = Math.min(fromIndex, toIndex);
+          const last = Math.max(fromIndex, toIndex);
+          ordered.slice(first, last + 1).forEach((table) => {
+            if (target.id === "selectOutdoorRange") state.outdoorTableDraftIds.add(String(table.id));
+            else state.outdoorTableDraftIds.delete(String(table.id));
+          });
+          state.outdoorTableDraftDirty = true;
+          renderOutdoorTableConfigurator();
+        }
+      }
+      if (target.id === "clearTableQrs") {
+        setAllQrSelections(false);
+      }
+      if (target.id === "downloadSelectedQrs") await downloadSelectedQrs();
+      if (target.id === "syncAppsScriptInventory") {
+        await runManualRefreshButton(target, async () => {
+          await flushAppsScriptOutbox();
+          if (inventorySyncPromise) await inventorySyncPromise;
+          return syncInventoryWithAppsScript({ reconcileDeletions: true });
+        });
+      }
+      if (target.dataset.incomeRange) setIncomeRange(target.dataset.incomeRange);
+      if (target.dataset.printIncome) printIncomeReceipt(target.dataset.printIncome);
+      if (target.dataset.editIncome) openIncomeEdit(target.dataset.editIncome);
+      if (target.dataset.deleteIncome) openDeleteIncomeDialog(target.dataset.deleteIncome);
+      if (target.id === "refreshIncomeReport") await runManualRefreshButton(target, () => loadIncomeReport({ background: true, manual: true }));
+      if (target.id === "moreIncomeRecords") await loadMoreIncomeRecords();
+      if (target.id === "exportIncomeCsv") exportIncomeCsv();
+      if (target.id === "openPurchases") await openPurchaseHistory();
+      if (target.dataset.savePurchaseCost) savePurchaseUnitCost(target);
+      if (target.dataset.hidePurchase) {
+        const movementId = String(target.dataset.hidePurchase);
+        const movement = state.inventoryMovements.find((entry) => String(entry.movementId) === movementId);
+        if (!movement || !await askForConfirmation({
+          eyebrow: "Quitar compra de la lista",
+          title: "¿Quitar este registro de compras?",
+          message: "El registro solo se ocultará en este modal y en este dispositivo. El inventario, las existencias y el movimiento original no cambiarán.",
+          accept: "Sí, quitar de la lista",
+          cancel: "Conservar registro"
+        })) return;
+        try {
+          const hiddenIds = hiddenPurchaseMovementIds();
+          hiddenIds.add(movementId);
+          localStorage.setItem(HIDDEN_PURCHASE_MOVEMENTS_KEY, JSON.stringify([...hiddenIds]));
+        } catch {
+          toast("No se pudo quitar el registro de compras en este dispositivo.", "error");
+          return;
+        }
+        renderPurchaseHistory();
+        toast("Registro quitado de la lista. El inventario no cambió.");
+      }
+      if (target.id === "clearPurchaseHistory") {
+        if (!await askForConfirmation({
+          eyebrow: "Limpiar historial de compras",
+          title: "¿Eliminar todas las compras de esta lista?",
+          message: "Se ocultarán de este modal las compras registradas hasta ahora. El inventario y los movimientos no cambiarán. Las próximas unidades agregadas aparecerán aquí.",
+          accept: "Sí, limpiar lista",
+          cancel: "Conservar lista"
+        })) return;
+        try {
+          localStorage.setItem(PURCHASE_HISTORY_CUTOFF_KEY, new Date().toISOString());
+        } catch {
+          toast("No se pudo limpiar la lista de compras en este dispositivo.", "error");
+          return;
+        }
+        state.purchaseSearch = "";
+        state.purchaseProductFilter = "all";
+        state.purchaseDateFrom = "";
+        state.purchaseDateTo = "";
+        if ($("#purchaseSearch")) $("#purchaseSearch").value = "";
+        if ($("#purchaseProductFilter")) $("#purchaseProductFilter").value = "all";
+        if ($("#purchaseDateFrom")) $("#purchaseDateFrom").value = "";
+        if ($("#purchaseDateTo")) $("#purchaseDateTo").value = "";
+        renderPurchaseProductOptions();
+        renderPurchaseHistory();
+        toast("Lista de compras limpia. El inventario no cambió.");
+      }
+      if (target.id === "clearPurchaseFilters") {
+        state.purchaseSearch = "";
+        state.purchaseProductFilter = "all";
+        state.purchaseDateFrom = "";
+        state.purchaseDateTo = "";
+        if ($("#purchaseSearch")) $("#purchaseSearch").value = "";
+        if ($("#purchaseProductFilter")) $("#purchaseProductFilter").value = "all";
+        if ($("#purchaseDateFrom")) $("#purchaseDateFrom").value = "";
+        if ($("#purchaseDateTo")) $("#purchaseDateTo").value = "";
+        renderPurchaseHistory();
+      }
+      if (target.id === "newInventoryProduct") resetInventoryForm({ open: true });
+      if (target.id === "cancelInventoryEdit") {
+        resetInventoryForm();
+        $("#inventoryDialog")?.close();
+      }
+      if (target.id === "refreshInventoryMovements") await runManualRefreshButton(target, () => loadInventoryMovements({ force: true }));
+      if (target.id === "moreInventoryMovements") await loadInventoryMovements({ more: true });
+      if (target.id === "morePurchaseHistory") {
+        target.disabled = true;
+        target.textContent = "Cargando compras...";
+        await loadInventoryMovements({ more: true, background: true });
+        renderPurchaseProductOptions();
+        renderPurchaseHistory();
+      }
+      if (target.dataset.resetSection) {
+        await resetSectionData(target.dataset.resetSection);
+        return;
+      }
+      if (target.dataset.removeConsumptionDraft !== undefined) {
+        const removedIndex = Number(target.dataset.removeConsumptionDraft);
+        state.consumptionDrafts.splice(removedIndex, 1);
+        if (state.consumptionDraftEditIndex === removedIndex) clearConsumptionEntry($("#consumptionForm"));
+        else if (state.consumptionDraftEditIndex > removedIndex) state.consumptionDraftEditIndex -= 1;
+        renderConsumptionSelection();
+      }
+      if (target.dataset.minimizeAdminChat) setAdminChatMinimized(target.dataset.minimizeAdminChat, !state.adminChats.get(String(target.dataset.minimizeAdminChat))?.minimized);
+      if (target.id === "newWalkInSale") await createWalkInSale();
+      if (target.id === "addServicePoint") addServicePoint();
+      if (target.dataset.serviceZone) {
+        state.activeServiceZone = target.dataset.serviceZone;
+        localStorage.setItem(SERVICE_ZONE_STORAGE_KEY, state.activeServiceZone);
+        renderServicePoints();
+      }
+      if (target.id === "receiptPrintButton") printLastPaidReceipt();
+      if (target.dataset.closeReceiptResult !== undefined) $("#receiptResultDialog")?.close();
+      if (target.id === "viewTableConsumption") {
+        const preview = $("#tableConsumptionPreview");
+        if (preview) setTableConsumptionPreviewVisible(preview.hidden);
+      }
+      if (target.id === "releaseEmptyTable") {
+        const sessionId = $("#consumptionForm")?.session_id.value || "";
+        state.consumptionDrafts = [];
+        $("#consumptionDialog")?.close();
+        const released = await closeSession(sessionId);
+        if (released) toast("Mesa liberada y disponible nuevamente.", "ok", `released-empty-table:${sessionId}`);
+        return;
+      }
+      if (target.id === "chargeTableAccount") {
+        if (state.consumptionDrafts.length) {
+          toast("Confirma o elimina la seleccion pendiente antes de cobrar la cuenta.", "error", "pending-items-before-payment");
+          return;
+        }
+        const sessionId = $("#consumptionForm")?.session_id.value || "";
+        $("#consumptionDialog")?.close();
+        openPaymentDialog(sessionId);
+      }
+      if (target.id === "paymentAddItem") {
+        const sessionId = $("#paymentForm")?.session_id?.value || "";
+        $("#paymentDialog")?.close();
+        openConsumptionDialog(sessionId, { quickCheckout: true });
+      }
+      if (target.dataset.cancelConsumption !== undefined) cancelConsumption();
+      if (target.dataset.cancelPayment !== undefined) cancelPayment();
+      if (target.dataset.openTable) await openCompactTable(target.dataset.openTable);
+      if (target.dataset.acceptRequest) await acceptRequest(target.dataset.acceptRequest);
+      if (target.dataset.openChat) await openAdminChat(target.dataset.openChat);
+      if (target.dataset.adminAiQuestion) askAdminAi(target.dataset.adminAiQuestion);
+      if (target.dataset.sendBill) await sendBillToClient(target.dataset.sendBill);
+      if (target.dataset.viewAccount) openAccountDetailDialog(target.dataset.viewAccount);
+      if (target.dataset.closeSession) await closeSession(target.dataset.closeSession);
+      if (target.dataset.moveSession) {
+        target.closest("#accountDetailDialog")?.close();
+        openMoveSessionDialog(target.dataset.moveSession);
+      }
+      if (target.dataset.chargeSession) {
+        target.closest("#accountDetailDialog")?.close();
+        openPaymentDialog(target.dataset.chargeSession);
+      }
+      if (target.dataset.printSession) {
+        const session = state.sessions.find((entry) => entry.id === target.dataset.printSession);
+        if (session) printThermalReceipt(session);
+      }
+      if (target.dataset.addManual) {
+        target.closest("#accountDetailDialog")?.close();
+        openConsumptionDialog(target.dataset.addManual);
+      }
+      if (target.dataset.editConsumption) {
+        target.closest("#accountDetailDialog")?.close();
+        editConsumption(target.dataset.sessionId, target.dataset.editConsumption);
+      }
+      if (target.dataset.deleteConsumption) await deleteConsumption(target.dataset.sessionId, target.dataset.deleteConsumption);
+      if (target.dataset.removeIncomeLine !== undefined) {
+        const line = target.closest("[data-income-line]");
+        const lines = $$('[data-income-line]', $("#incomeEditForm"));
+        if (lines.length <= 1) {
+          const saleId = $("#incomeEditForm")?.sale_id.value || "";
+          $("#incomeEditDialog")?.close();
+          openDeleteIncomeDialog(saleId);
+        }
+        else { line?.remove(); updateIncomeEditPayments($("#incomeEditForm")); }
+      }
+      if (target.dataset.closeDialog !== undefined) target.closest("dialog")?.close();
+      if (target.dataset.copyQr) await copyQr(target.dataset.copyQr);
+      if (target.dataset.downloadQr) await downloadQr(target.dataset.downloadQr);
+      if (target.dataset.regenerateQr) await regenerateQr(target.dataset.regenerateQr);
+      if (target.dataset.viewSession) {
+        history.replaceState(null, "", "#accounts");
+        showAdminSection("accounts");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+      if (target.dataset.editTable) editTable(target.dataset.editTable);
+      if (target.dataset.editCategory) editCategory(target.dataset.editCategory);
+      if (target.dataset.editItem) editItem(target.dataset.editItem);
+      if (target.dataset.editInventory) editInventoryProduct(target.dataset.editInventory);
+      if (target.dataset.inventoryAdjust) openInventoryAdjustment(target.dataset.inventoryAdjust);
+      if (target.dataset.editUser) editUser(target.dataset.editUser);
+      if (target.dataset.deleteUser) await deleteUser(target.dataset.deleteUser);
+      if (target.dataset.deleteTable) await deleteRow("restaurant_tables", target.dataset.deleteTable, "esta mesa");
+      if (target.dataset.deleteServicePoint) {
+        const hasOpenAccount = state.sessions.some((session) => String(session.table_id) === String(target.dataset.deleteServicePoint) && session.status === "open");
+        if (hasOpenAccount) toast("Cobra o mueve la cuenta antes de eliminar este puesto.", "error", `service-point-open:${target.dataset.deleteServicePoint}`);
+        else await deleteRow("restaurant_tables", target.dataset.deleteServicePoint, "este puesto");
+      }
+      if (target.dataset.deleteCategory) await deleteRow("menu_categories", target.dataset.deleteCategory, "esta categoria");
+      if (target.dataset.deleteItem) await deleteRow("menu_items", target.dataset.deleteItem, "este producto");
+    });
+
+    window.addEventListener("hashchange", () => {
+      showAdminSection(location.hash.replace("#", "") || "dashboard");
+    });
+  };
+
+  const subscribeAdmin = () => {
+    if (!state.authToken) return;
+    void pollAdminRequests();
+    subscribeAdminData();
+    if (typeof startConfirmedReportSync === "function") startConfirmedReportSync();
+    const previous = state.adminBroadcastChannel;
+    if (previous && !state.adminRealtimeNeedsReconnect) return;
+    window.clearTimeout(state.adminReconnectTimer);
+    state.adminBroadcastChannel = null;
+    state.adminBroadcastConnected = false;
+    if (previous) {
+      state.subscriptions = state.subscriptions.filter((entry) => entry !== previous);
+      void state.sb.removeChannel(previous);
+    }
+    state.adminRealtimeNeedsReconnect = false;
+    if (!state.peerSyncListener) {
+      state.peerSyncListener = (event) => { rememberRemoteConfirmation(event.detail); notifyAdminPeers(event.detail); };
+      window.addEventListener("donpieros-remote-change", state.peerSyncListener);
+    }
+    const channel = state.sb
+      .channel("admin", { config: { broadcast: { self: false }, private: false } })
+      .on("broadcast", { event: "refresh" }, () => { void pollAdminRequests(); void refreshAdminNow(); })
+      .on("broadcast", { event: "request-arrived" }, ({ payload }) => void refreshAdminRequests(payload?.requestIds))
+      .on("broadcast", { event: "reports-committed" }, () => void syncConfirmedReports())
+      .on("broadcast", { event: "reports-refresh" }, () => void refreshBackgroundReports({ force:true }))
+      .on("broadcast", { event: "inventory-refresh" }, () => void refreshInventoryFromPeer())
+      .on("broadcast", { event: "users-refresh" }, () => { if (isBoss()) void loadUsers(); })
+      .on("broadcast", { event: "core-refresh" }, () => void refreshCoreNow());
+    state.subscriptions.push(channel);
+    state.adminBroadcastChannel = channel;
+    channel.subscribe((status) => {
+      if (state.adminBroadcastChannel !== channel) return;
+      state.adminBroadcastConnected = status === "SUBSCRIBED";
+      if (status === "SUBSCRIBED") {
+        state.adminRealtimeNeedsReconnect = false;
+        state.adminReconnectAttempts = 0;
+        window.clearTimeout(state.adminReconnectTimer);
+        setRealtimeStatus("En vivo", "live");
+        void pollAdminRequests();
+        void refreshAdminNow();
+      }
+      if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        state.adminRealtimeNeedsReconnect = true;
+        window.clearTimeout(state.adminReconnectTimer);
+        state.adminReconnectTimer = window.setTimeout(() => {
+          if (state.adminBroadcastChannel === channel && state.authToken) subscribeAdmin();
+        }, Math.min(30000,3000*2**Math.min((state.adminReconnectAttempts=(state.adminReconnectAttempts || 0)+1)-1,4)));
+        setRealtimeStatus("Respaldo cada 1,5 segundos", "fallback");
+      }
+    });
+  };
+
+  const subscribeAdminData = () => {
+    if (!state.authToken) return;
+    const previous = state.adminDataChannel;
+    if (previous && !state.adminDataNeedsReconnect) return;
+    state.adminDataChannel = null;
+    state.adminDataConnected = false;
+    window.clearTimeout(state.adminDataReconnectTimer);
+    if (previous) {
+      state.subscriptions = state.subscriptions.filter(entry => entry !== previous);
+      void state.sb.removeChannel(previous);
+    }
+    state.adminDataNeedsReconnect = false;
+    const channel = state.sb.channel("admin-data")
+      .on("postgres_changes", { event: "*", schema: "public", table: "service_requests" }, (event) => { receiveAdminRequests([event.new]); void refreshAdminNow(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "table_sessions" }, refreshAdminNow)
+      .on("postgres_changes", { event: "*", schema: "public", table: "session_items" }, refreshAdminNow);
+    state.adminDataChannel = channel;
+    state.subscriptions.push(channel);
+    channel.subscribe(status => {
+      if (state.adminDataChannel !== channel) return;
+      state.adminDataConnected = status === "SUBSCRIBED";
+      if (status === "SUBSCRIBED") { state.adminDataNeedsReconnect = false; state.adminDataReconnectAttempts = 0; return; }
+      if (["CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].includes(status)) {
+        state.adminDataNeedsReconnect = true;
+        window.clearTimeout(state.adminDataReconnectTimer);
+        state.adminDataReconnectTimer = window.setTimeout(subscribeAdminData, Math.min(30000,5000*2**Math.min((state.adminDataReconnectAttempts=(state.adminDataReconnectAttempts || 0)+1)-1,3)));
+      }
+    });
+  };
+
+  const tableFromScannedValue = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return null;
+    let code = raw;
+    try {
+      const url = new URL(raw);
+      code = url.searchParams.get("mesa") || url.searchParams.get("table") || url.searchParams.get("t") || raw;
+    } catch (error) { /* El lector puede entregar solo el codigo. */ }
+    return state.tables.find((table) =>
+      String(table.id) === code ||
+      String(table.table_number) === code ||
+      String(table.qr_code || "").toLowerCase() === code.toLowerCase()
+    ) || null;
+  };
+
+  const ensureAdminTableSession = async (table) => {
+    if (!table) return null;
+    let session = state.sessions.find((entry) => String(entry.table_id) === String(table.id) && entry.status === "open");
+    if (!session) {
+      session = await dbQuiet(
+        state.sb.from("table_sessions").select("*, session_items(*)")
+          .eq("table_id", table.id).eq("status", "open")
+          .order("opened_at", { ascending: false }).limit(1).maybeSingle(),
+        null
+      );
+    }
+    if (!session) {
+      session = await dbQuiet(
+        state.sb.from("table_sessions").insert({
+          table_id: table.id,
+          status: "open",
+          sale_channel: "table",
+          assigned_waiter_id: state.currentUser?.id || null
+        }).select("*").single(),
+        null
+      );
+      if (!session) {
+        session = await dbQuiet(
+          state.sb.from("table_sessions").select("*, session_items(*)")
+            .eq("table_id", table.id).eq("status", "open")
+            .order("opened_at", { ascending: false }).limit(1).maybeSingle(),
+          null
+        );
+      }
+    }
+    if (!session) return null;
+    session = {
+      ...session,
+      restaurant_tables: table,
+      assigned_waiter: state.currentUser || session.assigned_waiter,
+      session_items: session.session_items || []
+    };
+    state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
+    state.accountsRenderSignature = "";
+    renderAdminLive();
+    return session;
+  };
+
+  const openScannedTable = async (value) => {
+    let table = tableFromScannedValue(value);
+    if (!table) {
+      await loadCore();
+      table = tableFromScannedValue(value);
+    }
+    if (!table) {
+      toast("No se encontro la mesa seleccionada. Actualiza la pagina e intenta de nuevo.", "error", "unknown-service-table");
+      return;
+    }
+    let session = state.sessions.find((entry) => entry.table_id === table.id && entry.status === "open");
+    if (session) {
+      session = {
+        ...session,
+        restaurant_tables: table,
+        assigned_waiter: state.currentUser,
+        session_items: session.session_items || []
+      };
+      state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
+    }
+    openConsumptionDialog(session?.id || "", { pendingTableId: session ? "" : table.id });
+  };
+
+  const stopQrCamera = () => {
+    state.qrCameraStream?.getTracks?.().forEach((track) => track.stop());
+    state.qrCameraStream = null;
+    const video = $("#qrCamera");
+    if (video) {
+      video.hidden = true;
+      video.srcObject = null;
+    }
+  };
+
+  const startQrCamera = async () => {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      toast("La camara necesita abrirse desde una pagina HTTPS segura.", "error", "qr-camera-insecure");
+      return;
+    }
+    stopQrCamera();
+    const video = $("#qrCamera");
+    if (!video) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      });
+      state.qrCameraStream = stream;
+      video.srcObject = stream;
+      video.hidden = false;
+      await video.play();
+
+      let detector = null;
+      if ("BarcodeDetector" in window) {
+        try {
+          const supported = typeof BarcodeDetector.getSupportedFormats === "function"
+            ? await BarcodeDetector.getSupportedFormats()
+            : ["qr_code"];
+          if (supported.includes("qr_code")) detector = new BarcodeDetector({ formats: ["qr_code"] });
+        } catch (error) { /* Safari y algunos WebViews exponen una implementacion incompleta. */ }
+      }
+
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!detector && (typeof window.jsQR !== "function" || !context)) {
+        stopQrCamera();
+        toast("No se pudo cargar el lector QR. Recarga la pagina e intenta de nuevo.", "error", "qr-reader-unavailable");
+        return;
+      }
+
+      const scan = async () => {
+        if (!state.qrCameraStream) return;
+        let value = "";
+        if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight) {
+          if (detector) {
+            try {
+              const codes = await detector.detect(video);
+              value = codes[0]?.rawValue || "";
+            } catch (error) {
+              detector = null;
+            }
+          }
+          // Algunos móviles exponen BarcodeDetector pero no decodifican video correctamente.
+          if (!value && typeof window.jsQR === "function" && context) {
+            const scale = Math.min(1, 720 / video.videoWidth);
+            canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+            canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const frame = context.getImageData(0, 0, canvas.width, canvas.height);
+            value = window.jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" })?.data || "";
+          }
+        }
+        if (value) {
+          stopQrCamera();
+          await openScannedTable(value);
+          return;
+        }
+        window.requestAnimationFrame(scan);
+      };
+      scan();
+    } catch (error) {
+      stopQrCamera();
+      const errorName = String(error?.name || "");
+      const message = errorName === "NotAllowedError" || errorName === "SecurityError"
+        ? "Permiso de camara bloqueado. Habilitalo en la configuracion del sitio y vuelve a intentar."
+        : errorName === "NotFoundError" || errorName === "OverconstrainedError"
+          ? "No se encontro una camara disponible en este dispositivo."
+          : errorName === "NotReadableError" || errorName === "AbortError"
+            ? "La camara esta siendo usada por otra aplicacion. Cierrala y vuelve a intentar."
+            : "No se pudo iniciar la camara. Recarga la pagina y vuelve a intentar.";
+      toast(message, "error", `qr-camera-${errorName || "failed"}`);
+    }
+  };
+
+  const setQrScanStatus = (message, tone = "scanning") => {
+    const status = $("#qrScanStatus");
+    if (!status) return;
+    status.hidden = !message;
+    status.className = `qr-scan-status ${tone}`;
+    status.textContent = friendlyMessage(message);
+  };
+
+  const stopPowerfulQrCamera = async (keepStatus = false) => {
+    const controls = state.qrScannerControls;
+    state.qrScannerControls = null;
+    try { controls?.stop?.(); } catch (error) { /* El stream pudo cerrarse antes. */ }
+    const scanner = state.qrScanner;
+    state.qrScanner = null;
+    try { scanner?.reset?.(); } catch (error) { /* Limpieza opcional de ZXing. */ }
+    stopQrCamera();
+    const reader = $("#qrReader");
+    if (reader) {
+      reader.hidden = true;
+      reader.innerHTML = "";
+    }
+    const choice = $("#qrCameraChoice");
+    if (choice) choice.hidden = true;
+    if (!keepStatus) setQrScanStatus("");
+  };
+
+  const handleDecodedQr = async (decodedText) => {
+    const value = String(decodedText || "").trim();
+    if (!value || state.qrScanBusy) return;
+    state.qrScanBusy = true;
+    const input = $("#waiterQrForm [name='qr_value']");
+    if (input) input.value = value;
+    setQrScanStatus("QR detectado. Abriendo la mesa...", "detected");
+    try {
+      await stopPowerfulQrCamera(true);
+      await openScannedTable(value);
+    } finally {
+      state.qrScanBusy = false;
+    }
+  };
+
+  const qrCameraErrorMessage = (error) => {
+    const detail = `${error?.name || ""} ${error?.message || error || ""}`.toLowerCase();
+    if (/notallowed|permission|denied|security/.test(detail)) {
+      return "Permiso de camara bloqueado. Habilitalo para este sitio y vuelve a intentar.";
+    }
+    if (/notfound|devicesnotfound|overconstrained/.test(detail)) {
+      return "No se encontro una camara trasera disponible.";
+    }
+    if (/notreadable|trackstarterror|ocupada|in use/.test(detail)) {
+      return "La camara esta ocupada por otra aplicacion. Cierrala y vuelve a intentar.";
+    }
+    return "No se pudo iniciar el lector. Prueba con Leer foto QR.";
+  };
+
+  const cameraName = (device, index) => device.label?.trim() || `Camara ${index + 1}`;
+
+  const cameraScore = (device) => {
+    const label = String(device?.label || "").toLowerCase();
+    let score = 0;
+    if (/back|rear|environment|trasera|posterior|traseira/.test(label)) score += 100;
+    if (/front|user|frontal/.test(label)) score -= 200;
+    if (/ultra|tele|macro|depth|0[.,]5|2x|3x/.test(label)) score -= 70;
+    if (/\b1x\b|back camera$|rear camera$|camara trasera$|cámara trasera$/.test(label)) score += 40;
+    return score;
+  };
+
+  const populateQrCameraSelect = (devices, selectedId) => {
+    state.qrCameraDevices = devices || [];
+    const select = $("#qrCameraSelect");
+    const choice = $("#qrCameraChoice");
+    if (!select || !choice) return;
+    select.innerHTML = state.qrCameraDevices.map((device, index) =>
+      `<option value="${escapeHTML(device.deviceId)}">${escapeHTML(cameraName(device, index))}</option>`
+    ).join("");
+    if (selectedId && state.qrCameraDevices.some((device) => device.deviceId === selectedId)) {
+      select.value = selectedId;
+    }
+    choice.hidden = state.qrCameraDevices.length < 2;
+  };
+
+  const improveQrCameraFocus = async () => {
+    const track = $("#qrCamera")?.srcObject?.getVideoTracks?.()[0];
+    if (!track?.applyConstraints || !track?.getCapabilities) return;
+    try {
+      const capabilities = track.getCapabilities();
+      const advanced = [];
+      if (Array.isArray(capabilities.focusMode) && capabilities.focusMode.includes("continuous")) {
+        advanced.push({ focusMode: "continuous" });
+      }
+      if (advanced.length) await track.applyConstraints({ advanced });
+    } catch (error) { /* No todos los Safari aceptan restricciones avanzadas. */ }
+  };
+
+  const startPowerfulQrCamera = async (preferredDeviceId = "") => {
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      toast("La camara requiere abrir el panel desde HTTPS.", "error", "qr-camera-insecure");
+      return;
+    }
+    if (typeof window.ZXingBrowser?.BrowserQRCodeReader !== "function") {
+      toast("El motor ZXing no cargo. Recarga la pagina con conexion a internet.", "error", "qr-library-missing");
+      return;
+    }
+    await stopPowerfulQrCamera();
+    state.qrScanBusy = false;
+    const video = $("#qrCamera");
+    if (!video) return;
+    video.hidden = false;
+    setQrScanStatus("Solicitando la camara trasera...", "scanning");
+    try {
+      let cameras = [];
+      try {
+        cameras = await window.ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
+      } catch (error) { /* Algunos Safari no enumeran dispositivos antes de autorizar. */ }
+      const ranked = [...cameras].sort((a, b) => cameraScore(b) - cameraScore(a));
+      const labelsAvailable = cameras.some((entry) => String(entry.label || "").trim());
+      let selectedId = preferredDeviceId && cameras.some((entry) => entry.deviceId === preferredDeviceId)
+        ? preferredDeviceId
+        : labelsAvailable ? ranked[0]?.deviceId : "";
+      populateQrCameraSelect(cameras, selectedId);
+      const scanner = new window.ZXingBrowser.BrowserQRCodeReader(undefined, {
+        delayBetweenScanAttempts: 70,
+        delayBetweenScanSuccess: 500,
+        tryPlayVideoTimeout: 5000
+      });
+      state.qrScanner = scanner;
+      const videoConstraints = selectedId
+        ? { deviceId: { exact: selectedId }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+        : { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } };
+      const controls = await scanner.decodeFromConstraints({ video: videoConstraints, audio: false }, video, (result, error) => {
+        if (result) void handleDecodedQr(result.getText?.() || result.text || String(result));
+        // NotFoundException es normal: ZXing la emite en cada cuadro sin codigo.
+        if (error && !/notfoundexception/i.test(String(error?.name || error))) {
+          console.debug("QR frame:", error);
+        }
+      });
+      state.qrScannerControls = controls;
+      state.qrCameraStream = video.srcObject;
+      await improveQrCameraFocus();
+      selectedId = video.srcObject?.getVideoTracks?.()[0]?.getSettings?.().deviceId || selectedId;
+
+      // Los nombres completos aparecen despues de conceder permiso en varios moviles.
+      try {
+        cameras = await window.ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
+        populateQrCameraSelect(cameras, selectedId);
+      } catch (error) { /* El lector ya funciona aunque el navegador oculte la lista. */ }
+      setQrScanStatus("Lector ZXing activo. Acerca el QR hasta que se vea nitido; si no enfoca, cambia la camara.", "scanning");
+    } catch (error) {
+      await stopPowerfulQrCamera();
+      const message = qrCameraErrorMessage(error);
+      setQrScanStatus(message, "error");
+      toast(message, "error", "qr-advanced-camera-failed");
+    }
+  };
+
+  const scanQrImage = async (file) => {
+    if (typeof window.ZXingBrowser?.BrowserQRCodeReader !== "function") {
+      toast("El motor ZXing no cargo. Recarga la pagina.", "error", "qr-library-missing-file");
+      return;
+    }
+    await stopPowerfulQrCamera();
+    setQrScanStatus("Analizando la imagen...", "scanning");
+    const imageUrl = URL.createObjectURL(file);
+    try {
+      const scanner = new window.ZXingBrowser.BrowserQRCodeReader();
+      const result = await scanner.decodeFromImageUrl(imageUrl);
+      await handleDecodedQr(result.getText?.() || result.text || String(result));
+    } catch (error) {
+      await stopPowerfulQrCamera();
+      const message = "No se encontro un QR legible en la imagen. Acercate y evita reflejos.";
+      setQrScanStatus(message, "error");
+      toast(message, "error", "qr-image-not-readable");
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+    }
+  };
+
+  const applyCurrentUser = () => {
+    document.body.dataset.userRole = state.currentUser?.role || "";
+    const displayName = state.currentUser?.full_name || "Sin sesión";
+    $("#currentUserName") && ($("#currentUserName").textContent = displayName);
+    $("#currentUserRole") && ($("#currentUserRole").textContent = roleLabel(state.currentUser?.role));
+    $("#currentUserInitials") && ($("#currentUserInitials").textContent = state.currentUser
+      ? displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part.charAt(0)).join("").toUpperCase()
+      : "DP");
+    document.body.classList.toggle("admin-authenticated", Boolean(state.currentUser));
+    syncAdminSectionAccess();
+  };
+
+  const ADMIN_USER_CACHE_KEY = "don_pieros_admin_user_v1";
+
+  const waitForAdminLogin = async () => {
+    const storedToken = localStorage.getItem("don_pieros_admin_token") || "";
+    if (storedToken) {
+      state.authToken = storedToken;
+      state.sb.setAuthToken(storedToken);
+      const user = await dbQuiet(state.sb.rpc("getCurrentUser", { auth_token: storedToken }), null);
+      if (user) {
+        state.currentUser = user;
+        localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(user));
+        applyCurrentUser();
+        return true;
+      }
+      state.authToken = "";
+      state.currentUser = null;
+      state.sb.setAuthToken("");
+      localStorage.removeItem("don_pieros_admin_token");
+      localStorage.removeItem(ADMIN_USER_CACHE_KEY);
+    }
+
+    setLoading(false);
+    applyCurrentUser();
+    refreshIcons();
+    return new Promise((resolve) => {
+      const form = $("#loginForm");
+      form?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = form.querySelector("[type='submit']");
+        const errorBox = $("#loginError");
+        if (button) button.disabled = true;
+        if (errorBox) errorBox.textContent = "";
+        if (localStorage.getItem("waiter_alarm_enabled") !== "0") void unlockAlarm({ silent: true });
+        const session = await dbQuiet(state.sb.rpc("login", {
+          username: form.username.value.trim(),
+          pin: form.pin.value
+        }), null);
+        if (!session?.token || !session?.user) {
+          if (errorBox) errorBox.textContent = "Usuario o PIN incorrectos.";
+          if (button) button.disabled = false;
+          return;
+        }
+        state.authToken = session.token;
+        state.currentUser = session.user;
+        state.sb.setAuthToken(session.token);
+        localStorage.setItem("don_pieros_admin_token", session.token);
+        localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(session.user));
+        applyCurrentUser();
+        setLoading(true);
+        resolve(true);
+      });
+    });
+  };
+
+  const sortUsers = (users) => [...users].sort((left, right) => {
+    const order = { boss: 0, admin: 1, waiter: 2 };
+    const roleOrder = (order[left.role] ?? 3) - (order[right.role] ?? 3);
+    return roleOrder || String(left.full_name || "").localeCompare(String(right.full_name || ""), "es");
+  });
+
+  const mergeUsers = (...collections) => {
+    const usersById = new Map();
+    collections.flat().filter((user) => user?.id).forEach((user) => usersById.set(String(user.id), user));
+    return sortUsers([...usersById.values()]);
+  };
+
+  const persistUsersCache = () => {
+    try {
+      localStorage.setItem(USER_LIST_CACHE_KEY, JSON.stringify(state.users));
+    } catch (error) { /* La lista remota sigue siendo la fuente principal. */ }
+  };
+
+  const persistUserCredentialPins = () => {
+    try {
+      localStorage.setItem(USER_CREDENTIALS_CACHE_KEY, JSON.stringify(state.userCredentialPins));
+    } catch (error) { /* La credencial puede copiarse durante esta sesión. */ }
+  };
+
+  const syncUserPermissionsForm = (form = $("#userForm"), permissions = null) => {
+    if (!form) return;
+    const isAdministrator = form.role.value === "admin";
+    const fieldset = $("#userPermissions");
+    if (fieldset) fieldset.hidden = !isAdministrator;
+    const selected = new Set(Array.isArray(permissions) && permissions.length ? permissions : ADMIN_SECTION_KEYS);
+    $$("input[name='permissions']", form).forEach((input) => {
+      input.checked = selected.has(input.value);
+      input.disabled = !isAdministrator;
+    });
+  };
+
+  const copyTextToClipboard = async (text) => {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    document.execCommand("copy");
+    field.remove();
+  };
+
+  const shareUserCredentials = async (id) => {
+    if (!isBoss()) return;
+    const user = state.users.find((entry) => String(entry.id) === String(id));
+    if (!user) return;
+    const pin = String(state.userCredentialPins[user.id] || "");
+    if (!pin) {
+      editUser(user.id);
+      toast("Por seguridad el PIN anterior no se puede recuperar. Escribe uno nuevo, guarda y luego copia el acceso.", "error", `missing-user-pin:${user.id}`);
+      return;
+    }
+    const accessUrl = new URL("admin.html", location.href);
+    accessUrl.search = "";
+    accessUrl.hash = "";
+    const message = [
+      "✨ Tu acceso a Don Pieros Pizza",
+      "",
+      `Hola ${user.full_name}, estas son tus credenciales:`,
+      `🔗 Enlace: ${accessUrl.href}`,
+      `👤 Usuario: ${user.username}`,
+      `🔐 PIN: ${pin}`,
+      "",
+      "Guarda este mensaje en un lugar seguro."
+    ].join("\n");
+    try {
+      await copyTextToClipboard(message);
+      toast(`Acceso de ${user.full_name} copiado para compartir.`, "ok", `credentials-copied:${user.id}`);
+    } catch (error) {
+      toast("No fue posible copiar las credenciales en este dispositivo.", "error", `credentials-copy-failed:${user.id}`);
+    }
+  };
+
+  const loadUsers = async () => {
+    const cachedUsers = readLocalJson(USER_LIST_CACHE_KEY, []);
+    const fallbackUsers = mergeUsers(Array.isArray(cachedUsers) ? cachedUsers : [], state.users, state.currentUser ? [state.currentUser] : []);
+    if (!isBoss()) {
+      state.users = mergeUsers(state.currentUser ? [state.currentUser] : []);
+      return;
+    }
+    state.users = fallbackUsers;
+    renderUsers();
+    let remoteUsers = [];
+    try {
+      const { data, error } = await state.sb.rpc("listUsers", { auth_token: state.authToken });
+      if (error) throw error;
+      remoteUsers = Array.isArray(data) ? data : Array.isArray(data?.users) ? data.users : [];
+    } catch (error) {
+      remoteUsers = [];
+    }
+    state.users = remoteUsers.length
+      ? mergeUsers(state.currentUser ? [state.currentUser] : [], remoteUsers)
+      : fallbackUsers;
+    if (remoteUsers.length) persistUsersCache();
+  };
+
+  const renderUsers = () => {
+    const list = $("#usersList");
+    if (!list) return;
+    const renderSignature = JSON.stringify(state.users.map((user) => [user.id, user.full_name, user.username, user.role, user.is_active, user.permissions, Boolean(state.userCredentialPins[user.id])]));
+    if (renderSignature === state.usersRenderSignature) return;
+    state.usersRenderSignature = renderSignature;
+    const badge = $("#usersCountBadge");
+    if (badge) badge.innerHTML = `${icon("users-round", 16)} ${state.users.length} ${state.users.length === 1 ? "usuario" : "usuarios"}`;
+    list.innerHTML = state.users.length
+      ? state.users.map((user) => `
+          <article class="user-card ${user.is_active === false ? "is-disabled" : ""}">
+            <div class="user-avatar">${icon(user.role === "boss" ? "crown" : user.role === "admin" ? "shield-check" : "user-round", 20)}</div>
+            <div class="user-card-copy">
+              <div class="user-card-name"><strong>${escapeHTML(user.full_name)}</strong>${String(user.id) === String(state.currentUser?.id) ? '<span class="current-user-badge">Sesión actual</span>' : ""}</div>
+              <span>@${escapeHTML(user.username)}</span>
+              <div class="user-card-badges"><em>${roleLabel(user.role)}</em><em class="${user.is_active === false ? "is-off" : "is-on"}">${user.is_active === false ? "Sin acceso" : "Acceso activo"}</em>${user.role === "admin" ? `<em>${normalizedUserPermissions(user).length} secciones</em>` : ""}</div>
+            </div>
+            <label class="user-access-switch" title="${user.is_active === false ? "Dar acceso" : "Quitar acceso"}">
+              <span>Acceso</span>
+              <input type="checkbox" data-user-access="${user.id}" ${user.is_active === false ? "" : "checked"} aria-label="${user.is_active === false ? "Dar acceso" : "Quitar acceso"} a ${escapeHTML(user.full_name)}">
+              <span class="user-access-track" aria-hidden="true"></span>
+            </label>
+            <div class="row-actions user-row-actions"><button class="icon-btn user-share-access" data-share-user="${user.id}" title="Copiar enlace y credenciales" aria-label="Copiar acceso de ${escapeHTML(user.full_name)}">${icon("copy", 16)} <span>Copiar acceso</span></button><button class="icon-btn" data-edit-user="${user.id}" title="Editar" aria-label="Editar usuario">${icon("pencil", 16)}</button><button class="icon-btn danger" data-delete-user="${user.id}" data-boss-only title="Eliminar" aria-label="Eliminar usuario">${icon("trash-2", 16)}</button></div>
+          </article>`).join("")
+      : emptyState("Sin usuarios", "Crea el equipo operativo.", "users");
+    refreshIcons();
+  };
+
+  const resetUserFormPresentation = (form = $("#userForm")) => {
+    if (!form) return;
+    if ($("#userFormEyebrow")) $("#userFormEyebrow").textContent = "Nuevo acceso";
+    if ($("#userFormTitle")) $("#userFormTitle").textContent = "Agregar integrante";
+    const label = form.querySelector('.user-save-button span');
+    if (label) label.textContent = "Guardar usuario";
+    if (form.pin) form.pin.type = "password";
+    const pinToggle = form.querySelector("[data-toggle-user-pin]");
+    if (pinToggle) {
+      pinToggle.title = "Mostrar PIN";
+      pinToggle.setAttribute("aria-label", "Mostrar PIN");
+      pinToggle.innerHTML = icon("eye-off", 18);
+    }
+    refreshIcons();
+    syncUserPermissionsForm(form, ADMIN_SECTION_KEYS);
+  };
+
+  const toggleUserAccess = async (id, nextActive, control) => {
+    if (!isBoss()) return;
+    const user = state.users.find((entry) => String(entry.id) === String(id));
+    if (!user || (user.is_active !== false) === nextActive) return;
+    if (String(user.id) === String(state.currentUser?.id) && !nextActive) {
+      if (control) control.checked = true;
+      toast("No puedes quitar tu propio acceso mientras esta sesión está abierta.", "error", "disable-current-user");
+      return;
+    }
+    if (control) control.disabled = true;
+    let saved = null;
+    let saveError = null;
+    try {
+      const result = await state.sb.rpc("saveUser", {
+        auth_token: state.authToken,
+        id: user.id,
+        full_name: user.full_name,
+        username: user.username,
+        pin: "",
+        role: user.role,
+        is_active: nextActive,
+        permissions: normalizedUserPermissions(user)
+      });
+      saved = result.data;
+      saveError = result.error;
+    } catch (error) {
+      saveError = error;
+    }
+    if (saveError || !saved?.id) {
+      if (control) {
+        control.checked = user.is_active !== false;
+        control.disabled = false;
+      }
+      toast(saveError?.message || "No se pudo cambiar el acceso del usuario.", "error", `user-access:${id}`);
+      return;
+    }
+    state.users = mergeUsers(state.users.map((entry) => String(entry.id) === String(saved.id) ? saved : entry));
+    persistUsersCache();
+    renderUsers();
+    toast(nextActive ? `Acceso habilitado para ${saved.full_name}.` : `Acceso deshabilitado para ${saved.full_name}.`, "ok", `user-access-saved:${saved.id}:${nextActive}`);
+  };
+
+  const saveUser = async (form) => {
+    if (!isBoss()) return;
+    const isEditing = Boolean(form.user_id.value);
+    const fullName = form.full_name.value.trim();
+    const username = form.username.value.trim().toLowerCase();
+    const pin = form.pin.value.trim();
+    if (!fullName || !/^[a-z0-9._-]{3,40}$/.test(username) || (!isEditing && !/^\d{4,12}$/.test(pin)) || (pin && !/^\d{4,12}$/.test(pin))) {
+      toast("Revisa el usuario y usa un PIN numerico de 4 a 12 digitos.", "error", "invalid-user-fields");
+      return;
+    }
+    const role = form.role.value;
+    const permissions = role === "admin"
+      ? $$("input[name='permissions']:checked", form).map((input) => input.value).filter((section) => ADMIN_SECTION_KEYS.includes(section))
+      : [];
+    if (role === "admin" && !permissions.length) {
+      toast("Selecciona al menos una sección para el Administrador.", "error", "admin-without-sections");
+      return;
+    }
+    const payload = {
+      auth_token: state.authToken,
+      id: form.user_id.value || uid(),
+      full_name: fullName,
+      username,
+      pin,
+      role,
+      is_active: form.is_active.checked,
+      permissions
+    };
+    const submit = form.querySelector('button[type="submit"]');
+    if (submit) submit.disabled = true;
+    let saved = null;
+    let saveError = null;
+    try {
+      const result = await state.sb.rpc("saveUser", payload);
+      saved = result.data;
+      saveError = result.error;
+    } catch (error) {
+      saveError = error;
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+    if (saveError || !saved?.id) {
+      toast(saveError?.message || "No se pudo guardar el usuario.", "error", "save-user-failed");
+      return;
+    }
+    state.users = mergeUsers(state.users.map((user) => String(user.id) === String(saved.id) ? saved : user), [saved]);
+    if (pin) {
+      state.userCredentialPins[saved.id] = pin;
+      persistUserCredentialPins();
+    }
+    persistUsersCache();
+    if (String(saved.id) === String(state.currentUser?.id)) {
+      state.currentUser = saved;
+      localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(saved));
+      applyCurrentUser();
+      showAdminSection(canAccessAdminSection(state.activeAdminSection) ? state.activeAdminSection : firstAllowedAdminSection());
+    }
+    form.reset();
+    form.user_id.value = "";
+    form.is_active.checked = true;
+    form.pin.placeholder = "4 a 12 dígitos";
+    resetUserFormPresentation(form);
+    renderUsers();
+    toast(isEditing ? `Usuario actualizado${pin ? " con nuevo PIN" : ""}.` : "Usuario creado correctamente.", "ok", `user-saved:${saved.id}`);
+  };
+
+  const editUser = (id) => {
+    if (!isBoss()) return;
+    const user = state.users.find((entry) => entry.id === id);
+    const form = $("#userForm");
+    if (!user || !form) return;
+    form.user_id.value = user.id;
+    form.full_name.value = user.full_name || "";
+    form.username.value = user.username || "";
+    form.pin.value = state.userCredentialPins[user.id] || "";
+    form.pin.type = "password";
+    form.pin.placeholder = form.pin.value ? "PIN actual guardado en este equipo" : "Dejar vacío para conservar";
+    const pinToggle = form.querySelector("[data-toggle-user-pin]");
+    if (pinToggle) {
+      pinToggle.title = "Mostrar PIN";
+      pinToggle.setAttribute("aria-label", "Mostrar PIN");
+      pinToggle.innerHTML = icon("eye-off", 18);
+    }
+    refreshIcons();
+    form.role.value = user.role || "waiter";
+    form.is_active.checked = user.is_active !== false;
+    syncUserPermissionsForm(form, user.permissions);
+    if ($("#userFormEyebrow")) $("#userFormEyebrow").textContent = "Editar acceso";
+    if ($("#userFormTitle")) $("#userFormTitle").textContent = user.full_name || "Usuario";
+    const submitLabel = form.querySelector('.user-save-button span');
+    if (submitLabel) submitLabel.textContent = "Guardar cambios";
+    form.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+
+  const deleteUser = async (id) => {
+    if (!canDeleteRecords()) return;
+    const user = state.users.find((entry) => entry.id === id);
+    if (!user) return;
+    if (String(user.id) === String(state.currentUser?.id)) {
+      toast("No puedes eliminar el usuario con el que tienes la sesion abierta.", "error", "delete-current-user");
+      return;
+    }
+    if (!await askForConfirmation({ eyebrow: "Eliminar usuario", title: `¿Eliminar a ${user.full_name}?`, message: "No podrá volver a iniciar sesión. Sus ventas anteriores conservarán el nombre del responsable.", accept: "Sí, eliminar usuario", cancel: "Conservar usuario" })) return;
+    let result = null;
+    let deleteError = null;
+    try {
+      const response = await state.sb.rpc("deleteUser", { auth_token: state.authToken, user_id: id });
+      result = response.data;
+      deleteError = response.error;
+    } catch (error) {
+      deleteError = error;
+    }
+    if (deleteError || !result?.deleted) {
+      toast(deleteError?.message || "No se pudo eliminar el usuario.", "error", `delete-user:${id}`);
+      return;
+    }
+    state.users = state.users.filter((entry) => entry.id !== id);
+    delete state.userCredentialPins[id];
+    persistUserCredentialPins();
+    persistUsersCache();
+    renderUsers();
+    const form = $("#userForm");
+    if (form?.user_id.value === id) {
+      form.reset();
+      form.user_id.value = "";
+      form.is_active.checked = true;
+      form.pin.placeholder = "4 a 12 dígitos";
+      resetUserFormPresentation(form);
+    }
+    toast("Usuario eliminado. El historial de sus ventas se conserva.", "ok", `user-deleted:${id}`);
+  };
+
+  const logoutAdmin = async () => {
+    window.clearInterval(state.confirmedReportTimer);
+    const token = state.authToken;
+    state.authToken = "";
+    state.currentUser = null;
+    state.sb.setAuthToken("");
+    localStorage.removeItem("don_pieros_admin_token");
+    localStorage.removeItem(ADMIN_USER_CACHE_KEY);
+    applyCurrentUser();
+    void dbQuiet(state.sb.rpc("logout", { auth_token: token }), null);
+    location.reload();
+  };
+
+  const initAdmin = async () => {
+    setLoading(true);
+    const loginUrl = new URL(location.href);
+    const credentialParams = ["username", "pin", "initialFullName", "initialUsername", "initialPin"];
+    const hadCredentialParams = credentialParams.some((key) => loginUrl.searchParams.has(key));
+    credentialParams.forEach((key) => loginUrl.searchParams.delete(key));
+    if (hadCredentialParams) history.replaceState(null, "", `${loginUrl.pathname}${loginUrl.search}${loginUrl.hash}`);
+    const pendingScan = new URLSearchParams(location.search).get("scan") || "";
+    await waitForAdminLogin();
+    void flushRequestOutbox();
+    const bootstrapReady = loadBootstrap();
+    loadInventoryStore();
+    void loadUsers().then(renderUsers);
+    state.soundEnabled = localStorage.getItem("waiter_alarm_enabled") !== "0";
+    if (state.soundEnabled) localStorage.setItem("waiter_alarm_enabled", "1");
+    const initialSection = pendingScan ? "service" : (location.hash.replace("#", "") || "dashboard");
+    renderAdminShell();
+    renderBusinessForm();
+    showAdminSection(initialSection);
+    updateAlarmButton();
+    bindAdmin();
+    startSalesShift();
+    armAlarmOnFirstGesture();
+    subscribeAdmin();
+    startAdminPolling();
+    startAlarmLoop();
+    setLoading(false);
+    await bootstrapReady;
+    // El negocio nuevo comienza sin categorías ni productos de muestra.
+    const currentSection = state.activeAdminSection || location.hash.replace("#", "") || initialSection;
+    renderAdminShell();
+    renderBusinessForm();
+    showAdminSection(currentSection);
+    renderTableFormQr();
+    void recoverPendingCheckouts();
+    initRemoteStorage();
+    void refreshBackgroundReports({ force: true });
+    window.addEventListener("online", () => {
+      void flushRequestOutbox();
+      if (state.page === "admin") void recoverPendingCheckouts();
+      if (!isWaiter()) void flushAppsScriptOutbox();
+      void refreshBackgroundReports({ force: true });
+    });
+    if (pendingScan) {
+      const cleanUrl = new URL(location.href);
+      cleanUrl.searchParams.delete("scan");
+      history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}#service`);
+      await openScannedTable(pendingScan);
+    }
+    // El shell queda visible al instante; el snapshot pesado llega sin bloquear la interfaz.
+    void refreshAdminNow();
+  };
+
+  let salesResumeAt = -Infinity;
+  let salesResumePromise = null;
+  const refreshSalesAfterResume = () => {
+    if (state.page !== "admin" || !state.currentUser || !state.authToken || !navigator.onLine
+      || !canAccessAdminSection("income") || !isAppsScriptConfigured()) return Promise.resolve(false);
+    if (salesResumePromise) return salesResumePromise;
+    if (Date.now() - salesResumeAt < 1000) return Promise.resolve(false);
+    salesResumeAt = Date.now();
+    void flushAppsScriptOutbox(true);
+    void syncConfirmedReports();
+    salesResumePromise = refreshBackgroundReports()
+      .finally(() => { salesResumePromise = null; });
+    return salesResumePromise;
+  };
+
+  const resumeRealtimeReception = () => {
+    if (document.hidden) return;
+    void flushPeerRefreshes();
+    if (state.page === "client" && state.currentTable) {
+      subscribeClient();
+      void state.clientLiveRefresh?.();
+      if (!state.currentSession) void hydrateSelectedTable(state.currentTable.id);
+    }
+    if (state.page === "admin" && state.authToken) {
+      subscribeAdmin();
+      startAdminPolling();
+      void refreshAdminNow();
+      void refreshSalesAfterResume();
+      state.adminChats.forEach((chat) => void loadChatMessages(chat.sessionId, chat.table));
+    }
+  };
+
+  const init = async () => {
+    await hydrateDurableLocalState();
+    document.addEventListener("wheel", (event) => {
+      const input = event.target instanceof Element ? event.target.closest('input[type="number"]') : null;
+      if (!input || document.activeElement !== input) return;
+      event.preventDefault();
+      input.blur();
+    }, { capture: true, passive: false });
+    state.page = document.body.dataset.page || "";
+    void registerPwa();
+    if (!connect()) {
+      document.body.innerHTML = `
+        <main class="setup-screen">
+          <div class="setup-card">
+            ${icon("database-zap", 34)}
+            <h1>Estamos preparando tu negocio</h1>
+            <p>La conexión necesita revisión. Contacta al responsable para continuar.</p>
+          </div>
+        </main>
+      `;
+      refreshIcons();
+      return;
+    }
+    window.addEventListener("online", resumeRealtimeReception);
+    window.addEventListener("focus", resumeRealtimeReception);
+    window.addEventListener("pageshow", resumeRealtimeReception);
+    document.addEventListener("visibilitychange", resumeRealtimeReception);
+    if (state.page === "client") {
+      armClientSoundsOnFirstGesture();
+      window.addEventListener("online", () => {
+        flushRequestOutbox();
+        flushBillResolutionOutbox();
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          flushRequestOutbox();
+          flushBillResolutionOutbox();
+        }
+      });
+      flushRequestOutbox();
+    }
+    window.MenuCards?.init({
+      page:state.page,sb:SupabaseDb,getAuthToken:()=>state.authToken,
+      getCurrentTable:()=>state.currentTable,getTables:()=>state.tables,
+      canManage:()=>canAccessAdminSection("brand"),confirm:askForConfirmation
+    });
+    if (state.page === "admin") await initAdmin();
+    if (state.page === "client") await initClient();
+    refreshIcons();
+  };
+
+  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb, notify: toast, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
+  return { init };
+})();
+
+document.addEventListener("DOMContentLoaded", App.init);

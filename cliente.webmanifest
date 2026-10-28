@@ -1,0 +1,27 @@
+{
+  "id": "./index.html",
+  "name": "Don Pieros Pizza",
+  "short_name": "Don Pieros",
+  "description": "Carta y pedidos de Don Pieros Pizza",
+  "lang": "es-CO",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111111",
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "images/icon-192.png?v=black-logo-v2",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "images/icon-512.png?v=black-logo-v2",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

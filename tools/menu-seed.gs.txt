@@ -1,0 +1,31 @@
+// Carga inicial de la carta proporcionada por Don Pieros Pizza.
+function dpSeedInitialMenu_(spreadsheet) {
+  var properties=PropertiesService.getScriptProperties();
+  if(properties.getProperty('DP_INITIAL_MENU_LOADED')==='1'){dpFillInitialMeasurements_(spreadsheet);return {ok:true,alreadyLoaded:true};}
+  var counts={products:0,toppings:0};
+  ['toppings','products'].forEach(function(key){
+    var definition=DP_TABLES[key],sheet=spreadsheet.getSheetByName(definition.name),rows=sheet.getLastRow()>1?sheet.getRange(2,1,sheet.getLastRow()-1,definition.headers.length).getValues():[],ids={},names={};
+    rows.forEach(function(row){ids[String(row[0])]=true;names[String(row[1]).trim().toLowerCase()+'|'+String(row[2]).trim().toLowerCase()]=true;});
+    var missing=DP_INITIAL_MENU[key].filter(function(item){return !ids[item.id]&&!names[item.name.toLowerCase()+'|'+String(item.category||item.kind).toLowerCase()];});
+    var cells=missing.map(function(item){return definition.headers.map(function(header){var value=item[header];return header==='modifiers'?JSON.stringify(value||[]):value==null?'':value;});});
+    if(cells.length)sheet.getRange(sheet.getLastRow()+1,1,cells.length,definition.headers.length).setValues(cells);
+    counts[key]=cells.length;
+  });
+  SpreadsheetApp.flush();dpInvalidateCatalog_();properties.setProperty('DP_INITIAL_MENU_LOADED','1');properties.setProperty('DP_MENU_MEASUREMENTS_LOADED','1');
+  return {ok:true,added:counts};
+}
+
+function dpFillInitialMeasurements_(spreadsheet) {
+  var props=PropertiesService.getScriptProperties();if(props.getProperty('DP_MENU_MEASUREMENTS_LOADED')==='1')return;
+  var sheet=spreadsheet.getSheetByName(DP_TABLES.toppings.name),last=sheet.getLastRow(),rows=last>1?sheet.getRange(2,1,last-1,DP_TABLES.toppings.headers.length).getValues():[],targets={};
+  DP_INITIAL_MENU.toppings.forEach(function(item){if(item.kind.indexOf('Tamaño pizza')===0)targets[item.id]=item;});
+  rows.forEach(function(row,index){var target=targets[String(row[0])];if(target&&['Mini','Mediana','Maxi','Super maxi'].indexOf(String(row[1]))>=0){row[1]=target.name;row[6]=(Number(row[6])||0)+1;sheet.getRange(index+2,1,1,row.length).setValues([row]);}});
+  sheet=spreadsheet.getSheetByName(DP_TABLES.products.name);last=sheet.getLastRow();rows=last>1?sheet.getRange(2,1,last-1,DP_TABLES.products.headers.length).getValues():[];
+  rows.forEach(function(row,index){if(row[2]==='Pizzetas'&&!row[7]){row[7]='24 × 24 cm';row[12]=(Number(row[12])||0)+1;sheet.getRange(index+2,1,1,row.length).setValues([row]);}});
+  dpInvalidateCatalog_();props.setProperty('DP_MENU_MEASUREMENTS_LOADED','1');
+}
+
+function CARGAR_MENU_INICIAL_DON_PIEROS() {
+  var spreadsheet=ensureSystemReady_();
+  return dpWithLock_(function(){return dpSeedInitialMenu_(spreadsheet);});
+}

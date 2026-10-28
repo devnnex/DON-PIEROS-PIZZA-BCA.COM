@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#111111" />
+  <meta name="application-name" content="Don Pieros Pizza" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Don Pieros Pizza" />
+  <meta name="description" content="Pizza para compartir. Pedidos online de Don Pieros Pizza." />
+  <link rel="preconnect" href="https://bxyvxbutjlvoconfsjub.supabase.co" crossorigin>
+  <link rel="preconnect" href="https://script.google.com">
+  <title>Don Pieros Pizza — Pide tu pizza favorita</title>
+  <link rel="icon" href="./images/icon-192.png?v=black-logo-v2" id="appFavicon" type="image/png" sizes="192x192">
+  <link rel="apple-touch-icon" href="./images/icon-512.png?v=black-logo-v2" id="appleTouchIcon" sizes="512x512">
+  <link rel="manifest" href="./cliente.webmanifest?v=black-logo-v2" />
+  <link rel="stylesheet" href="./styles.css?v=donpieros-20261027-v11" />
+  <link rel="stylesheet" href="./order-extras.css?v=donpieros-20261027-v11" />
+<link rel="stylesheet" href="cliente-theme.css?v=donpieros-20261027-v11">
+<script defer src="business-language.js?v=1"></script>
+<script defer src="product-images.js?v=donpieros-photos-v1"></script>
+</head>
+<body>
+  <main>
+    <header class="site-header">
+      <div class="header-row">
+        <a class="brand" href="#menu" aria-label="Don Pieros Pizza, ir al menú"><img src="./images/don-pieros-logo.png" decoding="async" alt="Don Pieros Pizza" /></a>
+        <p class="slogan">HECHA PARA COMPARTIR. 🍕</p>
+        <button class="icon-button" id="header-cart" aria-label="Abrir carrito"><svg class="cart-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="20" r="1"></circle><circle cx="18" cy="20" r="1"></circle><path d="M3 4h2l2.4 10.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 7H6"></path></svg><b class="cart-count">0</b></button>
+      </div>
+      <button class="location-card" type="button"><span class="location-icon">⌖</span><span><small>Tu pedido en</small><strong id="order-location">Don Pieros Pizza · Recoger en tienda</strong></span><i>⌄</i></button>
+      <aside class="store-info" aria-label="Información de Don Pieros Pizza">
+        <div class="store-about"><span>Pizza para compartir.</span><strong>Tu pedido, a tu gusto</strong></div>
+        <div class="store-details">
+          <span><svg class="info-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>WhatsApp · 310 224 1444</span>
+          <span><svg class="info-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"></path><circle cx="12" cy="10" r="3"></circle></svg>Recoge en el negocio o pide a domicilio</span>
+        </div>
+      </aside>
+    </header>
+
+    <section class="hero-wrap">
+      <div class="hero">
+        <div class="hero-copy"><small>EL PLAN EMPIEZA AQUÍ</small><h1>Tu próxima<br />pizza favorita.</h1><a href="#menu">Ver el menú <span>→</span></a></div>
+        <div class="hero-visual" aria-label="Don Pieros Pizza"><img class="dp-hero-logo" src="./images/don-pieros-logo.png" alt="Don Pieros Pizza" fetchpriority="high"></div>
+      </div>
+      <label class="search"><span>⌕</span><input id="search" type="search" placeholder="¿Qué se te antoja hoy?" autocomplete="off" /><button id="clear-search" type="button" aria-label="Limpiar búsqueda" hidden>×</button></label>
+    </section>
+
+    <section class="menu" id="menu">
+      <div class="section-head"><div><small>MENÚ DON PIEROS PIZZA</small><h2>Elige tu favorito</h2></div><span class="open"><i></i>Pedidos online</span></div>
+      <div class="categories" id="categories" role="tablist" aria-label="Categorías del menú"></div>
+      <div class="product-grid" id="products" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Navegación principal">
+    <a href="#menu" class="active"><span>⌂</span>Inicio</a>
+    <a href="#menu"><span>▦</span>Menú</a>
+    <button id="nav-cart" type="button"><i><svg class="cart-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="20" r="1"></circle><circle cx="18" cy="20" r="1"></circle><path d="M3 4h2l2.4 10.2a2 2 0 0 0 2 1.6h7.7a2 2 0 0 0 2-1.6L21 7H6"></path></svg><b class="cart-count">0</b></i>Pedido</button>
+    <button id="favorites" type="button"><span>♡</span>Favoritos</button>
+    <button id="profile" type="button"><span>◎</span>Perfil</button>
+  </nav>
+
+  <div class="overlay" id="product-overlay" hidden>
+    <section class="sheet product-sheet" role="dialog" aria-modal="true" aria-labelledby="product-title">
+      <div class="grabber"></div><button class="sheet-close" data-close="product" aria-label="Cerrar">×</button>
+      <div id="product-detail"></div>
+    </section>
+  </div>
+
+  <div class="overlay" id="cart-overlay" hidden>
+    <section class="sheet cart-sheet" role="dialog" aria-modal="true" aria-labelledby="cart-title">
+      <div class="grabber"></div>
+      <header class="sheet-header"><button id="cart-back" aria-label="Volver">×</button><div><small id="cart-kicker">TU PEDIDO</small><h2 id="cart-title">Tu pedido</h2></div><span></span></header>
+      <div id="cart-content" class="sheet-scroll"></div>
+      <div id="cart-action" class="sticky-action"></div>
+    </section>
+  </div>
+
+  <div class="overlay welcome-overlay" id="welcome-overlay">
+    <section class="welcome-dialog" role="dialog" aria-modal="true" aria-labelledby="welcome-title" aria-describedby="welcome-copy">
+      <button class="welcome-dismiss" id="welcome-dismiss" type="button" aria-label="Cerrar">×</button>
+      <div class="welcome-mark" aria-hidden="true">🍕</div>
+      <small>BIENVENIDO A DON PIEROS PIZZA</small>
+      <h2 id="welcome-title">Arma tu orden</h2>
+      <p id="welcome-copy">Confirma tu pedido aquí. Don Pieros Pizza recibirá la orden al instante y se comunicará contigo por WhatsApp para validar el pago.</p>
+      <button class="welcome-action" id="welcome-close" type="button">Comenzar pedido <span aria-hidden="true">→</span></button>
+    </section>
+  </div>
+
+  <div class="overlay availability-overlay" id="availability-overlay" hidden>
+    <section class="availability-dialog" role="alertdialog" aria-modal="true" aria-labelledby="availability-title" aria-describedby="availability-copy">
+      <button class="availability-dismiss" id="availability-dismiss" type="button" aria-label="Cerrar">×</button>
+      <div class="availability-mark" aria-hidden="true">!</div>
+      <small>ACTUALIZACIÓN DEL MENÚ</small>
+      <h2 id="availability-title">Algo de tu pedido se agotó</h2>
+      <p id="availability-copy">Don Pieros Pizza acaba de actualizar la disponibilidad. Revisa estos productos antes de continuar.</p>
+      <div class="availability-items" id="availability-items"></div>
+      <button class="availability-action" id="availability-review" type="button">Revisar mi pedido <span aria-hidden="true">→</span></button>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden><strong id="toast-title"></strong><span id="toast-copy"></span></div>
+  <script src="./config.js?v=donpieros-20261027-v9" defer></script>
+  <script src="./performance.js?v=donpieros-20261027-v9" defer></script>
+  <script src="./vendor/supabase.js" defer></script>
+  <script src="./order-services.js?v=donpieros-20261027-v9" defer></script>
+  <script src="./order-extras.js?v=donpieros-20261027-v9" defer></script>
+  <script src="./pedidos.js?v=donpieros-20261027-v11" defer></script>
+</body>
+</html>

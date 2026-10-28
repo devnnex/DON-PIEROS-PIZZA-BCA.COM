@@ -1,0 +1,93 @@
+/* Calendario de ventas de Colombia. Los intervalos incluyen el inicio y excluyen el cierre. */
+const SalesShift = (() => {
+  const zone = "America/Bogota";
+  const dayMs = 86400000;
+  const dateKeyFormatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit"
+  });
+  const dateKey = (date = new Date()) => {
+    const parts = Object.fromEntries(dateKeyFormatter.formatToParts(date).map(({ type, value }) => [type, value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  };
+  const midnight = (date) => Date.parse(`${date}T00:00:00-05:00`);
+  const dateLabel = (date, short = false) => {
+    const formatter = new Intl.DateTimeFormat("es-CO", {
+      timeZone: zone, day: "numeric", month: short ? "short" : "long", year: "numeric"
+    });
+    const value = new Date(midnight(date) + 12 * 60 * 60000);
+    if (!short) return formatter.format(value);
+    const parts = Object.fromEntries(formatter.formatToParts(value).map(({ type, value }) => [type, value]));
+    return `${parts.day} ${parts.month.replace(/\.$/, "")} ${parts.year}`;
+  };
+  const addDays = (date, days) => dateKey(new Date(midnight(date) + days * dayMs));
+  const parseTime = (text, period) => {
+    const value = String(text || "").trim();
+    let hour, minute;
+    if (/^\d{1,2}:\d{2}$/.test(value)) [hour, minute] = value.split(":").map(Number);
+    else if (/^\d{1,4}$/.test(value)) {
+      hour = Number(value.length <= 2 ? value : value.slice(0, -2));
+      minute = value.length <= 2 ? 0 : Number(value.slice(-2));
+    } else return null;
+    if (hour < 1 || hour > 12 || minute < 0 || minute > 59 || !["AM", "PM"].includes(period)) return null;
+    return { minutes: (hour % 12 + (period === "PM" ? 12 : 0)) * 60 + minute, text: `${hour}:${String(minute).padStart(2, "0")}` };
+  };
+  const timeParts = (minutes) => ({
+    text: `${Math.floor(minutes / 60) % 12 || 12}:${String(minutes % 60).padStart(2, "0")}`,
+    period: minutes >= 720 ? "PM" : "AM"
+  });
+  const timeLabel = (minutes) => { const value = timeParts(minutes); return `${value.text} ${value.period}`; };
+  const bounds = (shift) => {
+    if (!shift || !/^\d{4}-\d{2}-\d{2}$/.test(shift.date || "")) return null;
+    const { startMinutes, endMinutes } = shift;
+    if (![startMinutes, endMinutes].every(value => Number.isInteger(value) && value >= 0 && value < 1440) || startMinutes === endMinutes) return null;
+    const start = midnight(shift.date) + startMinutes * 60000;
+    const end = midnight(shift.date) + endMinutes * 60000 + (endMinutes < startMinutes ? dayMs : 0);
+    return Number.isFinite(start) && dateKey(new Date(midnight(shift.date))) === shift.date ? { start, end } : null;
+  };
+  const needsNewShift = (shift, now = new Date()) => {
+    const interval = bounds(shift);
+    return !interval || (dateKey(now) > shift.date && Number(now) >= interval.end);
+  };
+  const today = (shift, now = new Date(), history = []) => {
+    const date = dateKey(now), timestamp = Number(now);
+    const shifts = new Map((history || []).filter(item => item?.id).map(item => [item.id, item]));
+    if (shift) shifts.set(shift.id || "current", shift);
+    const intervals = [...shifts.values()].map(item => ({ item, interval: bounds(item) })).filter(entry => entry.interval);
+    const active = intervals.filter(({ interval }) => timestamp >= interval.start && timestamp < interval.end)
+      .sort((a, b) => b.interval.start - a.interval.start)[0];
+    if (active) return shiftRange(active.item);
+    // Antes del inicio de un turno futuro se conserva el tramo del día disponible.
+    // Después de un cierre no se vuelve a contar el tramo que pertenecía al turno terminado.
+    const lastEnd = intervals.filter(({ interval }) => interval.end <= timestamp && dateKey(new Date(interval.end)) === date)
+      .reduce((end, { interval }) => Math.max(end, interval.end), midnight(date));
+    return { dateFrom: date, dateTo: date, startAt: new Date(lastEnd).toISOString(), endAt: new Date(midnight(date) + dayMs).toISOString() };
+  };
+  const shiftRange = (shift) => {
+    const interval = bounds(shift);
+    if (!interval) return null;
+    return { dateFrom: shift.date, dateTo: dateKey(new Date(interval.end - 1)),
+      startAt: new Date(interval.start).toISOString(), endAt: new Date(interval.end).toISOString(), shiftId: shift.id };
+  };
+  const range = (preset, shift, now = new Date(), history = []) => {
+    if (preset === "today") return today(shift, now, history);
+    const date = dateKey(now);
+    let from = date, to = date;
+    if (preset === "yesterday") from = to = addDays(date, -1);
+    if (preset === "7days") from = addDays(date, -6);
+    if (preset === "15days") from = addDays(date, -14);
+    if (preset === "30days") from = addDays(date, -29);
+    if (preset === "month") from = `${date.slice(0, 7)}-01`;
+    if (preset === "year") from = `${date.slice(0, 4)}-01-01`;
+    return { dateFrom: from, dateTo: to };
+  };
+  const matches = (date, filters) => {
+    const timestamp = Date.parse(date);
+    if (!Number.isFinite(timestamp)) return false;
+    if (filters.startAt && timestamp < Date.parse(filters.startAt)) return false;
+    if (filters.endAt && timestamp >= Date.parse(filters.endAt)) return false;
+    const key = dateKey(new Date(timestamp));
+    return key >= filters.dateFrom && key <= filters.dateTo;
+  };
+  return { zone, dateKey, dateLabel, parseTime, timeParts, timeLabel, bounds, needsNewShift, today, shiftRange, range, matches };
+})();
+if (typeof module !== "undefined" && module.exports) module.exports = SalesShift;

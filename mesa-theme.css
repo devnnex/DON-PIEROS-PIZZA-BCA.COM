@@ -1,0 +1,60 @@
+/* Servicio de mesas: la misma identidad de la carta de Don Pieros Pizza. */
+body[data-service="pizzeria"]{--accent:#111;--bg:#fff;--surface:#fff;--text:#111;--muted:#666;--line:#e7e7e7;background:#fff;color:#111;font-family:Arial,Helvetica,sans-serif}
+body[data-service="pizzeria"] .client-app{width:min(100%,740px);padding:0 16px calc(28px + env(safe-area-inset-bottom,0px))}
+body[data-service="pizzeria"] .client-hero{min-height:0;display:block;padding:0;background:none;border:0}
+body[data-service="pizzeria"] .topbar{padding:20px 2px 16px;background:#fff;border:0;border-radius:0;backdrop-filter:none}
+body[data-service="pizzeria"] .brand-logo{width:78px;height:60px;object-fit:contain;border:0;border-radius:10px}
+body[data-service="pizzeria"] .brand-lockup{gap:12px}
+body[data-service="pizzeria"] .brand-lockup strong{font-size:16px;font-weight:800}
+body[data-service="pizzeria"] .brand-lockup .js-business-subtitle{font-size:12px;color:#666}
+.mesa-hero-banner{position:relative;isolation:isolate;overflow:hidden;display:flex;align-items:center;min-height:240px;padding:28px 24px;border-radius:26px;background:radial-gradient(ellipse at 100% 0,#494949 0,transparent 60%),#111;box-shadow:0 14px 35px #00000012}
+body[data-service="pizzeria"] .hero-copy{position:relative;z-index:2;width:65%;padding:0}
+body[data-service="pizzeria"] .hero-copy .eyebrow{color:#f5cf49;font-size:10px;letter-spacing:.14em}
+body[data-service="pizzeria"] .hero-copy h1{max-width:14ch;margin:12px 0;color:#fff;font-size:clamp(30px,6vw,44px);line-height:1.02;letter-spacing:-.04em}
+body[data-service="pizzeria"] .hero-copy p{max-width:30ch;margin:12px 0 0;color:#e1e1e1;font-size:13px;line-height:1.55}
+.mesa-hero-logo{position:absolute;right:2%;top:24%;z-index:1;width:35%;height:55%;object-fit:contain;transform:rotate(-6deg)}
+body[data-service="pizzeria"] .client-cover-image{opacity:.16;object-fit:cover}
+body[data-service="pizzeria"] .client-hero.has-cover::before{display:none}
+body[data-service="pizzeria"] .sticky-actions{top:10px;flex-direction:row;align-items:center;flex-wrap:wrap;margin:16px 0 12px;padding:16px;background:linear-gradient(120deg,#fff1b8,#fff9e8);border:1px solid #e6c04d;border-radius:18px;box-shadow:0 8px 24px #b1800012;backdrop-filter:blur(16px)}
+body[data-service="pizzeria"] .sticky-actions select{min-width:120px;background:#fff;border-color:#e6c04d;color:#111;flex:1}
+body[data-service="pizzeria"] .selected-table-state{width:auto;flex:1;min-width:0}
+body[data-service="pizzeria"] .selected-table-name{color:#111}
+body[data-service="pizzeria"] .locked-table-badge{background:#fff9df;color:#735311;border-color:#e9ce77;font-size:11px}
+body[data-service="pizzeria"] .table-account-state{font-size:12px}
+body[data-service="pizzeria"] .quick-actions{grid-template-columns:repeat(var(--mesa-actions,4),minmax(0,1fr));gap:9px;padding:0;margin-bottom:20px}
+body[data-service="pizzeria"] .quick-actions .request-btn{min-width:0;min-height:90px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;padding:12px 4px;border:1px solid #e6e6e6;border-radius:18px;background:#fff;color:#111;box-shadow:0 5px 18px #00000005;font-size:12px;font-weight:700}
+body[data-service="pizzeria"] .quick-actions .request-btn:first-child{background:#fff5d5;border-color:#edd48c}
+body[data-service="pizzeria"] .quick-actions #openMenuCards{background:#fff3ef;border-color:#f4c9bd;color:#812d21}
+body[data-service="pizzeria"] .quick-actions #focusTableChat{background:#111;color:#fff;border-color:#111}
+body[data-service="pizzeria"] #focusTableChat svg{color:#fff;stroke:currentColor;flex-shrink:0}
+body[data-service="pizzeria"] [hidden]{display:none!important}
+body[data-service="pizzeria"] .request-btn svg{width:23px;height:23px}
+body[data-service="pizzeria"] .client-section{padding:0;margin-top:18px}
+body[data-service="pizzeria"] .assistant-panel{gap:14px;padding:20px;overflow:hidden;border:1px solid #e5e5e5;border-radius:24px;background:#fff;color:#111;box-shadow:0 14px 38px #00000008;scroll-margin-top:100px}
+body[data-service="pizzeria"] .assistant-head{margin:-20px -20px 0;padding:20px;background:#111;color:#fff}
+body[data-service="pizzeria"] #assistantEyebrow{color:#fff;font-size:10px;letter-spacing:.12em}
+body[data-service="pizzeria"] .assistant-head h2{margin-top:6px;color:#fff;font-size:22px;letter-spacing:-.025em}
+body[data-service="pizzeria"] .assistant-mode-icon{background:#f5cf49;color:#32260a;border-radius:14px;flex-shrink:0}
+body[data-service="pizzeria"] .assistant-live-dot{width:7px;height:7px;background:#33d48c;box-shadow:0 0 0 4px #33d48c20;animation:none}
+body[data-service="pizzeria"] .assistant-chat{min-height:180px;max-height:360px;padding:8px 0;background:#fff;border-radius:0;scrollbar-color:#e5c54b transparent}
+body[data-service="pizzeria"] .assistant-message{font-size:14px;line-height:1.5;overflow-wrap:anywhere}
+body[data-service="pizzeria"] .assistant-message.bot{background:#f6f6f6;border:1px solid #ececec;color:#333}
+body[data-service="pizzeria"] .assistant-message.user{background:#fff2bf;color:#3c3013;border:1px solid #efdc97}
+body[data-service="pizzeria"] .assistant-message.staff{background:#111;color:#fff}
+body[data-service="pizzeria"] .assistant-message.system{color:#666;background:#f6f6f6}
+body[data-service="pizzeria"] .assistant-suggestions{flex-wrap:wrap;gap:7px;overflow:visible}
+body[data-service="pizzeria"] .assistant-suggestions .chip{padding:9px 12px;border:1px solid #e9d492;border-radius:999px;background:#fffbef;color:#72541c;font-size:12px;white-space:normal}
+body[data-service="pizzeria"] .assistant-form{gap:9px;padding-top:6px}
+body[data-service="pizzeria"] .assistant-form input{min-width:0;padding:13px;background:#f7f7f7;border:1px solid #ddd;color:#111;font-size:16px;scroll-margin-block:110px}
+body[data-service="pizzeria"] .assistant-form .primary{background:#111;color:#fff;box-shadow:none}
+body[data-service="pizzeria"] .assistant-form input:focus{outline:2px solid #f5cf49;border-color:#e2bc35}
+body[data-service="pizzeria"] .client-typing-indicator{color:#666}
+body[data-service="pizzeria"] .client-queue-status{margin:0 0 16px;padding:0}
+body[data-service="pizzeria"] .client-queue-badge{margin-inline:0;background:#fff9e8;border-color:#e7d292;color:#5b4420;box-shadow:none}
+body[data-service="pizzeria"] .client-queue-badge-head>strong{background:#f5cf49;color:#34280c}
+body[data-service="pizzeria"] .client-queue-badge>small{color:#6b5940}
+body[data-service="pizzeria"] .system-modal-stack{top:calc(14px + env(safe-area-inset-top,0px));bottom:auto}
+body[data-service="pizzeria"] .primary{background:#111;color:#fff}
+body[data-service="pizzeria"] :focus-visible{outline:3px solid #e3b930;outline-offset:3px}
+@media(max-width:360px){body[data-service="pizzeria"] .client-app{padding-inline:12px}.mesa-hero-banner{padding:24px 18px;min-height:225px}body[data-service="pizzeria"] .hero-copy{width:68%}.mesa-hero-logo{right:0;width:32%}body[data-service="pizzeria"] .quick-actions{gap:6px}body[data-service="pizzeria"] .request-btn span{font-size:11px}body[data-service="pizzeria"] .assistant-panel{padding:16px}body[data-service="pizzeria"] .assistant-head{margin:-16px -16px 0;padding:16px}}
+@media(prefers-reduced-motion:reduce){body[data-service="pizzeria"] *,body[data-service="pizzeria"] *::before,body[data-service="pizzeria"] *::after{animation-duration:.01ms!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
