@@ -16,7 +16,7 @@ const root=path.resolve(__dirname,'..');
  const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  try{
   const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
-  await context.addInitScript(()=>localStorage.setItem('don_pieros_admin_token','boss'));
+  await context.addInitScript(()=>{try{localStorage?.setItem('don_pieros_admin_token','boss');}catch(_){}});
   await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
   await context.route('https://script.google.com/**',async route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();reads.push(body.action);return route.fulfill({json:body.action==='bootstrap'?{ok:true}:h.call(body.action,body.payload||body,body.authToken||'')});});
   await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{const rpc=new URL(route.request().url()).pathname.split('/').pop();return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP'},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_setup_status'?false:[]});});
@@ -42,9 +42,9 @@ const root=path.resolve(__dirname,'..');
   await dashboardCard.locator('[data-dp-view]').click();assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),true);await page.keyboard.press('Escape');
   for(const width of [58,80]){
    await page.locator('#dp-dashboard-orders [data-dp-paper]').selectOption(String(width));
-   await dashboardCard.locator('[data-dp-print]').click();
+   const [printWindow]=await Promise.all([context.waitForEvent('page'),dashboardCard.locator('[data-dp-print]').click()]);
    assert.equal(await page.locator('#dp-order-dialog').evaluate(dialog=>dialog.open),false,'Imprimir desde la tarjeta no abre otra comanda.');
-   const frame=page.frames().find(frame=>frame!==page.mainFrame()&&frame.url()==='about:blank');assert.ok(frame);
+   const frame=printWindow;
    await frame.locator('.kitchen-item').first().waitFor();
    const text=await frame.locator('body').innerText();
    assert.match(text,/COMANDA DE COCINA/);assert.match(text,/2 × Pizza/);assert.match(text,/1 × Pizza/);
@@ -52,17 +52,22 @@ const root=path.resolve(__dirname,'..');
    assert.match(text,/Alergia a maní/);assert.match(text,/Centro/);assert.match(text,/Domicilio/);
    assert.match(text,/Tamaño: Super maxi · 54 × 54 cm/);
    assert.match(text,/TOTAL:\s*\$\s*200\.000 COP/);
+   assert.doesNotMatch(text,/Devnex|3246394689|No es factura fiscal/,'La comanda no lleva el pie de las facturas');
    assert.doesNotMatch(text,/Valor de esta línea|POR VERIFICAR|Elige el tamaño|\(\+\$|Subtotal:/);
-   await page.waitForFunction(()=>document.querySelector('[data-dp-receipt]')?.contentDocument?.querySelector('[data-thermal-paper]'));
-   const html=await frame.locator('html').evaluate(node=>node.outerHTML);
+   await frame.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+   const pdfData=await frame.evaluate(async()=>{const bytes=new Uint8Array(await(await fetch(document.querySelector('[data-thermal-pdf-viewer]').src)).arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);});
+   const html=await frame.locator('html').evaluate(node=>{const clone=node.cloneNode(true);clone.querySelector('[data-thermal-pdf-viewer]')?.remove();return clone.outerHTML;});
    const preview=await context.newPage();await preview.setContent('<!doctype html>'+html);await preview.emulateMedia({media:'print'});
    assert.equal(await preview.evaluate(()=>document.body.scrollWidth<=Math.ceil(document.body.getBoundingClientRect().width)+1),true,'Nada se sale del ancho del papel.');
-   const pdf=await preview.pdf({preferCSSPageSize:true,printBackground:false,path:path.join(root,`artifacts/comanda-cocina-${width}mm.pdf`)});
+   const pdf=Buffer.from(pdfData,'base64');fs.writeFileSync(path.join(root,`artifacts/comanda-cocina-${width}mm.pdf`),pdf);
+   assert.match(pdf.toString('latin1'),/\/N \/Print/,'El propio PDF solicita imprimir, sin imprimir HTML');
    const mediaBox=pdf.toString('latin1').match(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)/);assert.ok(mediaBox);
    assert.ok(Math.abs(Number(mediaBox[1])-width*72/25.4)<2,'PDF con ancho térmico correcto.');
+   const contentHeight=await frame.evaluate(()=>Number(document.body.dataset.thermalHeight));
+   assert.ok(Math.abs(Number(mediaBox[2])-contentHeight*72/25.4)<2,'El PDF utiliza la altura del contenido');
    assert.equal((pdf.toString('latin1').match(/\/Type\s*\/Page\b/g)||[]).length,1,'La comanda completa cabe en un recibo continuo.');
    await preview.locator('body').screenshot({path:path.join(root,`artifacts/comanda-cocina-${width}mm.png`)});await preview.close();
-   await page.evaluate(()=>document.querySelectorAll('[data-dp-receipt]').forEach(frame=>frame.remove()));
+   await printWindow.close();
   }
   await page.evaluate(()=>location.hash='onlineorders');const list=page.locator('#dp-orders-list [data-dp-order]').first();await list.waitFor();
   for(const viewport of [390,1440]){

@@ -335,19 +335,18 @@
   }
   function printOrder(order,width){
     width=width===58?58:80;
-    const frame=document.createElement('iframe');frame.dataset.dpReceipt='';frame.title='Comanda de cocina';
-    frame.style.cssText=`position:fixed;left:-10000px;top:0;width:${width}mm;height:1px;border:0`;
-    document.body.append(frame);
+    const popup=window.open('','don-pieros-comanda','width=420,height=720');
+    if(!popup){notify('Permite las ventanas emergentes para imprimir la comanda.',true);return;}
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
-    const d=frame.contentDocument;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
-      @page{size:${width}mm auto;margin:0}*{box-sizing:border-box}
-      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
+    const d=popup.document;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
+      @page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}
+      html{background:#fff}body{font:${width===58?'15':'17'}px/1.35 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
       .kitchen-ticket{border:1px solid #000;padding:2mm}
-      h1{font-size:${width===58?'16':'18'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
+      h1{font-size:${width===58?'20':'22'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
       .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
       .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
-      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
-      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'15':'17'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
+      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'20':'23'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'16':'18'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
       .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
       .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
       </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
@@ -359,15 +358,12 @@
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
       ${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
-      <footer><strong>Devnex Soluciones Tecnologicas<br>3246394689</strong></footer></main></body></html>`);d.close();
-    frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});
+      </main></body></html>`);d.close();
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
-    void window.DonPierosThermal.prepare(frame.contentWindow,width).then(()=>{
-      if(!frame.isConnected)return;
-      frame.contentWindow.focus();frame.contentWindow.print();
+    void window.DonPierosThermal.print(popup,width).catch(error=>{
+      notify('No se pudo preparar la impresión. '+String(error.message||error),true);
     });
-    setTimeout(()=>frame.remove(),120000);
   }
 
   async function loadCatalog(){

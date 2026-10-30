@@ -168,13 +168,13 @@ test('La factura se dibuja inmediatamente y solicita imprimir en el siguiente cu
   let ready;
   const popup = { closed: false, document: { open: () => calls.push('open'), write: html => calls.push(html), close: () => calls.push('close') },
     requestAnimationFrame: callback => { ready = callback; }, focus: () => calls.push('focus'), print: () => calls.push('print') };
-  const context = vm.createContext({ window: { open: () => popup }, thermalReceiptHtml: () => '<html>Factura completa</html>', toast() {} });
+  const context = vm.createContext({ window: { open: () => popup,DonPierosThermal:{print:target=>{assert.equal(target,popup);calls.push('pdf');}} }, thermalReceiptHtml: () => '<html>Factura completa</html>', toast() {} });
   vm.runInContext(section('printThermalReceipt', 'updateMixedPayment') + ';globalThis.printReceipt = printThermalReceipt;', context);
   assert.equal(context.printReceipt({}, {}), true);
   assert.deepEqual(calls, ['open', '<html>Factura completa</html>', 'close']);
   ready();
-  assert.deepEqual(calls.slice(-2), ['focus', 'print']);
+  assert.equal(calls.at(-1), 'pdf');
   popup.closed = true;
   ready();
-  assert.equal(calls.filter(call => call === 'print').length, 1);
+  assert.equal(calls.filter(call => call === 'pdf').length, 1);
 });

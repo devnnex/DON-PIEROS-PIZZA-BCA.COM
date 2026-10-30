@@ -10028,7 +10028,7 @@ const App = (() => {
     popup.document.close();
     popup.requestAnimationFrame(async () => {
       if (!popup.closed) {
-        try { if(window.DonPierosThermal)await window.DonPierosThermal.prepare(popup,80);popup.focus(); popup.print(); }
+        try { await window.DonPierosThermal.print(popup,80); }
         catch (error) {
           console.error("Falló la impresión del comprobante", error);
           toast(invoice ? "Cobro guardado. No se pudo imprimir; reimprime desde Ventas." : "No se pudo imprimir la pre-cuenta.", "error", "receipt-print-failed");

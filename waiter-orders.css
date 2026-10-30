@@ -40,3 +40,11 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 .dw-dialog button:hover,.dw-dialog button:active{transform:none}
 .dw-table-head,#dw-menu-view,#dw-account-view{animation:dw-fade-in .15s ease-out}#dw-manager-products{padding-bottom:0}
 @media(prefers-reduced-motion:reduce){.dw-table-head,#dw-menu-view,#dw-account-view{animation:none}}
+#dw-review-body *,#dw-kitchen-body *,.dw-received-card *,.dw-sent-order *{font-weight:900!important}
+#dw-review-body .dw-review-lines p,#dw-kitchen-body .dw-review-lines p,#dw-kitchen-body .dw-dialog-head p,#dw-kitchen-body .dw-muted{color:#111}
+#dw-review-body .dw-review-lines p,#dw-kitchen-body .dw-review-lines p{font-size:16px;line-height:1.45}
+#dw-review-body .dw-dialog-head p,#dw-kitchen-body .dw-dialog-head p,#dw-kitchen-body .dw-muted{font-size:15px;line-height:1.4}
+#dw-review-body .dw-review-lines strong,#dw-kitchen-body .dw-review-lines strong{font-size:22px;line-height:1.3}
+.dw-received-card p{font-size:15px;line-height:1.4}
+.dw-sent-order p,.dw-sent-order small{font-size:15px;line-height:1.4}
+@media(max-width:450px){#dw-review-body .dw-review-lines strong,#dw-kitchen-body .dw-review-lines strong{font-size:20px}}

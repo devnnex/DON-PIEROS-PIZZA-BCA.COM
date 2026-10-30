@@ -25,7 +25,7 @@ const root=path.resolve(__dirname,'..');
   const serial=operation=>{const result=queue.then(operation);queue=result.catch(()=>{});return result;};
   async function contextFor(user){
    const context=await browser.newContext({viewport:{width:user.user.role==='waiter'?390:1440,height:950},serviceWorkers:'block'});
-   await context.addInitScript(token=>{localStorage.setItem('don_pieros_admin_token',token);localStorage.setItem('waiter_alarm_enabled','0');},user.token);
+   await context.addInitScript(token=>{try{localStorage?.setItem('don_pieros_admin_token',token);localStorage?.setItem('waiter_alarm_enabled','0');}catch(_){}},user.token);
    await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
    await context.route('https://script.google.com/**',route=>{
     if(route.request().method()==='GET')return route.fulfill({json:{ok:true}});
@@ -85,6 +85,17 @@ const root=path.resolve(__dirname,'..');
   await admin.locator(`[data-dw-open-comanda="${initial.id}"]`).click();
   assert.match(await admin.locator('#dw-kitchen-body').innerText(),/Super maxi.*54 × 54 cm/s);
   assert.match(await admin.locator('#dw-kitchen-body').innerText(),/Separar las salsas/);
+  assert.ok(await admin.locator('#dw-kitchen-body .dw-review-lines p').first().evaluate(node=>Number(getComputedStyle(node).fontWeight))>=800,'Opciones y notas de la comanda en negrita');
+  assert.ok(await admin.locator('#dw-kitchen-body .dw-review-lines p').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize))>=16,'Opciones y notas más grandes en la revisión');
+  const [printed]=await Promise.all([admin.context().waitForEvent('page'),admin.locator('[data-dw-print-order]').click()]);
+  await printed.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+  assert.doesNotMatch(await printed.locator('body').innerText(),/Devnex|3246394689/);
+  assert.equal(await printed.evaluate(()=>[...document.querySelectorAll('body *')].filter(node=>node.textContent.trim()).every(node=>Number(getComputedStyle(node).fontWeight)>=800)),true,'Toda la letra impresa del mesero es negrita');
+  assert.ok(await printed.locator('body').evaluate(node=>parseFloat(getComputedStyle(node).fontSize))>=15);
+  assert.ok(await printed.locator('article strong').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize))>=20);
+  const pdfData=await printed.evaluate(async()=>{const bytes=new Uint8Array(await(await fetch(document.querySelector('[data-thermal-pdf-viewer]').src)).arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);});
+  const printedPdf=Buffer.from(pdfData,'base64');assert.match(printedPdf.toString('latin1'),/\/N \/Print/);
+  fs.writeFileSync(path.join(root,'artifacts/comanda-mesero-negrita.pdf'),printedPdf);await printed.close();
   // Administration can correct the received comanda before accepting it.
   await admin.locator('#dw-kitchen-body [data-dw-edit-order]').click();await admin.locator('[data-dw-edit-line]').click();
   await admin.locator('#dw-line-notes').fill('Ajuste de administración');await admin.locator('#dw-add-product').click();await admin.locator('#dw-send-order').click();
