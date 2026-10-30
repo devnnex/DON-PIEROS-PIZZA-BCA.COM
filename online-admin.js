@@ -340,15 +340,15 @@
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     const d=popup.document;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
       @page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}
-      html{background:#fff}body{font:${width===58?'15':'17'}px/1.35 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
+      html{background:#fff}body{font:${width===58?'15':'17'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
       .kitchen-ticket{border:1px solid #000;padding:2mm}
-      h1{font-size:${width===58?'20':'22'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
-      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
-      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
+      h1{font-size:${width===58?'18':'20'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:21px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
+      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:23px;font-weight:900;text-align:center;margin:8px 0}
+      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:18px}
       .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'20':'23'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
-      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'16':'18'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
-      .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
-      .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'17':'19'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
+      .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:17px}.notes p{white-space:pre-wrap;font-weight:700}
+      .total{font-size:15px;font-weight:900}.total-amount{display:block;font-size:24px}.total-amount small{font-size:13px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
       </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
