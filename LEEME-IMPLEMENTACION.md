@@ -1,5 +1,13 @@
 # Don Pieros Pizza · activación
 
+Actualización 3.4.0 (30 de octubre de 2026): eliminación inmediata de pedidos web, productos del menú y comandas de mesero. La intención de eliminar se guarda por usuario y negocio en el navegador antes de ocultar el registro. Si se pierde la conexión o la respuesta, el registro permanece oculto y la operación se reintenta sin límite de intentos, con pausas de 1 a 30 segundos. Las operaciones pendientes sobreviven a una recarga y al reinicio del navegador; se reanudan con la sesión iniciada y conexión. No borres los datos del navegador mientras haya operaciones pendientes. Los conflictos de versión se consultan y se reintentan con la versión actual. Los pedidos web eliminados conservan su identificador internamente para impedir que un reintento del cliente los cree otra vez.
+
+Para activar esta actualización: vuelve a ejecutar **`supabase/install/07_COMANDAS_MESERO.sql`**, reemplaza **`appscript/Code.gs`** y publica una **Nueva versión** de la implementación existente conservando la URL. `/exec` debe indicar **`3.4.0-donpieros`**, `capabilities.orderDeletion: true` y `capabilities.fastOrderReception: true`. Publica también los archivos web actualizados, incluido **`pending-deletions.js`**. El SQL se puede repetir y conserva los datos.
+
+“Aceptar” una notificación del mesero abre la comanda para revisar e imprimir; **Agregar a la mesa** aplica sus productos una sola vez. Las comandas sin productos se retiran del inicio. Un retiro de comanda aceptada conserva las validaciones de abonos de la cuenta: si todavía no puede aplicarse, queda pendiente y continúa reintentando. Disponible, imprimir y los avisos del mesero usan verde; Agotado usa gris.
+
+Apps Script avisa al administrador después de guardar el pedido y antes de responder al cliente. La recepción consulta únicamente la fila del pedido mediante una conexión autenticada. La carta escucha el acuse del administrador antes de mostrar el éxito, con una espera máxima adicional de 1,8 segundos si su conexión en vivo está activa. Si el administrador está desconectado o la red tarda más, el pedido sigue confirmado en Sheets y llega mediante la recepción automática al recuperar conexión; no se promete simultaneidad cuando un dispositivo no está conectado.
+
 Actualización 3.3.0: Barrio permite escribir libremente o elegir una sugerencia. Los barrios configurados mantienen su tarifa; un barrio nuevo queda con domicilio **por confirmar**, tanto en la comanda como en WhatsApp. Para habilitarlo, reemplaza `appscript/Code.gs` y publica una nueva versión desde **Administrar implementaciones**, editando la implementación actual para conservar la misma URL. La actualización agrega `deliveryFeePending` al final de `Ordenes_Web` automáticamente y conserva los pedidos anteriores. No requiere SQL adicional.
 
 Los pedidos web tienen un tono original suave y el anuncio «Una nueva orden ha llegado a Don Pieros Pizza». Las solicitudes de mesas conservan su tono diferente y la voz que identifica la mesa y lo solicitado, como en Nápoles. Comparten una cola para evitar que las voces se superpongan. Se respeta el control de alarma y se prepara el audio con los gestos del usuario; si estaba desactivado, debe volver a activarse desde el administrador.
@@ -18,7 +26,7 @@ Las fotos de ejemplo se incluyen en `images/ejemplos/` y se seleccionan por tipo
 
 ## Actualización final: carta y tamaños (3.2.0)
 
-Para una instalación con los pasos 01 a 06 aplicados, esta actualización no añade SQL. Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.3.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
+Para una instalación con los pasos 01 a 06 aplicados, esta actualización no añade SQL. Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.4.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
 
 La inicialización carga en Sheets los **51 productos de las cartas entregadas**, con precios, ingredientes indicados, seis categorías y 15 opciones. No crea ventas ni pedidos. La carga es única y no sobrescribe precios, disponibilidad ni nombres que posteriormente edites. `menu-inicial.json` permite revisar el listado completo.
 
@@ -50,7 +58,7 @@ Hoja: **1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E**.
 2. Reemplaza todo el contenido de `Code.gs` con **`appscript/Code.gs`**. No pegues otro `.gs` ni necesitas HTML.
 3. **Implementar → Nueva implementación → Aplicación web**.
 4. **Ejecutar como: Yo** y **Acceso: Cualquier persona**. Autoriza la cuenta propietaria de la hoja.
-5. En instalaciones nuevas copia la URL **`/exec`**; en instalaciones existentes conserva la URL editando la implementación actual. Ábrela una vez. Debe responder `ok: true`, `version: "3.3.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
+5. En instalaciones nuevas copia la URL **`/exec`**; en instalaciones existentes conserva la URL editando la implementación actual. Ábrela una vez. Debe responder `ok: true`, `version: "3.4.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
 
 Google no ejecuta todas las funciones al pulsar Implementar. La inicialización está conectada a `doGet` y `doPost`: **abrir `/exec` después de implementar, o recibir la primera petición del sitio, crea automáticamente todas las pestañas y encabezados**. No crea ventas ni productos. Ese es el [funcionamiento de las aplicaciones web de Apps Script](https://developers.google.com/apps-script/guides/web).
 

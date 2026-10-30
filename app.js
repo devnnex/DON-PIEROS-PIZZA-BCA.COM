@@ -4500,7 +4500,7 @@ const App = (() => {
 
   const mergeOptimisticRequests = (requests = []) => requests.map((request) => {
     const optimistic = state.optimisticRequestStates.get(request.id);
-    if (optimistic && (request.status === "acknowledged" || request.acknowledged_at)) {
+    if (optimistic && (request.status === "resolved" && optimistic.status === "resolved" || request.status === "acknowledged" || request.acknowledged_at)) {
       state.optimisticRequestStates.delete(request.id);
       return request;
     }
@@ -4577,7 +4577,8 @@ const App = (() => {
     return request.request_type === "other" && String(request.message || "").trim() ? "chat" : request.request_type;
   };
 
-  const activeRequests = () => state.requests.filter((request) => request.status === "pending");
+  const activeRequests = () => state.requests.filter((request) => request.status === "pending"
+    && !globalThis.DonPierosDeletions?.pending('waiter-comanda',request.id));
 
   const hasOpenAdminChatForRequest = (request) => {
     if (requestKind(request) !== "chat") return false;
@@ -5558,7 +5559,7 @@ const App = (() => {
     const alertCards = visibleAlerts
       .map(
         (request) => `
-              <article class="alert-card alert-${request.kind}" data-alert-card="${request.id}">
+              <article class="alert-card alert-${request.kind}${request.request_source === "waiter" ? " alert-waiter-order" : ""}" data-alert-card="${request.id}">
                 <div class="alert-icon">
                   ${
                     request.kind === "song"
@@ -9739,6 +9740,9 @@ const App = (() => {
     const idList = String(ids || "").split(",").filter(Boolean);
     const request = state.requests.find((entry) => idList.includes(entry.id));
     if (!request || idList.some((id) => state.optimisticRequestStates.has(id))) return;
+    if (request.request_source === "waiter" && window.DonPierosWaiter?.openRequest) {
+      if (await window.DonPierosWaiter.openRequest(request.id)) return;
+    }
     if (request.request_type === "bill") {
       await sendBillToClient(ids);
       return;
@@ -13628,8 +13632,19 @@ const App = (() => {
     if (result.request) receiveAdminRequests([result.request]);
     renderAdminLive();notifyAdminPeers({operational:true});void refreshAdminNow();
   };
+  const previewWaiterRemoval = (id) => {
+    const original=state.requests.find(request=>request.id===id);
+    state.optimisticRequestStates.set(id,{status:"resolved",updated_at:new Date().toISOString()});
+    state.requests=state.requests.map(request=>request.id===id?{...request,status:"resolved"}:request);
+    renderAdminLive();
+    return () => {
+      state.optimisticRequestStates.delete(id);
+      if(original)state.requests=state.requests.map(request=>request.id===id?original:request);
+      renderAdminLive();
+    };
+  };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
-    getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,
+    getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
     notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   return { init };
 })();

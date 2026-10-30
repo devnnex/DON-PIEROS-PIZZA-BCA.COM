@@ -30,12 +30,13 @@
     announced.add(key);
     const card = document.createElement('article');
     card.className = 'dp-reception-notice'; card.dataset.noticeKey = key;
+    if(kind==='waiter')card.classList.add('is-waiter');
     const heading = document.createElement('strong'), text = document.createElement('p');
     heading.textContent = title; text.textContent = detail;
     const label = document.createElement('span'); label.className = 'dp-notice-label';
-    label.textContent = kind === 'order' ? 'NUEVA ORDEN' : 'SOLICITUD DE MESA';
+    label.textContent = kind === 'order' ? 'NUEVA ORDEN' : kind==='waiter'?'COMANDA DEL MESERO':'SOLICITUD DE MESA';
     const button = document.createElement('button'); button.type = 'button';
-    button.textContent = kind === 'order' ? 'Aceptar · Ver comanda' : 'Aceptar solicitud';
+    button.textContent = kind === 'order'||kind==='waiter' ? 'Aceptar · Ver comanda' : 'Aceptar solicitud';
     const error = document.createElement('small'); error.className = 'dp-notice-error';
     button.onclick = async () => {
       button.disabled = true; error.textContent = '';
@@ -58,7 +59,7 @@
   function syncRequests(requests, {label, body, accept}) {
     const pending = new Set(requests.map(request => 'request:' + request.id));
     for (const key of notices.keys()) if (key.startsWith('request:') && !pending.has(key)) dismiss(key);
-    for (const request of requests) show({key:'request:' + request.id, kind:'request', title:label(request),
+    for (const request of requests) show({key:'request:' + request.id, kind:request.request_source==='waiter'?'waiter':'request', title:label(request),
       detail:body(request), action:() => accept(request.id)});
   }
   window.DonPierosReception = {show, dismiss, syncRequests, reveal, reset() {

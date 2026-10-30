@@ -6,11 +6,14 @@
   const money=v=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(v)||0);
   const date=v=>window.DonPierosDates.dateTime(v);
   const api=()=>window.DonPierosAdmin;
+  const deletions=()=>window.DonPierosDeletions;
   const friendly=(value)=>window.DonPierosLanguage.message(value);
   const labels={nueva:'Nueva',atendiendo:'En preparación',lista:'Lista',despachada:'Despachada',cancelada:'Cancelada'};
   let orders=[],dashboardOrders=[],total=0,offset=0,revision='',busy=false,firstLoad=true,connectedToken='',channel=null,catalog=null,catalogKind='products',editItem=null,removeImage=false,previewUrl='';
   const seenOrderIds=new Set();
   const pendingAvailability=new Map();
+  const orderWrites=new Map(),catalogWrites=new Map();
+  let orderEpoch=0,activeCount=0;
   let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0,ordersController=null,dashboardRevision='',ordersView='';
   const receivedOrderSignals=new Map();
   const searchState={dashboard:{query:'',status:'active'},list:{query:'',status:'active'}};
@@ -32,7 +35,7 @@
   function receptionFilters(scope){return `<div class="dp-reception-filters"><label class="dp-order-search"><span>Buscar pedido</span><input type="search" data-dp-search="${scope}" placeholder="Cliente, teléfono, producto, tamaño…" autocomplete="off" aria-label="Buscar pedidos por cualquier información"></label><label>Estado<select data-dp-filter="${scope}" ${scope==='list'?'id="dp-order-filter"':''}><option value="active">En cola</option><option value="all">Todos en recepción</option>${Object.entries(labels).filter(([value])=>value!=='despachada').map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label></div>`;}
   function searchRows(scope,fallback){
     const {status,query}=searchState[scope],saved=searchCache.get(status);
-    return ((query||status!=='active')&&saved?.revision===dashboardRevision?saved.rows:fallback).filter(order=>order.status!=='despachada'
+    return overlayOrders((query||status!=='active')&&saved?.revision===dashboardRevision?saved.rows:fallback).filter(order=>!deletions()?.hidden('web-order',order.id)&&order.status!=='despachada'
       &&(status==='active'?['nueva','atendiendo','lista'].includes(order.status):status==='all'||order.status===status)&&matchesOrder(order,query));
   }
   async function ensureSearchRows(scope){
@@ -67,6 +70,8 @@
   try{if(localStorage.getItem('don_pieros_order_paper')==='58')paperWidth=58;}catch(_){}
   function paperControl(){return `<label class="dp-paper-control">Papel<select data-dp-paper aria-label="Ancho del papel de la comanda"><option value="80" ${paperWidth===80?'selected':''}>80 mm</option><option value="58" ${paperWidth===58?'selected':''}>58 mm</option></select></label>`;}
   function findOrder(id){
+    if(deletions()?.hidden('web-order',id))return null;
+    if(orderWrites.has(id))return orderWrites.get(id).after;
     const saved=orders.find(order=>String(order.id)===String(id))||dashboardOrders.find(order=>String(order.id)===String(id))
       ||[...searchCache.values()].flatMap(entry=>entry.rows).find(order=>String(order.id)===String(id));
     return saved?{...saved,phone:String(saved.phone??''),items:(Array.isArray(saved.items)?saved.items:[]).map(item=>({...item,selections:Array.isArray(item.selections)?item.selections:[]}))}:null;
@@ -110,7 +115,8 @@
       root.addEventListener('click',event=>{
         const card=event.target.closest('[data-dp-order]');if(!card)return;
         event.preventDefault();event.stopPropagation();
-        if(event.target.closest('[data-dp-print]')){const order=findOrder(card.dataset.dpOrder);if(order&&canOrders())printOrder(order,paperWidth);}
+        if(event.target.closest('[data-dp-remove-order]'))void deleteOrder(card.dataset.dpOrder);
+        else if(event.target.closest('[data-dp-print]')){const order=findOrder(card.dataset.dpOrder);if(order&&canOrders())printOrder(order,paperWidth);}
         else openOrder(card.dataset.dpOrder);
       });
       root.addEventListener('keydown',event=>{
@@ -181,7 +187,7 @@
   async function loadOrders(force=false,urgent=false){
     if(!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
     if(busy){if(!urgent){if(force)ordersReloadRequested=true;return;}ordersController?.abort();}
-    const controller=new AbortController(),token=api().getToken();ordersController=controller;
+    const controller=new AbortController(),token=api().getToken(),readEpoch=orderEpoch;ordersController=controller;
     ordersReloadRequested=false;
     busy=true;
     if(force)$('#dp-orders-status').textContent='Actualizando pedidos…';
@@ -194,20 +200,27 @@
       const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60,...(!force&&revision&&ordersView===view?{revision}:{})},15000,controller.signal),
         filter==='active'&&pageOffset===0?Promise.resolve(null):request('dp_get_orders',{status:'active',offset:0,limit:20,...(!force&&dashboardRevision?{revision:dashboardRevision}:{})},15000,controller.signal)]);
       if(controller!==ordersController||controller.signal.aborted||token!==api().getToken())return;
+      if(readEpoch!==orderEpoch){ordersReloadRequested=true;return;}
       if(filter!==$('#dp-order-filter').value||pageOffset!==offset){ordersReloadRequested=true;return;}
+      if(result.changed!==false&&pageOffset>0&&pageOffset>=result.total){offset=Math.max(0,Math.floor((result.total-1)/60)*60);revision='';ordersReloadRequested=true;return;}
       const active=activeResult||result;
+      if(readEpoch===orderEpoch)for(const row of [...(result.orders||[]),...(active.orders||[])]){
+        const write=orderWrites.get(row.id);
+        if(write&&!write.pending&&write.after&&Number(row.version)>=Number(write.after.version))orderWrites.delete(row.id);
+      }
       const listChanged=result.changed!==false&&(firstLoad||result.revision!==revision||ordersView!==view);
       const activeChanged=active.changed!==false&&(firstLoad||active.revision!==dashboardRevision);
       if(activeChanged){
         if(active.orders.length>=active.total)for(const previous of dashboardOrders)if(!active.orders.some(order=>order.id===previous.id&&order.status==='nueva'))window.DonPierosReception?.dismiss('order:'+previous.id);
         dashboardOrders=active.orders;dashboardRevision=active.revision;searchEpoch++;searchCache.clear();searchJobs.clear();
       }
-      const arrived=firstLoad?[]:dashboardOrders.filter(o=>o.status==='nueva'&&!seenOrderIds.has(o.id)&&Number(o.sequence)>newestOrderSequence);
+      const arrived=firstLoad?[]:overlayOrders(dashboardOrders).filter(o=>!deletions()?.hidden('web-order',o.id)&&o.status==='nueva'&&!seenOrderIds.has(o.id)&&Number(o.sequence)>newestOrderSequence);
       newestOrderSequence=Math.max(newestOrderSequence,...dashboardOrders.map(order=>Number(order.sequence)||0));
       dashboardOrders.forEach(o=>seenOrderIds.add(o.id));
       firstLoad=false;
       if(listChanged){orders=result.orders;total=result.total;revision=result.revision;ordersView=view;renderOrders();}
-      if(activeChanged){$('#dp-nav-count').textContent=active.activeCount||'';renderDashboard(dashboardOrders,active.activeCount);}
+      if(activeChanged){activeCount=Number(active.activeCount)||0;renderDashboard(dashboardOrders,activeCount);}
+      for(const order of overlayOrders(dashboardOrders))if(!deletions()?.hidden('web-order',order.id)&&receivedOrderSignals.has(order.id))confirmReception(order.id);
       if(arrived.length&&api().getUser()?.role!=='waiter'){
         api().announceWebOrders(arrived);
         for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:'order',title:order.customerName,
@@ -221,15 +234,58 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button></div></footer></article>`;}
+  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
+  function overlayOrders(rows){
+    const next=new Map(rows.map(row=>[row.id,row]));
+    for(const [id,write] of orderWrites){
+      if(!write.after)next.delete(id);
+      else if(next.has(id))next.set(id,write.after);
+    }
+    return [...next.values()];
+  }
+  function adjustedCount(rows,count,filter){
+    const matches=row=>row&&row.status!=='eliminada'&&(filter==='all'||(filter==='active'?['nueva','atendiendo','lista'].includes(row.status):row.status===filter));
+    for(const row of rows){const write=orderWrites.get(row.id);if(deletions()?.hidden('web-order',row.id))count-=Number(!!matches(row));else if(write)count+=Number(!!matches(write.after))-Number(!!matches(row));}
+    return Math.max(0,Number(count)||0);
+  }
+  function repaintOrders(){renderOrders();renderDashboard(dashboardOrders,activeCount);}
+  async function mutateOrder(order,after,action,payload){
+    if(!canOrders()||orderWrites.get(order.id)?.pending)return;
+    const token=api().getToken(),write={before:order,after,pending:true};
+    orderEpoch++;orderWrites.set(order.id,write);
+    window.DonPierosReception?.dismiss('order:'+order.id);$('#dp-order-dialog').close();repaintOrders();
+    try{
+      const result=await request(action,{id:order.id,version:order.version,...payload});
+      if(token!==api().getToken())return;
+      write.pending=false;if(result.order)write.after=result.order;orderEpoch++;
+      revision='';dashboardRevision='';searchEpoch++;searchCache.clear();
+      repaintOrders();signal('order-updated');void loadOrders(true);
+      notify(after?'Estado del pedido actualizado.':'Pedido eliminado.');
+    }catch(error){
+      if(token!==api().getToken())return;
+      orderWrites.delete(order.id);orderEpoch++;repaintOrders();
+      notify('No pudimos confirmar el cambio. Restauramos el pedido mientras verificamos. '+error.message,true);void loadOrders(true);
+    }
+  }
+  function deleteOrder(id){
+    const order=findOrder(id);if(!order||orderWrites.get(id)?.pending||!canOrders())return;
+    if(!confirm('¿Eliminar el pedido '+order.id+' de '+order.customerName+'? Se retirará de Pedidos web y del inicio.'))return;
+    try{
+      deletions().enqueue('web-order',id,{id,version:order.version});
+      window.DonPierosReception?.dismiss('order:'+id);$('#dp-order-dialog').close();repaintOrders();
+      notify('Pedido retirado. Se está sincronizando.');
+    }catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
+  }
   function renderOrders(){
     const rows=searchRows('list',orders),searching=!!searchState.list.query||searchState.list.status!=='active';
+    const visibleTotal=adjustedCount(orders,total,searchState.list.status);
     $('#dp-orders-list').innerHTML=rows.map(orderCard).join('')||'<div class="dp-empty">No encontramos pedidos con esta búsqueda y estado.</div>';
-    $('#dp-page').textContent=total?`${offset+1}–${Math.min(offset+60,total)} de ${total}`:'Sin pedidos';$('#dp-prev').disabled=offset===0;$('#dp-next').disabled=offset+60>=total;
+    $('#dp-page').textContent=visibleTotal?`${offset+1}–${Math.min(offset+60,visibleTotal)} de ${visibleTotal}`:'Sin pedidos';$('#dp-prev').disabled=offset===0;$('#dp-next').disabled=offset+60>=visibleTotal;
     $('#dp-page').closest('.dp-pagination').hidden=searching;
     $('#dp-list-result').textContent=searching?(searchJobs.has(searchState.list.status)?'Buscando en todos los pedidos…':`${rows.length} pedido${rows.length===1?'':'s'} encontrado${rows.length===1?'':'s'}`):'';
   }
   function renderDashboard(rows,count){
+    count=adjustedCount(rows,activeCount,'active');$('#dp-nav-count').textContent=count||'';
     const root=$('#dp-dashboard-orders');
     if(!$('#dp-dashboard-order-list'))root.innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count"></span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${receptionFilters('dashboard')}<p id="dp-dashboard-result" class="dp-muted" role="status"></p><div id="dp-dashboard-order-list"></div>`;
     root.querySelector('.dp-count').textContent=count;
@@ -255,8 +311,11 @@
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
-      <div class="dp-order-actions"><label>Estado del pedido<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}</div><p id="dp-order-error" role="alert"></p>`;
-    $('#dp-change-status').onclick=async event=>{event.target.disabled=true;event.target.textContent='Guardando…';try{await request('dp_update_order',{id:order.id,status:$('#dp-new-status').value,version:order.version});$('#dp-order-dialog').close();revision='';void loadOrders(true);notify('Estado del pedido actualizado.');signal('order-updated');}catch(error){$('#dp-order-error').textContent=friendly(error);event.target.disabled=false;event.target.textContent='Guardar estado';}};
+      <div class="dp-order-actions"><label>Estado del pedido<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}</div><button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button><p id="dp-order-error" role="alert"></p>`;
+    $('#dp-change-status').disabled=!!orderWrites.get(id)?.pending;
+    $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
+    $('#dp-change-status').onclick=()=>void mutateOrder(order,{...order,status:$('#dp-new-status').value,version:Number(order.version)+1},'dp_update_order',{status:$('#dp-new-status').value});
+    $('#dp-delete-order').onclick=()=>void deleteOrder(id);
     $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
     $('#dp-print-width').setAttribute('data-dp-paper','');$('#dp-print-width').value=String(paperWidth);
     const dialog=$('#dp-order-dialog');
@@ -316,7 +375,15 @@
     const readEpoch=catalogEpoch;
     $('#dp-menu-status').textContent='Cargando menú…';
     catalogLoading=(async()=>{
-      try{const next=await request('dp_admin_catalog');if(readEpoch!==catalogEpoch){$('#dp-menu-status').textContent='Menú actualizado con tus cambios recientes.';return;}catalog=next;catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
+      try{const next=await request('dp_admin_catalog');if(readEpoch!==catalogEpoch&&catalog){$('#dp-menu-status').textContent='Menú actualizado con tus cambios recientes.';return;}catalog=next;
+        for(const [key,write] of catalogWrites){
+          const [kind,id]=key.split(':');
+          const incoming=catalog[kind].find(item=>item.id===id);
+          if(!write.pending&&(!write.after&&!incoming||write.after&&incoming&&Number(incoming.version)>=Number(write.after.version))){catalogWrites.delete(key);continue;}
+          catalog[kind]=catalog[kind].filter(item=>item.id!==id);
+          if(write.after)catalog[kind].push(write.after);
+        }
+        catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
       catch(error){$('#dp-menu-status').textContent=friendly(error);}finally{catalogLoading=null;}
     })();return catalogLoading;
   }
@@ -324,17 +391,18 @@
   function removeCatalogPhoto(path,message){void api().db.storage.from('product-images').remove([path]).then(({error})=>{if(error)notify(message,true);}).catch(()=>notify(message,true));}
   function renderCatalog(){
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
-    let rows=catalog[catalogKind]||[];
+    let rows=(catalog[catalogKind]||[]).filter(item=>!deletions()?.hidden('catalog-'+catalogKind,item.id));
     const select=$('#dp-menu-category'),selected=select.value,categories=[...new Set((catalog.products||[]).map(p=>p.category))];
     select.innerHTML='<option value="">Todas las categorías</option>'+categories.map(c=>`<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(c)}</option>`).join('');$('#dp-category-filter').hidden=catalogKind!=='products';
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);
     const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
     $('#dp-catalog-list').innerHTML=rows.length?(catalogKind==='products'?categories.filter(c=>rows.some(p=>p.category===c)).map(c=>`<section class="dp-category-section"><h3>${esc(c)} <small>${rows.filter(p=>p.category===c).length}</small></h3><div class="dp-menu-grid">${rows.filter(p=>p.category===c).map(card).join('')}</div></section>`).join(''):`<div class="dp-menu-grid">${rows.map(card).join('')}</div>`):'<div class="dp-empty">Sin registros. Agrega el primero para comenzar.</div>';
-    $$('[data-dp-availability]').forEach(button=>{if(!pendingAvailability.has(button.dataset.dpAvailability))return;const card=button.closest('.dp-menu-card');card.setAttribute('aria-busy','true');card.querySelectorAll('button').forEach(control=>{control.disabled=true;});});
+    $$('[data-dp-edit]').forEach(button=>{const id=button.dataset.dpEdit;if(!pendingAvailability.has(id)&&!catalogWrites.get(catalogKind+':'+id)?.pending)return;const card=button.closest('.dp-menu-card');card.setAttribute('aria-busy','true');card.querySelectorAll('button').forEach(control=>{control.disabled=true;});});
   }
   async function toggleAvailability(button){
     const item=catalog.products.find(p=>p.id===button.dataset.dpAvailability);if(!item)return;button.disabled=true;
     if(pendingAvailability.has(item.id))return;
+    catalogWrites.delete('products:'+item.id);
     const optimistic={...item,available:!item.available};pendingAvailability.set(item.id,optimistic);applyCatalogItem('products',optimistic);renderCatalog();
     const card=$(`[data-dp-availability="${CSS.escape(item.id)}"]`)?.closest('.dp-menu-card');card?.setAttribute('aria-busy','true');card?.querySelectorAll('button').forEach(control=>{control.disabled=true;});
     $('#dp-menu-status').textContent='Guardando disponibilidad…';
@@ -343,6 +411,7 @@
   }
   const field=(name,label,value='',type='text',extra='')=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
   function openItem(item){
+    if(item&&catalogWrites.get(catalogKind+':'+item.id)?.pending)return;
     if(!catalog)return notify('Primero conecta y carga el menú.',true);editItem=item||{id:crypto.randomUUID(),version:0};removeImage=false;
     $('#dp-item-title').textContent=(item?'Editar ':'Agregar ')+({products:'producto',toppings:'adicional',payments:'medio de pago',neighborhoods:'barrio'})[catalogKind];
     let fields=field('name','Nombre',item?.name||'','text','required maxlength="120"');
@@ -377,54 +446,127 @@
     return {path,url:bucket.getPublicUrl(path).data.publicUrl};
   }
   async function saveItem(event){
-    event.preventDefault();const form=event.target,button=$('#dp-item-save');button.disabled=true;$('#dp-item-error').textContent='';let uploaded=null,saved=false;
+    event.preventDefault();const form=event.target,button=$('#dp-item-save'),kind=catalogKind,previous={...editItem},token=api().getToken();
+    button.disabled=true;$('#dp-item-error').textContent='';let uploaded=null,optimistic=false;
+    const key=kind+':'+previous.id;
     try{
-      const item={...editItem,name:form.elements.namedItem('name').value.trim(),available:form.available.checked,sort_order:Number(form.sort_order.value)};
-      if(catalogKind==='products'){
+      const item={...previous,name:form.elements.namedItem('name').value.trim(),available:form.available.checked,sort_order:Number(form.sort_order.value)};
+      if(kind==='products'){
         Object.assign(item,{category:form.category.value.trim(),price:Number(form.price.value),description:form.description.value,badge:form.badge.value,featured:form.featured.checked});
         item.modifiers=$$('.dp-modifier').map(group=>({id:group.dataset.groupId,name:group.querySelector('[name=group_name]').value,source:group.querySelector('[name=group_source]').value,min:Number(group.querySelector('[name=group_min]').value),max:Number(group.querySelector('[name=group_max]').value),required:group.querySelector('[name=group_required]').checked,usePrice:group.querySelector('[name=group_price]').checked}));
-        if(removeImage){item.image_url='';item.image_path='';}if(form.image.files?.[0]){button.textContent='Subiendo imagen…';uploaded=await uploadImage(form.image.files[0]);item.image_url=uploaded.url;item.image_path=uploaded.path;}
+        if(removeImage){item.image_url='';item.image_path='';}
       }
-      if(catalogKind==='toppings'){item.kind=form.kind.value.trim();item.price=Number(form.price.value);}
-      if(catalogKind==='payments'){item.account_value=form.account_value.value;item.instructions=form.instructions.value;}
-      if(catalogKind==='neighborhoods')item.delivery_fee=Number(form.delivery_fee.value);
-      button.textContent='Guardando…';const result=await request('dp_save_catalog',{kind:catalogKind,item});saved=true;
-      if(editItem?.image_path && editItem.image_path!==item.image_path)removeCatalogPhoto(editItem.image_path,'Producto guardado. La foto anterior quedó pendiente de retirar.');
-      if(result.item){applyCatalogItem(catalogKind,result.item);renderCatalog();}else void loadCatalog();
-      $('#dp-item-dialog').close();signal('catalog-changed');notify('Guardado.');
-    }catch(error){$('#dp-item-error').textContent=friendly(error);
-      // A lost response may hide a committed save. Keep the uploaded image until reconciliation.
-      if(uploaded&&!saved)$('#dp-item-error').textContent+=' Actualiza antes de reintentar para comprobar el estado del producto.';
-    }finally{button.disabled=false;button.textContent='Guardar';}
+      if(kind==='toppings'){item.kind=form.kind.value.trim();item.price=Number(form.price.value);}
+      if(kind==='payments'){item.account_value=form.account_value.value;item.instructions=form.instructions.value;}
+      if(kind==='neighborhoods')item.delivery_fee=Number(form.delivery_fee.value);
+      const image=kind==='products'?form.image.files?.[0]:null;
+      if(image){button.textContent='Subiendo imagen…';uploaded=await uploadImage(image);item.image_url=uploaded.url;item.image_path=uploaded.path;}
+      if(token!==api().getToken())return;
+      catalogWrites.set(key,{after:item,pending:true});applyCatalogItem(kind,item);renderCatalog();optimistic=true;
+      $('#dp-item-dialog').close();button.disabled=false;button.textContent='Guardar';
+      const result=await request('dp_save_catalog',{kind,item});
+      if(token!==api().getToken())return;
+      catalogWrites.set(key,{after:result.item,pending:false});applyCatalogItem(kind,result.item);renderCatalog();
+      if(previous.image_path&&previous.image_path!==item.image_path)removeCatalogPhoto(previous.image_path,'Producto guardado. La foto anterior quedó pendiente de retirar.');
+      signal('catalog-changed');notify('Guardado.');
+    }catch(error){
+      if(token!==api().getToken())return;
+      if(optimistic){catalogWrites.delete(key);catalogEpoch++;catalog[kind]=catalog[kind].filter(row=>row.id!==previous.id);if(previous.version)applyCatalogItem(kind,previous);renderCatalog();notify('No pudimos confirmar el guardado. '+friendly(error),true);void loadCatalog();}
+      else $('#dp-item-error').textContent=friendly(error);
+      // Preserve uploaded files on uncertain saves; deleting them could break a committed product.
+      if(uploaded)notify('La foto se conservó. Actualiza el menú para comprobar el guardado.',true);
+    }finally{if(!optimistic){button.disabled=false;button.textContent='Guardar';}}
   }
   async function deleteItem(id){
-    const item=catalog[catalogKind].find(row=>row.id===id);if(!item||!confirm('¿Eliminar “'+item.name+'” del menú? Las comandas anteriores conservarán su detalle.'))return;
-    const kind=catalogKind,button=$(`[data-dp-delete="${CSS.escape(id)}"]`);if(button?.disabled)return;if(button){button.disabled=true;button.textContent='Eliminando…';}
-    try{await request('dp_delete_catalog',{kind,id,version:item.version});catalogEpoch++;catalog[kind]=catalog[kind].filter(row=>row.id!==id);renderCatalog();if(item.image_path)removeCatalogPhoto(item.image_path,'Registro eliminado. La foto quedó pendiente de retirar.');signal('catalog-changed');notify('Registro eliminado.');}
-    catch(error){if(button?.isConnected){button.disabled=false;button.textContent='Eliminar';}notify(error.message,true);}
+    const kind=catalogKind,item=catalog[kind].find(row=>row.id===id),key=kind+':'+id;
+    if(!item||catalogWrites.get(key)?.pending||pendingAvailability.has(id)||!confirm('¿Eliminar “'+item.name+'” del menú? Las comandas anteriores conservarán su detalle.'))return;
+    try{deletions().enqueue('catalog-'+kind,id,{kind,id,version:item.version,image_path:item.image_path});catalogEpoch++;renderCatalog();notify('Registro retirado. Se está sincronizando.');}
+    catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
   function signal(event){if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
-  function receiveOrderSignal(message){
+  function confirmReception(orderId){
+    const payload={orderId,at:Date.now()};
+    try{localStorage.setItem('don_pieros_order_received_v1',JSON.stringify(payload));}catch(_){}
+    if(channel)void channel.send({type:'broadcast',event:'order-received',payload}).catch(()=>{});
+  }
+  async function receiveOrderSignal(message){
     if(!canOrders())return;
     const id=message?.payload?.orderId||message?.orderId;
     if(typeof id!=='string'||!/^DP-[a-zA-Z0-9-]{1,80}$/.test(id))return;
+    if(deletions()?.hidden('web-order',id)){deletions().tick();return;}
     const now=Date.now();
     if(now-(receivedOrderSignals.get(id)||0)<2500)return;
     receivedOrderSignals.set(id,now);
     if(receivedOrderSignals.size>100)receivedOrderSignals.delete(receivedOrderSignals.keys().next().value);
-    // Cancel an older read instead of queuing the new receipt behind it.
-    // Never render order contents supplied by a public notification.
+    const token=api().getToken(),readEpoch=orderEpoch;
+    try{
+      // Retrieve only this receipt through the authenticated endpoint. Public
+      // broadcasts are wake-up hints and never provide trusted order details.
+      const result=await request('dp_get_order',{id},15000);
+      if(token!==api().getToken())return;
+      if(orderWrites.get(id)?.pending||deletions()?.hidden('web-order',id))return;
+      const unchanged=readEpoch===orderEpoch;
+      orderEpoch++;
+      const order=result.order,previous=findOrder(id);
+      if(order&&(!orderWrites.has(id)||unchanged&&!orderWrites.get(id).pending)){
+        if(previous&&Number(previous.version)>Number(order.version))return;
+        const active=row=>row&&['nueva','atendiendo','lista'].includes(row.status);
+        activeCount=Math.max(0,activeCount+Number(!!active(order))-Number(!!active(previous)));
+        if(offset===0)orders=[order,...orders.filter(row=>row.id!==id)].sort((a,b)=>b.sequence-a.sequence).slice(0,60);
+        dashboardOrders=[...(active(order)?[order]:[]),...dashboardOrders.filter(row=>row.id!==id)].sort((a,b)=>b.sequence-a.sequence);
+        if(order.status==='nueva'&&!seenOrderIds.has(id)&&api().getUser()?.role!=='waiter'){
+          api().announceWebOrders([order]);
+          window.DonPierosReception?.show({key:'order:'+id,kind:'order',title:order.customerName,
+            detail:`${id} · ${order.fulfillment==='delivery'?'Domicilio':'Recoger en tienda'}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,action:()=>openOrder(id)});
+        }
+        seenOrderIds.add(id);
+      }else if(!order&&!orderWrites.get(id)?.pending){
+        orders=orders.filter(row=>row.id!==id);dashboardOrders=dashboardOrders.filter(row=>row.id!==id);
+        if(previous&&['nueva','atendiendo','lista'].includes(previous.status))activeCount=Math.max(0,activeCount-1);
+      }
+      if(!order||order.status!=='nueva')window.DonPierosReception?.dismiss('order:'+id);
+      revision='';dashboardRevision='';searchEpoch++;searchCache.clear();repaintOrders();
+      if(order&&findOrder(id))confirmReception(id);
+    }catch(_){/* Older deployments retain the paginated reception fallback. */}
     void loadOrders(true,true);
   }
   async function tick(){
     const token=api()?.getToken();if(!token||!api()?.getUser()||document.hidden)return;
-    if(connectedToken!==token){if(connectedToken)window.DonPierosReception?.reset();connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;newestOrderSequence=0;seenOrderIds.clear();receivedOrderSignals.clear();searchEpoch++;searchCache.clear();searchJobs.clear();
+    if(connectedToken!==token){if(connectedToken)window.DonPierosReception?.reset();connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;newestOrderSequence=0;orderEpoch++;activeCount=0;orderWrites.clear();catalogWrites.clear();pendingAvailability.clear();seenOrderIds.clear();receivedOrderSignals.clear();searchEpoch++;searchCache.clear();searchJobs.clear();
       if(channel)void api().db.removeChannel(channel);
-      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},()=>void loadOrders(true,true)).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
+      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
       if(canMenu())void loadCatalog();
     }
     if(canOrders())void loadOrders();
   }
+  deletions()?.register('web-order',async(payload,update)=>{
+    try{await request('dp_delete_order',payload);}
+    catch(error){
+      const current=await request('dp_get_order',{id:payload.id},15000);
+      if(current.order===null)return;
+      if(current.order&&Number(current.order.version)!==Number(payload.version))update({version:current.order.version});
+      throw error;
+    }
+  });
+  for(const kind of ['products','toppings','payments','neighborhoods'])deletions()?.register('catalog-'+kind,async(payload,update)=>{
+    try{await request('dp_delete_catalog',payload);}
+    catch(error){
+      const current=await request('dp_admin_catalog');
+      const item=current[kind]?.find(row=>row.id===payload.id);
+      if(!Array.isArray(current[kind]))throw error;
+      if(item){if(Number(item.version)!==Number(payload.version))update({version:item.version});throw error;}
+    }
+    if(payload.image_path)removeCatalogPhoto(payload.image_path,'Registro retirado. La foto quedó pendiente de limpiar.');
+  });
+  window.addEventListener('donpieros-deletions-change',event=>{
+    const record=event.detail;
+    if(record.kind==='web-order'){
+      window.DonPierosReception?.dismiss('order:'+record.id);repaintOrders();
+      if(record.state==='done'){revision='';dashboardRevision='';searchEpoch++;searchCache.clear();signal('order-updated');void loadOrders(true);}
+    }else if(record.kind.startsWith('catalog-')){
+      catalogEpoch++;renderCatalog();if(record.state==='done')signal('catalog-changed');
+    }
+  });
   mount();setInterval(tick,3000);void tick();
   window.addEventListener('donpieros-session-change',()=>void tick());
   window.addEventListener('storage',event=>{if(event.key!=='don_pieros_order_signal_v1'||!event.newValue)return;try{const notice=JSON.parse(event.newValue);if(Math.abs(Date.now()-notice.at)<15000)receiveOrderSignal(notice);}catch(_){}});

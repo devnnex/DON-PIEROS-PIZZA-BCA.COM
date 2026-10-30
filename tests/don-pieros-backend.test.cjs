@@ -1,4 +1,43 @@
 const test=require('node:test'),assert=require('node:assert/strict');const {harness}=require('./helpers/don-pieros-gas.cjs');
+test('eliminar retira de todas las vistas, conserva idempotencia y comprueba versión y permisos',()=>{
+ const h=harness(),p=h.product(),order=h.order(p),receipt=h.call('createOrder',{order});
+ assert.equal(h.call('dp_delete_order',{id:receipt.orderId,version:1},'').ok,false);
+ assert.equal(h.call('dp_delete_order',{id:receipt.orderId,version:1},'limited').ok,false);
+ assert.equal(h.call('dp_delete_order',{id:receipt.orderId,version:0}).ok,false);
+ const before=h.call('dp_order_status').revision;
+ assert.equal(h.call('dp_delete_order',{id:receipt.orderId,version:1},'waiter').ok,true);
+ assert.notEqual(h.call('dp_order_status').revision,before);
+ for(const status of ['active','all','cancelada','eliminada'])assert.equal(h.call('dp_get_orders',{status}).orders.length,0);
+ assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order,null);
+ assert.equal(h.call('dp_get_orders').activeCount,0);
+ assert.equal(h.call('dp_update_order',{id:receipt.orderId,status:'nueva',version:2}).ok,false);
+ assert.equal(h.call('dp_delete_order',{id:receipt.orderId,version:1}).alreadyDeleted,true);
+ assert.equal(h.call('createOrder',{order}).code,'ORDER_VALIDATION');
+ const next=h.call('createOrder',{order:h.order(p)});assert.equal(next.sequence,2);assert.equal(next.queuePosition,1);
+});
+test('la recepción rápida lee una sola fila, exige sesión y verifica el índice si cambian filas en Sheets',()=>{
+ const h=harness(),p=h.product(),a=h.call('createOrder',{order:h.order(p)}),b=h.call('createOrder',{order:h.order(p)});
+ assert.equal(h.call('dp_get_order',{id:a.orderId},'').ok,false);
+ assert.equal(h.call('dp_get_order',{id:a.orderId},'limited').ok,false);
+ h.reads.length=0;
+ assert.equal(h.call('dp_get_order',{id:b.orderId}).order.id,b.orderId);
+ assert.equal(h.reads.filter(r=>r.sheet==='Ordenes_Web').length,1);
+ h.sheets.get('Ordenes_Web').deleteRow(2);
+ assert.equal(h.call('dp_get_order',{id:b.orderId}).order.id,b.orderId);
+ assert.equal(h.call('dp_get_order',{id:a.orderId}).order,null);
+});
+test('Apps Script avisa antes del recibo y solo transmite el identificador público',()=>{
+ const h=harness(),p=h.product(),signals=[];
+ h.context.getConfig_=()=>({supabaseUrl:'https://example.supabase.co',supabaseAnonKey:'public'});
+ h.context.UrlFetchApp={fetch:(url,options)=>{
+   const message=JSON.parse(options.payload).messages[0];
+   assert.equal(h.call('dp_get_order',{id:message.payload.orderId}).order.id,message.payload.orderId);
+   signals.push(message);return {};
+ }};
+ const receipt=h.call('createOrder',{order:h.order(p)});
+ assert.equal(receipt.ok,true);assert.equal(signals.length,1);
+ assert.equal(signals[0].event,'order-created');assert.deepEqual(signals[0].payload,{orderId:receipt.orderId});
+});
 test('la primera petición crea la estructura en la hoja nueva sin productos, ventas ni pedidos',()=>{
  const h=harness();const health=JSON.parse(h.context.doGet().value);assert.equal(health.ok,true);assert.equal(health.configured,true);assert.equal(health.spreadsheetId,h.book.getId());
  for(const name of ['Inventario','Ventas','Detalle_Ventas','Ordenes_Web','Menu_Web','Adicionales_Web','Barrios_Web']){assert.ok(h.sheets.has(name));assert.equal(h.sheets.get(name).getLastRow(),1);}
@@ -64,6 +103,7 @@ test('los cambios del catálogo conservan versiones, borran caché y evitan fór
  assert.equal(h.call('dp_save_catalog',{kind:'products',item:p}).ok,false);
  assert.equal(h.call('dp_delete_catalog',{kind:'products',id:p.id,version:1}).ok,false);
  assert.equal(h.call('dp_delete_catalog',{kind:'products',id:p.id,version:2}).ok,true);
+ assert.equal(h.call('dp_save_catalog',{kind:'products',item:{...p,version:2}}).ok,false,'Una edición atrasada no recrea el producto eliminado.');
 });
 test('una respuesta perdida después de escribir conserva la orden, publica revisión y no repite el consecutivo',()=>{
  const h=harness(),p=h.product(),order=h.order(p);let first=true;

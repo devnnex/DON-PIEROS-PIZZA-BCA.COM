@@ -99,8 +99,8 @@ begin
   update public.waiter_comandas set accepted_at=coalesce(accepted_at,now()),accepted_by_user_id=coalesce(accepted_by_user_id,p_actor),updated_at=now() where id=p_id;
 end;$$;
 
--- Covers both Aceptar on the original request and Aceptar in the comanda modal.
--- Even a legacy direct update cannot acknowledge it without applying its items.
+-- Acknowledging a notice only marks it as reviewed. Applying the products is
+-- explicit in dp_accept_waiter_comanda, after reviewing/printing the comanda.
 create or replace function public.dp_accept_comanda_on_ack()
 returns trigger language plpgsql security definer set search_path=public,extensions as $$
 declare actor public.app_users;
@@ -110,7 +110,6 @@ begin
     if actor.role='waiter' or not(public.app_can_access_section('dashboard') or public.app_can_access_section('service')) then
       raise exception 'La comanda debe ser aceptada por administración.';
     end if;
-    perform public.dp_apply_waiter_comanda(new.id,actor.id);
   end if;
   return new;
 end;$$;
@@ -171,6 +170,7 @@ begin
   if c.accepted_at is not null then return public.dp_waiter_comanda_result(c.id)||jsonb_build_object('duplicate',true);end if;
   if c.version is distinct from p_expected_version then raise exception 'La comanda cambió en otro equipo. Revisa los cambios antes de aceptar.';end if;
   if jsonb_array_length(c.items)=0 then raise exception 'La comanda no contiene productos.';end if;
+  perform public.dp_apply_waiter_comanda(c.id,actor.id);
   update public.service_requests set status='acknowledged',acknowledged_at=now(),acknowledged_by_user_id=actor.id where id=c.id;
   return public.dp_waiter_comanda_result(c.id)||jsonb_build_object('duplicate',false);
 end;$$;
@@ -238,7 +238,8 @@ begin
   insert into public.service_requests(id,table_id,session_id,request_type,message,request_source,requested_by_user_id,requested_by_name)
     values(p_comanda_id,p_table_id,account.id,'other',left(detail,1000),'waiter',c.created_by_user_id,
       left(coalesce((select coalesce(nullif(full_name,''),username) from public.app_users where id=c.created_by_user_id),'Mesero'),80))
-    on conflict(id) do update set message=excluded.message,updated_at=now();
+    on conflict(id) do update set message=excluded.message,updated_at=now(),
+      status=case when jsonb_array_length(clean_items)=0 then 'resolved' when c.accepted_at is not null then 'acknowledged' else 'pending' end;
   if jsonb_array_length(clean_items)=0 then update public.service_requests set status='resolved' where id=p_comanda_id;end if;
   result:=public.dp_waiter_comanda_result(c.id);
   insert into public.waiter_comanda_operations(id,actor_id,signature,result) values(p_operation_id,actor.id,fingerprint,result);

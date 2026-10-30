@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.3.0-donpieros",
+  version: "3.4.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -118,7 +118,7 @@ function doGet() {
       service: "DON PIEROS PIZZA",
       version: APP.version,
       configured: isConfigured_(),
-      capabilities: { onlineOrders: true, catalog: true, queue: true, receipts: false, liveLocation: false },
+      capabilities: { onlineOrders: true, orderDeletion: true, fastOrderReception: true, catalog: true, queue: true, receipts: false, liveLocation: false },
       spreadsheetId: APP.spreadsheetId
     });
   } catch (error) {
@@ -1736,10 +1736,12 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
   var user = validateSupabaseUser_(request.authToken);
-  if (action === 'dp_get_orders' || action === 'dp_order_status' || action === 'dp_update_order') {
+  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
+    if (action === 'dp_get_order') return dpGetOrder_(payload);
+    if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
     return dpUpdateOrder_(payload,user);
   }
   requireSection_(user,'inventory');
@@ -1812,7 +1814,9 @@ function dpSaveCatalog_(payload,user) {
   var key=payload.kind, definition=DP_TABLES[key];
   if(['products','toppings','payments','neighborhoods'].indexOf(key)<0)throw new Error('Catálogo inválido.');
   return dpWithLock_(function(){
-    var item=payload.item || {}, rows=dpRows_(key), old=rows.filter(function(row){return row.id===item.id;})[0];
+    var sheet=getSpreadsheet_().getSheetByName(definition.name),values=sheet.getDataRange().getValues();
+    var item=payload.item || {}, rows=dpObjects_(key,values.slice(1)), old=rows.filter(function(row){return row.id===item.id;})[0];
+    if(!old&&Number(item.version)>0)throw new Error('Este registro fue eliminado. Actualiza el menú.');
     if(old && Number(item.version)!==old.version)throw new Error('Otra persona editó este registro. Actualiza antes de guardar.');
     var saved={id:old ? old.id : /^[a-f0-9-]{36}$/i.test(String(item.id||'')) ? item.id : Utilities.getUuid(),name:dpText_(item.name,120),available:item.available!==false,sort_order:Number(item.sort_order)||0,version:(old ? old.version : 0)+1};
     if(!saved.name)throw new Error('Escribe un nombre.');
@@ -1832,7 +1836,7 @@ function dpSaveCatalog_(payload,user) {
     if(key==='toppings'){saved.kind=dpText_(item.kind,60)||'Adicional';saved.price=dpMoney_(item.price);}
     if(key==='payments'){saved.account_value=dpText_(item.account_value,160);saved.instructions=dpText_(item.instructions,500);}
     if(key==='neighborhoods')saved.delivery_fee=dpMoney_(item.delivery_fee);
-    var sheet=getSpreadsheet_().getSheetByName(definition.name),values=sheet.getDataRange().getValues(),rowIndex=-1;
+    var rowIndex=-1;
     for(var i=1;i<values.length;i++)if(String(values[i][0])===saved.id){rowIndex=i+1;break;}
     var cells=definition.headers.map(function(header){var value=saved[header];return dpCell_(header==='modifiers'?JSON.stringify(value):value==null?'':value);});
     sheet.getRange(rowIndex>0?rowIndex:sheet.getLastRow()+1,1,1,cells.length).setValues([cells]);
@@ -1903,12 +1907,16 @@ function dpCreateOrder_(raw) {
   if(!raw || !/^[a-f0-9-]{36}$/i.test(String(raw.requestId||'')))dpRejectOrder_('Identificador de pedido inválido.');
   var customerName=dpText_(raw.customerName,80),phone=dpText_(raw.phone,25);
   if(customerName.length<2 || !/^\+?[\d\s()-]{7,25}$/.test(phone) || phone.replace(/\D/g,'').length<7)dpRejectOrder_('Nombre o teléfono inválido.');
-  return dpWithLock_(function(){
+  var result=dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
     // Read metadata only. Historical item JSON is not downloaded to assign a turn.
     var metadata=last>1?sheet.getRange(2,1,last-1,6).getValues():[],duplicateIndex=-1;
     metadata.some(function(row,index){if(row[1]===raw.requestId){duplicateIndex=index+2;return true;}return false;});
-    if(duplicateIndex>0){PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());return dpOrderResult_(dpObjects_('orders',sheet.getRange(duplicateIndex,1,1,DP_TABLES.orders.headers.length).getValues())[0],true);}
+    if(duplicateIndex>0){
+      var duplicate=dpObjects_('orders',sheet.getRange(duplicateIndex,1,1,DP_TABLES.orders.headers.length).getValues())[0];
+      if(duplicate.status==='eliminada')dpRejectOrder_('Este pedido fue retirado por el negocio. Crea un nuevo pedido si deseas volver a ordenar.');
+      return dpOrderResult_(duplicate,true);
+    }
     // Authoritative prices and availability, including direct edits to Sheets.
     var priced;
     try{priced=dpPriceOrder_(raw,dpCatalog_(true));}catch(error){error.retryable=false;error.code='ORDER_VALIDATION';throw error;}
@@ -1921,11 +1929,16 @@ function dpCreateOrder_(raw) {
     try {
       sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
       SpreadsheetApp.flush();
+      try{CacheService.getScriptCache().put('DP_ORDER_ROW:'+id,String(last+1),21600);}catch(_){}
     } finally { properties.setProperty('DP_ORDERS_REVISION',Utilities.getUuid()); }
-    properties.setProperty('DP_NEXT_ORDER',String(sequence+1));properties.setProperty('DP_ORDERS_REVISION',Utilities.getUuid());
+    properties.setProperty('DP_NEXT_ORDER',String(sequence+1));
+    // Wake reception before the customer receives the receipt. No customer data
+    // travels on the public channel; details still require an authorized user.
     try{appendAudit_('WEB_ORDER',id,customerName,'OK','Orden guardada; turno '+order.queuePosition);}catch(_){}
     return dpOrderResult_(order,false);
   });
+  dpSignalOrder_('order-created',result.orderId);
+  return result;
 }
 
 function dpOrders_(payload) {
@@ -1935,7 +1948,7 @@ function dpOrders_(payload) {
   var metadata=last>1?sheet.getRange(2,3,last-1,4).getValues():[];
   var orders=metadata.map(function(row,index){return{row:index+2,sequence:Number(row[0])||0,status:String(row[3])};}).sort(function(a,b){return b.sequence-a.sequence;});
   var filter=payload.status||'active';
-  var filtered=orders.filter(function(order){return filter==='all' || (filter==='active'?['nueva','atendiendo','lista'].indexOf(order.status)>=0:order.status===filter);});
+  var filtered=orders.filter(function(order){return order.status!=='eliminada' && (filter==='all' || (filter==='active'?['nueva','atendiendo','lista'].indexOf(order.status)>=0:order.status===filter));});
   var offset=Math.max(0,Number(payload.offset)||0);
   var selected=filtered.slice(offset,offset+limit).sort(function(a,b){return a.row-b.row;}),cells=[];
   for(var i=0;i<selected.length;){var start=selected[i].row,end=start;i++;while(i<selected.length && selected[i].row===end+1){end=selected[i].row;i++;}cells=cells.concat(sheet.getRange(start,1,end-start+1,DP_TABLES.orders.headers.length).getValues());}
@@ -1944,20 +1957,71 @@ function dpOrders_(payload) {
 }
 
 function dpUpdateOrder_(payload,user) {
-  return dpWithLock_(function(){
+  var result=dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
     if(DP_STATUSES.indexOf(payload.status)<0)throw new Error('Estado inválido.');
     var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
     for(var i=0;i<ids.length;i++)if(ids[i][0]===payload.id){
       var row=sheet.getRange(i+2,1,1,headers.length).getValues()[0];
+      if(row[headers.indexOf('status')]==='eliminada')throw new Error('Este pedido fue eliminado.');
       if(row[headers.indexOf('status')]===payload.status)return {ok:true,duplicate:true};
       if(Number(row[headers.indexOf('version')])!==Number(payload.version))throw new Error('Otra persona atendió esta orden. Actualiza para ver su estado.');
       row[headers.indexOf('status')]=payload.status;row[headers.indexOf('updatedAt')]=new Date().toISOString();row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);row[headers.indexOf('version')]=Number(payload.version)+1;
-      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
-      appendAudit_('WEB_ORDER_STATUS',payload.id,user.full_name,'OK',payload.status);return {ok:true};
+      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+      appendAudit_('WEB_ORDER_STATUS',payload.id,user.full_name,'OK',payload.status);return {ok:true,order:dpObjects_('orders',[row])[0]};
     }
     throw new Error('No se encontró el pedido.');
   });
+  dpSignalOrder_('order-updated',payload.id);
+  return result;
+}
+
+function dpGetOrder_(payload) {
+  var id=dpText_(payload.id,100);
+  if(!/^DP-[a-zA-Z0-9-]{1,80}$/.test(id))throw new Error('Pedido inválido.');
+  var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
+  var cache=CacheService.getScriptCache(),rowIndex=Number(cache.get('DP_ORDER_ROW:'+id));
+  if(rowIndex>=2&&rowIndex<=last){
+    var cachedRow=sheet.getRange(rowIndex,1,1,DP_TABLES.orders.headers.length).getValues();
+    if(cachedRow[0][0]===id){var cachedOrder=dpObjects_('orders',cachedRow)[0];return {ok:true,order:cachedOrder.status==='eliminada'?null:cachedOrder};}
+  }
+  var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
+  for(var i=ids.length-1;i>=0;i--)if(ids[i][0]===id){
+    try{cache.put('DP_ORDER_ROW:'+id,String(i+2),21600);}catch(_){}
+    var order=dpObjects_('orders',sheet.getRange(i+2,1,1,DP_TABLES.orders.headers.length).getValues())[0];
+    return {ok:true,order:order.status==='eliminada'?null:order};
+  }
+  return {ok:true,order:null};
+}
+
+function dpDeleteOrder_(payload,user) {
+  var result=dpWithLock_(function(){
+    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
+    var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
+    for(var i=ids.length-1;i>=0;i--)if(ids[i][0]===payload.id){
+      var row=sheet.getRange(i+2,1,1,headers.length).getValues()[0];
+      if(row[5]==='eliminada')return {ok:true,alreadyDeleted:true};
+      if(Number(row[headers.indexOf('version')])!==Number(payload.version))throw new Error('El pedido cambió. Revisa su estado antes de eliminar.');
+      // Keep the request id so a delayed customer retry cannot recreate it.
+      row[5]='eliminada';row[4]=new Date().toISOString();row[20]=dpCell_(user.full_name||user.username);row[21]=Number(payload.version)+1;
+      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+      try{appendAudit_('WEB_ORDER_DELETE',payload.id,user.full_name,'OK','Retirado de recepción');}catch(_){}
+      return {ok:true};
+    }
+    return {ok:true,alreadyDeleted:true};
+  });
+  dpSignalOrder_('order-updated',payload.id);
+  return result;
+}
+
+function dpSignalOrder_(event,id) {
+  try{
+    var config=getConfig_();if(!config.supabaseUrl||!config.supabaseAnonKey)return;
+    UrlFetchApp.fetch(config.supabaseUrl.replace(/\/$/,'')+'/realtime/v1/api/broadcast',{
+      method:'post',contentType:'application/json',headers:{apikey:config.supabaseAnonKey,Authorization:'Bearer '+config.supabaseAnonKey},
+      payload:JSON.stringify({messages:[{topic:'don-pieros-orders-live',event:event,payload:{orderId:id}}]}),muteHttpExceptions:true
+    });
+  }catch(_){} // Polling and the customer's independent signal remain available.
 }
 
 // For a script bound to this spreadsheet, direct edits refresh caches automatically.

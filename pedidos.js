@@ -29,6 +29,7 @@
     receipt:null, receiptBusy:false, receiptRevision:0, lastWhatsappUrl:'',
     availabilitySignature:''
   };
+  const receptionReceipts=new Set(),receptionWaiters=new Map();
   let favoriteIds;try{favoriteIds=new Set(JSON.parse(localStorage.getItem('don_pieros_favorites_v1')||'[]'));}catch(_){favoriteIds=new Set();}
   state.favoritesOnly=false;
   state.catalogReady = false;
@@ -91,6 +92,29 @@
       body:JSON.stringify({ messages:[{ topic:'don-pieros-orders-live', event:'order-created', payload }] })
     }).catch(() => {});
   }
+
+  function rememberReception(message){
+    const id=message?.payload?.orderId||message?.orderId;
+    if(typeof id!=='string'||!/^DP-[a-zA-Z0-9-]{1,80}$/.test(id))return;
+    receptionReceipts.add(id);
+    if(receptionReceipts.size>30)receptionReceipts.delete(receptionReceipts.values().next().value);
+    receptionWaiters.get(id)?.();
+  }
+  function waitForReception(id){
+    if(receptionReceipts.has(id))return Promise.resolve();
+    try{const saved=JSON.parse(localStorage.getItem('don_pieros_order_received_v1')||'null');if(saved?.orderId===id&&Date.now()-saved.at<15000)return Promise.resolve();}catch(_){}
+    if(state.orderSignal?.state!=='joined')return Promise.resolve();
+    // A connected administrator can confirm that the comanda is already in its
+    // DOM. Offline/slow reception must never invalidate an order saved in Sheets.
+    return new Promise(resolve=>{
+      const done=()=>{clearTimeout(timer);receptionWaiters.delete(id);resolve();};
+      const timer=setTimeout(done,1800);receptionWaiters.set(id,done);
+    });
+  }
+  window.addEventListener('storage',event=>{
+    if(event.key!=='don_pieros_order_received_v1'||!event.newValue)return;
+    try{const receipt=JSON.parse(event.newValue);if(Math.abs(Date.now()-receipt.at)<15000)rememberReception(receipt);}catch(_){}
+  });
 
   function openOrderWhatsApp(url) {
     // Navigation failures must never put an already saved order back in recovery.
@@ -223,7 +247,7 @@
     } catch(error) { if(showError) toast('Carta pendiente de conexión', error.message); renderCategories(); renderProducts(); }
   }
   function connectRealtime() {
-    if(supabaseClient) state.orderSignal = supabaseClient.channel('don-pieros-orders-live').on('broadcast',{event:'catalog-changed'},()=>loadStoreData(false,true)).subscribe();
+    if(supabaseClient) state.orderSignal = supabaseClient.channel('don-pieros-orders-live').on('broadcast',{event:'catalog-changed'},()=>loadStoreData(false,true)).on('broadcast',{event:'order-received'},rememberReception).subscribe();
     setInterval(()=>{if(!document.hidden) void loadStoreData(false);},60000);
     window.addEventListener('online',()=>loadStoreData(true));
   }
@@ -462,6 +486,7 @@
       const response = await fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},signal:controller.signal,body:JSON.stringify({action:'createOrder',order}) });
       const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
       notifyOrderCreated(result.orderId);
+      await waitForReception(result.orderId);
       order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;
       order.deliveryFeePending=!!result.deliveryFeePending;
       if(result.neighborhood)order.neighborhood=result.neighborhood;
