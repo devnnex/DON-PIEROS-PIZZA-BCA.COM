@@ -5,7 +5,7 @@ const clone=value=>JSON.parse(JSON.stringify(value));
 test('recepción: retiro persistente con reintentos, revisión e impresión antes de asignar',async()=>{
  const orders=[1,2].map(sequence=>({id:'DP-test-'+sequence,sequence,status:'nueva',version:1,createdAt:new Date().toISOString(),customerName:'Cliente '+sequence,phone:'3101234567',fulfillment:'pickup',total:25000,paymentMethod:'Efectivo',items:[{name:'Pizza',quantity:1,selections:[]}]}));
  const products=[1,2].map(n=>({id:'product-'+n,name:'Pizza '+n,category:'Pizzas',price:25000,available:true,version:1,sort_order:n,modifiers:[]}));
- let revision=1;const gates=new Map(),calls=[],errors=[],deletionVersions=[];
+ let revision=1;const gates=new Map(),calls=[],errors=[],deletionVersions=[],nativeDialogs=[];
  const hold=action=>{let release;const promise=new Promise(resolve=>release=resolve);gates.set(action,promise);return result=>{gates.delete(action);release(result);};};
  const server=http.createServer((req,res)=>{
    res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<!doctype html><html><head><meta charset="utf-8"></head><body data-page="admin"><main class="admin-app"><section id="dashboard"><div id="alertsPanel"></div></section><section id="service"></section></main><b id="dp-nav-count"></b><form id="loginForm"></form></body></html>');
@@ -14,7 +14,7 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  try{
   const page=await browser.newPage({viewport:{width:1440,height:1000}});page.on('pageerror',error=>errors.push(error.message));
-  page.on('dialog',dialog=>dialog.accept());
+  page.on('dialog',dialog=>{nativeDialogs.push(dialog.type());void dialog.dismiss();});
   await page.route('https://script.google.com/**',async route=>{
    const {action,payload={}}=route.request().postDataJSON();calls.push(action);
    const outcome=gates.has(action)?await gates.get(action):null;
@@ -69,8 +69,8 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   };
   const initialize=async()=>{
    await page.evaluate(setup);
-   for(const file of ['online-admin.css','reception-notices.css','waiter-orders.css'])await page.addStyleTag({path:path.join(root,file)});
-   for(const file of ['pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
+   for(const file of ['online-admin.css','reception-notices.css','waiter-orders.css','system-dialogs.css'])await page.addStyleTag({path:path.join(root,file)});
+   for(const file of ['system-dialogs.js','pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
   };
   await initialize();
   await page.waitForSelector('[data-dp-order="DP-test-1"]');
@@ -78,6 +78,12 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   assert.equal(await page.locator('[data-dw-open-comanda="retirada"]').count(),0);
   const releaseDelete=hold('dp_delete_order');
   await page.locator('#dp-orders-list [data-dp-order="DP-test-1"] [data-dp-remove-order]').click();
+  assert.equal(await page.locator('[data-dp-order="DP-test-1"]').count(),2,'Abrir el modal no elimina nada.');
+  await page.locator('.dp-system-cancel').click();
+  assert.equal(await page.locator('[data-dp-order="DP-test-1"]').count(),2,'Cancelar conserva el pedido.');
+  await page.locator('#dp-orders-list [data-dp-order="DP-test-1"] [data-dp-remove-order]').click();
+  await page.locator('.dp-system-accept').click();
+  await page.locator('[data-dp-order="DP-test-1"]').first().waitFor({state:'detached',timeout:1500});
   assert.equal(await page.locator('[data-dp-order="DP-test-1"]').count(),0,'Desaparece de ambas vistas mientras guarda.');
   assert.equal(await page.locator('#dp-nav-count').textContent(),'1');
   await page.locator('#dp-orders-refresh').click();
@@ -87,6 +93,8 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   const failDelete=hold('dp_delete_order');
   orders[1].version=2;
   await page.locator('#dp-orders-list [data-dp-order="DP-test-2"] [data-dp-remove-order]').click();
+  await page.locator('.dp-system-accept').click();
+  await page.locator('[data-dp-order="DP-test-2"]').first().waitFor({state:'detached',timeout:1500});
   assert.equal(await page.locator('[data-dp-order="DP-test-2"]').count(),0);
   failDelete('fail');await page.waitForFunction(()=>DonPierosDeletions.list('web-order').some(row=>row.id==='DP-test-2'&&row.attempts>0));
   assert.equal(await page.locator('[data-dp-order="DP-test-2"]').count(),0,'Un fallo no devuelve el pedido a la pantalla.');
@@ -106,6 +114,8 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   assert.equal(await page.locator('#dp-item-dialog').evaluate(node=>node.open),true,'El guardado anterior no cierra otra edición.');
   await page.locator('#dp-item-dialog [data-dp-close]').first().click();
   const removeProduct=hold('dp_delete_catalog');await page.locator('[data-dp-delete="product-1"]').click();
+  await page.locator('.dp-system-accept').click();
+  await page.locator('[data-dp-edit="product-1"]').waitFor({state:'detached',timeout:1500});
   assert.equal(await page.locator('[data-dp-edit="product-1"]').count(),0);
   removeProduct('fail');await page.waitForFunction(()=>DonPierosDeletions.list('catalog-products').some(row=>row.attempts>0));
   assert.equal(await page.locator('[data-dp-edit="product-1"]').count(),0,'El producto tampoco reaparece mientras reintenta.');
@@ -121,6 +131,12 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   assert.equal(await page.locator('[data-dw-accept-order]').count(),0);
   await page.evaluate(()=>{fixture.waiterHold=new Promise(resolve=>fixture.releaseWaiter=resolve);});
   await page.locator('[data-dw-remove-order]').click();
+  assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'La confirmación se abre encima de la comanda.');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'Cancelar no cierra la comanda.');
+  await page.locator('[data-dw-remove-order]').click();
+  await page.locator('.dp-system-accept').click();
+  await page.locator('[data-dw-open-comanda="comanda-1"]').waitFor({state:'detached',timeout:1500});
   assert.equal(await page.locator('[data-dw-open-comanda="comanda-1"]').count(),0,'El retiro desde inicio se refleja inmediatamente.');
   await page.evaluate(()=>{fixture.releaseWaiter();fixture.waiterHold=null;});
   await page.waitForFunction(()=>DonPierosDeletions.list('waiter-comanda').some(row=>row.attempts>0));
@@ -132,5 +148,6 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   assert.ok(calls.includes('dp_get_order'));
   assert.doesNotMatch(await page.locator('#dp-orders-list').textContent(),/Dato público falso/);
   assert.deepEqual(errors,[]);
+  assert.deepEqual(nativeDialogs,[]);
  }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

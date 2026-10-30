@@ -214,7 +214,9 @@
   }
   async function removeOrder(id){
     const order=orders.find(row=>row.id===id);if(!order||!allowed()||isRemoved(order))return;
-    if(!confirm('¿Retirar esta comanda? Sus productos se quitarán también del consumo de la mesa si ya fueron agregados.'))return;
+    const token=api().getToken();
+    if(!await window.DonPierosDialogs.confirm({key:'remove-comanda:'+id,title:'¿Retirar esta comanda?',message:'Sus productos se quitarán también del consumo de la mesa si ya fueron agregados.',accept:'Retirar comanda',danger:true}))return;
+    if(token!==api().getToken()||!allowed()||isRemoved(order))return;
     try{
       deletions().enqueue('waiter-comanda',id,{p_operation_id:crypto.randomUUID(),p_comanda_id:id,p_table_id:order.table_id,p_session_id:order.session_id,p_expected_version:order.version,p_items:[],p_notes:order.notes||''});
       api().previewWaiterRemoval?.(id);$('#dw-kitchen-dialog').close();

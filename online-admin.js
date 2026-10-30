@@ -267,9 +267,11 @@
       notify('No pudimos confirmar el cambio. Restauramos el pedido mientras verificamos. '+error.message,true);void loadOrders(true);
     }
   }
-  function deleteOrder(id){
+  async function deleteOrder(id){
     const order=findOrder(id);if(!order||orderWrites.get(id)?.pending||!canOrders())return;
-    if(!confirm('¿Eliminar el pedido '+order.id+' de '+order.customerName+'? Se retirará de Pedidos web y del inicio.'))return;
+    const token=api().getToken();
+    if(!await window.DonPierosDialogs.confirm({key:'delete-order:'+id,title:'¿Eliminar este pedido?',message:order.id+' · '+order.customerName+'\nSe retirará de Pedidos web y del inicio.',accept:'Eliminar pedido',danger:true}))return;
+    if(token!==api().getToken()||!canOrders()||!findOrder(id)||orderWrites.get(id)?.pending)return;
     try{
       deletions().enqueue('web-order',id,{id,version:order.version});
       window.DonPierosReception?.dismiss('order:'+id);$('#dp-order-dialog').close();repaintOrders();
@@ -479,7 +481,10 @@
   }
   async function deleteItem(id){
     const kind=catalogKind,item=catalog[kind].find(row=>row.id===id),key=kind+':'+id;
-    if(!item||catalogWrites.get(key)?.pending||pendingAvailability.has(id)||!confirm('¿Eliminar “'+item.name+'” del menú? Las comandas anteriores conservarán su detalle.'))return;
+    if(!item||!canMenu()||catalogWrites.get(key)?.pending||pendingAvailability.has(id))return;
+    const token=api().getToken();
+    if(!await window.DonPierosDialogs.confirm({key:'delete-catalog:'+key,title:'¿Eliminar “'+item.name+'”?',message:'Se retirará del menú. Las comandas anteriores conservarán su detalle.',accept:'Eliminar registro',danger:true}))return;
+    if(token!==api().getToken()||!canMenu()||deletions()?.hidden('catalog-'+kind,id)||catalogWrites.get(key)?.pending||pendingAvailability.has(id))return;
     try{deletions().enqueue('catalog-'+kind,id,{kind,id,version:item.version,image_path:item.image_path});catalogEpoch++;renderCatalog();notify('Registro retirado. Se está sincronizando.');}
     catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }

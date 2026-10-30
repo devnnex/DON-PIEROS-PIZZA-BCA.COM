@@ -38,7 +38,11 @@
   const moneyFormatter = new Intl.NumberFormat('es-CO', { style:'currency', currency:'COP', maximumFractionDigits:0 });
   const money = value => moneyFormatter.format(Number(value) || 0);
   const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]));
-  async function copyText(value) { if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value); window.prompt('Copia este contenido:', value); }
+  async function copyText(value) {
+    try{if(navigator.clipboard?.writeText){await navigator.clipboard.writeText(value);return true;}}catch(_){}
+    await window.DonPierosDialogs.prompt({title:'Copiar información',message:'Selecciona el texto y usa la opción Copiar de tu dispositivo.',label:'Contenido para copiar',value:String(value),readOnly:true,multiline:true,select:true,accept:'Listo',cancel:'Cerrar'});
+    return false;
+  }
   const delivery = window.DonPierosDelivery;
   delivery.configure(() => { const wrapper = $('#checkout-location'); if (wrapper) wrapper.innerHTML = delivery.markup(); }, toast);
 
@@ -531,7 +535,7 @@
     const edit = event.target.closest('[data-edit]'); if (edit) { const item = state.cart.find(entry => entry.key === edit.dataset.edit); hideOverlay('cart'); openProduct(productById(item.productId) || item.productSnapshot,item); return; }
     const quantity = event.target.closest('[data-quantity] [data-qty]'); if (quantity) { const wrapper = quantity.closest('[data-quantity]'), item = state.cart.find(entry => entry.key === wrapper.dataset.quantity); item.quantity = Math.max(1,item.quantity + (quantity.dataset.qty === 'plus' ? 1 : -1)); saveCart(); renderCart(); return; }
     const suggestion = event.target.closest('[data-neighborhood]'); if (suggestion) { chooseNeighborhood(suggestion.dataset.neighborhood); return; }
-    if (event.target.closest('#copy-payment')) { const method = paymentMethods.find(item => item.id === state.payment); void copyText(method.account_value).then(() => toast('Dato copiado',method.account_value)).catch(() => toast('No pudimos copiar', 'Mantén presionado el dato para copiarlo.')); }
+    if (event.target.closest('#copy-payment')) { const method = paymentMethods.find(item => item.id === state.payment); void copyText(method.account_value).then(copied=>{if(copied)toast('Dato copiado',method.account_value);}).catch(() => toast('No pudimos copiar', 'Mantén presionado el dato para copiarlo.')); }
     if (event.target.closest('#continue-shopping') || event.target.closest('#explore-menu')) hideOverlay('cart');
     if (event.target.closest('#finish-order') || event.target.closest('#success-close')) { hideOverlay('cart'); state.cartStep = 'cart'; state.customer = {name:'',phone:'',address:'',neighborhood:'',notes:''}; }
   });

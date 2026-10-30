@@ -1,0 +1,20 @@
+.dp-system-dialog{--dp-modal-accent:#218653;--dp-modal-soft:#e5f4eb;box-sizing:border-box;width:min(460px,calc(100% - 28px));max-height:calc(100dvh - 32px);margin:auto;padding:0;overflow:auto;border:1px solid #e8e1d5;border-radius:22px;background:#fffdf8;color:#241e15;box-shadow:0 24px 90px #21190038;font:inherit}
+.dp-system-dialog::backdrop{background:#17130e99;backdrop-filter:blur(5px)}
+.dp-system-dialog[data-tone=danger]{--dp-modal-accent:#bf3029;--dp-modal-soft:#fcece9}
+.dp-system-dialog .dp-system-card{position:relative;display:flex;flex-direction:column;gap:0;margin:0;padding:32px 28px 26px;text-align:center}
+.dp-system-dialog .dp-system-close{position:absolute;top:12px;right:12px;display:grid;place-items:center;width:34px;height:34px;min-height:0;padding:0;border:1px solid #e8e1d5;border-radius:50%;background:#f6f1e6;color:#6b5a40;font:inherit;font-size:23px;line-height:1;cursor:pointer}
+.dp-system-icon{display:grid;place-items:center;flex-shrink:0;width:56px;height:56px;margin:0 auto 18px;border-radius:18px;background:var(--dp-modal-soft);color:var(--dp-modal-accent)}
+.dp-system-icon svg{width:27px;height:27px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.dp-system-dialog .dp-system-eyebrow{font-size:10px;font-weight:800;letter-spacing:.13em;text-transform:uppercase;color:#8b6b36}
+.dp-system-dialog h2{margin:9px 0 10px;font-size:23px;line-height:1.25;font-weight:750;overflow-wrap:anywhere;color:#241e15}
+.dp-system-dialog p{margin:0;color:#766954;font-size:14px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.dp-system-dialog .dp-system-field{display:grid;gap:8px;margin:20px 0 0;text-align:left;font-size:12px;font-weight:650;color:#6b5a40}
+.dp-system-dialog .dp-system-field input,.dp-system-dialog .dp-system-field textarea{box-sizing:border-box;width:100%;min-width:0;margin:0;padding:12px 13px;border:1px solid #dfd5c2;border-radius:11px;background:#fff;color:#241e15;font:inherit;font-size:14px;line-height:1.5;resize:vertical}
+.dp-system-dialog .dp-system-field textarea{max-height:35dvh}
+.dp-system-dialog .dp-system-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap;margin-top:25px}
+.dp-system-dialog .dp-system-actions button{flex:1;min-height:45px;margin:0;padding:11px 17px;border:1px solid #ded8cb;border-radius:12px;background:#fffdf8;color:#574a37;font:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:background .15s,box-shadow .15s}
+.dp-system-dialog .dp-system-actions .dp-system-accept{border-color:var(--dp-modal-accent);background:var(--dp-modal-accent);color:#fff;box-shadow:0 3px 9px #00000012}
+.dp-system-dialog .dp-system-actions button:hover{box-shadow:0 3px 12px #0000001a}.dp-system-dialog .dp-system-cancel:hover{background:#f2ede2}
+.dp-system-dialog button:focus-visible,.dp-system-dialog input:focus-visible,.dp-system-dialog textarea:focus-visible{outline:3px solid #d9b34b;outline-offset:3px}
+.dp-system-dialog [hidden]{display:none!important}
+@media(max-width:480px){.dp-system-dialog .dp-system-card{padding:29px 20px 22px}.dp-system-dialog h2{font-size:21px}.dp-system-dialog .dp-system-actions button{padding:11px 12px}.dp-system-dialog p{font-size:13px}}
