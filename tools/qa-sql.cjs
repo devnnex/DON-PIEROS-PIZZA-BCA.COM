@@ -152,7 +152,31 @@ const root=path.resolve(__dirname,'..');
   await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':waiter.token})]);await db.exec('set role anon');
   await assert.rejects(save(uuid(),comandaId,5,replacement,newAccount),/cuenta ya se cerró/);
   assert.equal((await save(operation,comandaId,0,[{id:itemId,product_id:productId,name:'Pizza Don Pieros',quantity:2,unit_price:46000,notes:'Sin cebolla',options:{selectionIds:{size:['super']},labels:['Tamaño: Super maxi · 54 × 54 cm']}}])).closed,true);
+  // A free table is reusable even when the new draft still names its previous
+  // closed/deleted account. Historical edits and receipt retries stay isolated.
+  const reuseOp=uuid(),reuseId=uuid(),reuseItems=[{...replacement[0],id:uuid()}];
+  const reused=await save(reuseOp,reuseId,0,reuseItems,newAccount);
+  assert.notEqual(reused.session.id,newAccount);assert.equal(reused.session.status,'open');
+  assert.equal(reused.session.session_items.length,0);assert.equal(reused.comanda.version,1);
+  assert.equal((await save(reuseOp,reuseId,0,reuseItems,newAccount)).session.id,reused.session.id);
+  await assert.rejects(save(uuid(),comandaId,5,replacement,null),/cuenta ya se cerró/,'Una edición antigua no se cambia a la cuenta nueva.');
+  await assert.rejects(save(uuid(),uuid(),0,[{...replacement[0],id:uuid()}],newAccount),/otra cuenta abierta/,'Un borrador atrasado no entra en otra cuenta ya ocupada.');
+  assert.equal((await save(operation,comandaId,0,[{id:itemId,product_id:productId,name:'Pizza Don Pieros',quantity:2,unit_price:46000,notes:'Sin cebolla',options:{selectionIds:{size:['super']},labels:['Tamaño: Super maxi · 54 × 54 cm']}}])).closed,true);
   await db.exec('reset role');
-  console.log('Comandas editables: creación atómica, reintentos, misma solicitud tras editar/aceptar/reemplazar, abonos, versión concurrente, identidad y cuenta cerrada: OK.');
+  assert.equal((await db.query("select count(*)::int n from table_sessions where table_id=$1 and status='open'",[table.id])).rows[0].n,1);
+  assert.equal((await db.query('select status from table_sessions where id=$1',[newAccount])).rows[0].status,'closed');
+  await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':login.token})]);
+  await db.query('delete from table_sessions where id=$1',[reused.session.id]);
+  await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':waiter.token})]);
+  await db.exec('set role anon');
+  const afterDelete=await save(uuid(),uuid(),0,[{...replacement[0],id:uuid()}],reused.session.id);
+  assert.notEqual(afterDelete.session.id,reused.session.id);assert.equal(afterDelete.session.status,'open');
+  await db.exec('reset role');await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':login.token})]);
+  await db.query("update table_sessions set status='closed' where id=$1",[afterDelete.session.id]);
+  await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':waiter.token})]);await db.exec('set role anon');
+  const nextCustomer=await save(uuid(),uuid(),0,[{...replacement[0],id:uuid()}],afterDelete.session.id);
+  assert.notEqual(nextCustomer.session.id,afterDelete.session.id);assert.equal(nextCustomer.session.status,'open');
+  await db.exec('reset role');
+  console.log('Comandas editables y reutilización de mesas: cierre, eliminación, clientes sucesivos, aislamiento de cuentas y reintentos sin duplicar: OK.');
  }finally{await db.close();}
 })().catch(e=>{console.error(e.message);if(e.query)console.error(e.query.slice(0,800));process.exitCode=1;});

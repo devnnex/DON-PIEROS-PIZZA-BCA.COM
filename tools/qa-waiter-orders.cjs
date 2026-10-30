@@ -131,9 +131,47 @@ const root=path.resolve(__dirname,'..');
   assert.equal((await db.query('select count(*)::int n from waiter_comandas')).rows[0].n,beforeRetry);
   assert.equal((await db.query("select count(*)::int n from session_items where status<>'cancelled'")).rows[0].n,1,'Reintentar conserva el consumo que administración ya aceptó, sin duplicarlo.');
   await page.locator('[data-dw-home]').click();assert.equal(await page.locator('.dw-table.is-occupied').count(),1);
+  const changeAccount=async(id,remove=false)=>serial(async()=>{
+   await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':boss.token})]);
+   await db.query(remove?'delete from table_sessions where id=$1':"update table_sessions set status='closed' where id=$1",[id]);
+  });
+  const activeAccount=async()=>serial(async()=>(await db.query("select id from table_sessions where table_id=$1 and status='open'",[table.id])).rows[0]?.id);
+  const addFreshProduct=async()=>{
+   await page.locator('#dp-waiter-app .dw-tabs [data-dw-tab="menu"]').click();
+   await page.locator(`[data-dw-product="${first.id}"]`).click();await page.locator(`#dw-product-body input[value="${maxi.id}"]`).check();await page.locator('#dw-add-product').click();
+  };
+  const sendFreshProduct=async()=>{
+   await page.locator('[data-dw-review]').click();await page.locator('#dw-send-order').click();await page.locator('#dw-review-dialog').waitFor({state:'hidden'});
+  };
+  // The waiter can keep taking an order while admin closes the previous account.
+  await page.locator(`[data-dw-table="${table.id}"]`).click();await addFreshProduct();
+  const paidAccount=await activeAccount();await changeAccount(paidAccount);
+  await page.evaluate(()=>DonPierosAdmin.refreshOperations());await sendFreshProduct();
+  const secondCustomer=await activeAccount();assert.ok(secondCustomer);assert.notEqual(secondCustomer,paidAccount);
+  assert.equal((await serial(()=>db.query('select status from table_sessions where id=$1',[paidAccount]))).rows[0].status,'closed');
+  await admin.keyboard.press('Escape');await admin.evaluate(()=>DonPierosAdmin.refreshOperations());
+  await admin.waitForFunction(()=>document.querySelectorAll('#dp-table-comandas [data-dw-open-comanda]').length===1);
+  // A receipt whose response was lost must not reopen an account paid before retry.
+  await addFreshProduct();await page.locator('[data-dw-review]').click();loseResponse=true;await page.locator('#dw-send-order').click();
+  await page.locator('#dw-send-order').filter({hasText:'Confirmar envío pendiente'}).waitFor();
+  const receiptCount=(await serial(()=>db.query('select count(*)::int n from waiter_comandas'))).rows[0].n;
+  await changeAccount(secondCustomer);await page.reload();await page.locator(`[data-dw-table="${table.id}"]`).click();
+  await page.locator('[data-dw-review]').click();await page.locator('#dw-send-order').click();await page.locator('#dw-review-dialog').waitFor({state:'hidden'});
+  assert.equal(await activeAccount(),undefined);assert.equal((await serial(()=>db.query('select count(*)::int n from waiter_comandas'))).rows[0].n,receiptCount);
+  await addFreshProduct();await sendFreshProduct();const thirdCustomer=await activeAccount();assert.ok(thirdCustomer);assert.notEqual(thirdCustomer,secondCustomer);
+  // Deleting the account also frees the same table, retaining the new selection.
+  await addFreshProduct();await changeAccount(thirdCustomer,true);await page.evaluate(()=>DonPierosAdmin.refreshOperations());await sendFreshProduct();
+  const fourthCustomer=await activeAccount();assert.ok(fourthCustomer);assert.notEqual(fourthCustomer,thirdCustomer);
+  // An old edit is cleared when its account closes; its charged items are never
+  // copied into the next customer's account.
+  await page.waitForFunction(()=>document.querySelectorAll('.dw-sent-order').length===1);await page.locator('.dw-sent-order [data-dw-edit-order]').click();
+  await changeAccount(fourthCustomer);await page.evaluate(()=>DonPierosAdmin.refreshOperations());
+  await page.locator('#dw-review-dialog').waitFor({state:'hidden'});assert.equal(await page.locator('[data-dw-review]').isDisabled(),true);
+  await addFreshProduct();await sendFreshProduct();assert.notEqual(await activeAccount(),fourthCustomer);
+  await page.locator('[data-dw-home]').click();
   for(const width of [390,768,1440]){await page.setViewportSize({width,height:950});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
   await page.screenshot({path:path.join(root,'artifacts/mesero-mesas-escritorio.png'),animations:'disabled'});
   await admin.screenshot({path:path.join(root,'artifacts/admin-comanda-mesero.png'),animations:'disabled'});
-  assert.deepEqual(errors,[]);console.log('OK: mesero y administrador con base real local, mesa/categorías/fotos/tamaños/notas, envío único, corrección después de aceptar, modal en vivo, retirada, reintento tras recargar y móvil/escritorio.');
+  assert.deepEqual(errors,[]);console.log('OK: mesero y administrador con base real local, mesas reutilizables tras cierre/eliminación, selección conservada, ediciones antiguas aisladas, reintento cobrado sin reabrir cuentas y móvil/escritorio.');
  }finally{await browser.close();await db.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

@@ -198,14 +198,26 @@ begin
   perform 1 from public.service_requests where id=p_comanda_id for update;
   perform 1 from public.restaurant_tables where id=p_table_id and is_active for update;
   if not found then raise exception 'La mesa ya no está disponible.';end if;
+  select * into c from public.waiter_comandas where id=p_comanda_id for update;is_new:=c.id is null;
   if p_session_id is not null then
-    select * into account from public.table_sessions where id=p_session_id and table_id=p_table_id for update;
+    select * into account from public.table_sessions where id=p_session_id for update;
+    if account.id is not null and account.table_id<>p_table_id then raise exception 'La cuenta no pertenece a esta mesa.';end if;
+    if account.id is null or account.status<>'open' then
+      -- A new comanda can outlive the previous customer's account in a local
+      -- draft. Resolve it under the table lock without reopening paid accounts.
+      if not is_new or coalesce(p_expected_version,0)<>0 then raise exception 'Esta cuenta ya se cerró. Vuelve a las mesas.';end if;
+      select * into account from public.table_sessions where table_id=p_table_id and status='open' order by opened_at desc limit 1 for update;
+      if account.id is not null then raise exception 'La mesa tiene otra cuenta abierta. Revisa el consumo actual antes de enviar.';end if;
+      insert into public.table_sessions(table_id,status,assigned_waiter_id) values(p_table_id,'open',actor.id) returning * into account;
+    end if;
+  elsif not is_new then
+    -- Editing a historical comanda must never move it to the next customer.
+    select * into account from public.table_sessions where id=c.session_id and table_id=p_table_id for update;
     if account.id is null or account.status<>'open' then raise exception 'Esta cuenta ya se cerró. Vuelve a las mesas.';end if;
   else
     select * into account from public.table_sessions where table_id=p_table_id and status='open' order by opened_at desc limit 1 for update;
     if account.id is null then insert into public.table_sessions(table_id,status,assigned_waiter_id) values(p_table_id,'open',actor.id) returning * into account;end if;
   end if;
-  select * into c from public.waiter_comandas where id=p_comanda_id for update;is_new:=c.id is null;
   if is_new then
     if actor.role<>'waiter' then raise exception 'Selecciona una comanda recibida para editarla.';end if;
     if exists(select 1 from public.service_requests where id=p_comanda_id) then raise exception 'El identificador pertenece a otra solicitud.';end if;

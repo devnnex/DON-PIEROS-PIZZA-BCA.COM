@@ -32,7 +32,25 @@
   const draftKey=()=>`dp_waiter_draft_v1:${api()?.getUser()?.id}:${selectedTable}`;
   function persist(){if(!draft||!selectedTable)return;try{localStorage.setItem(draftKey(),JSON.stringify(draft));}catch(_){}}
   function newDraft(){draft={id:crypto.randomUUID(),version:0,session_id:sessionFor(selectedTable)?.id||null,items:[],notes:'',pending:null};persist();renderSelection();}
-  function restoreDraft(){try{draft=JSON.parse(localStorage.getItem(draftKey())||'null');}catch(_){draft=null;}if(!draft||!Array.isArray(draft.items))newDraft();}
+  function syncDraftSession(){
+    if(!draft||!selectedTable||draft.version||draft.pending||busy)return;
+    const sessionId=sessionFor(selectedTable)?.id||null;
+    if(draft.session_id!==sessionId){draft.session_id=sessionId;persist();}
+  }
+  function restoreDraft(){try{draft=JSON.parse(localStorage.getItem(draftKey())||'null');}catch(_){draft=null;}if(!draft||!Array.isArray(draft.items))newDraft();else syncDraftSession();}
+  function leaveClosedDraft(){
+    if(!draft)return;
+    const managerMode=!!draft.managerMode,orderId=draft.id;
+    localWrites.delete(orderId);orders=orders.filter(order=>order.id!==orderId);
+    try{localStorage.removeItem(draftKey());}catch(_){}
+    draft=null;activeProduct=null;editingLine='';replacingLine='';
+    for(const id of ['dw-product-dialog','dw-review-dialog','dw-catalog-dialog'])$('#'+id).close();
+    if(managerOpen===orderId)$('#dw-kitchen-dialog').close();
+    if(managerMode)selectedTable='';
+    else{newDraft();tab='menu';renderTable();}
+    api().notify('La cuenta anterior ya terminó. Puedes tomar una nueva comanda desde la mesa.');
+    void api().refreshOperations();
+  }
   function footer(){const count=(draft?.items||[]).reduce((sum,item)=>sum+item.quantity,0);return `<button class="dw-review-button" type="button" data-dw-review ${count||draft?.version?'':'disabled'}><span><b>${count} ${count===1?'producto':'productos'}</b><small>${draft?.version?'Revisar cambios':'Revisar pedido'}</small></span><strong>${money(total(draft?.items||[]))} <span aria-hidden="true">→</span></strong></button>`;}
   function renderHome(){
     const {tables,sessions}=operations();
@@ -93,7 +111,9 @@
           if(write.revision>readRevision||incoming&&(incoming.version<write.order.version||String(incoming.updated_at)<String(write.order.updated_at)))next.set(id,write.order);
           else localWrites.delete(id);
         }
-        orders=[...next.values()].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));loadError='';renderAccount();renderReception();if(waiter())renderHome();
+        orders=[...next.values()].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));loadError='';
+        if(readRevision===writeRevision&&draft?.version&&!draft.pending&&!busy&&!data.orders.some(order=>order.id===draft.id))leaveClosedDraft();
+        syncDraftSession();renderAccount();renderReception();if(waiter())renderHome();
       }catch(error){loadError=errorText(error);renderAccount();}
       finally{loading=null;if(reloadWanted){reloadWanted=false;void loadOrders();}}
     })();return loading;
@@ -156,13 +176,21 @@
   }
   async function sendOrder(){
     if(busy||!draft||(!draft.items.length&&!draft.version))return;
+    const sendingDraft=draft,currentToken=api().getToken();
+    syncDraftSession();
     if(!draft.pending){draft.notes=$('#dw-order-notes').value.trim();draft.pending={p_operation_id:crypto.randomUUID(),p_comanda_id:draft.id,p_table_id:selectedTable,p_session_id:draft.session_id,p_expected_version:draft.version,p_items:clone(draft.items),p_notes:draft.notes};persist();}
     busy=true;renderReview();
     try{
       const {data,error}=await rpc('dp_save_waiter_comanda',draft.pending);if(error)throw error;if(!data?.comanda)throw Error('No pudimos confirmar el envío.');
+      if(currentToken!==api().getToken()||draft!==sendingDraft)return;
       const wasEdit=draft.version>0;
       const managerMode=!!draft.managerMode,orderId=draft.id;
-      rememberResult(data);
+      if(!data.closed)rememberResult(data);
+      else{
+        orders=orders.filter(order=>order.session_id!==data.session?.id);
+        for(const [id,write] of localWrites)if(write.order.session_id===data.session?.id)localWrites.delete(id);
+        void api().refreshOperations();
+      }
       if(!data.closed)api().applyWaiterResult(data);
       try{localStorage.removeItem(draftKey());}catch(_){}
       busy=false;$('#dw-review-dialog').close();
@@ -170,7 +198,9 @@
       else{newDraft();tab='account';renderTable();void loadOrders();}
       api().notify(data.closed?'El pedido ya estaba guardado y la cuenta se cerró.':wasEdit?'Comanda actualizada.':'Comanda enviada al equipo.');
     }catch(error){
+      if(currentToken!==api().getToken()||draft!==sendingDraft)return;
       busy=false;
+      if(draft.version&&error?.code==='P0001'&&/cuenta ya se cerró/i.test(error.message||'')){leaveClosedDraft();return;}
       if(['P0001','PGRST202','42883','42P01','22P02','23514'].includes(error?.code)){draft.pending=null;persist();}
       renderReview();$('#dw-send-error').textContent=errorText(error);void loadOrders();void api().refreshOperations();
     }
@@ -254,6 +284,7 @@
   }
   function sync(){
     if(!allowed()){root.hidden=true;reception.hidden=true;document.body.classList.remove('dw-waiter-mode');return;}
+    syncDraftSession();
     const isWaiter=waiter();document.body.classList.toggle('dw-waiter-mode',isWaiter&&serviceReady);root.hidden=!isWaiter||!serviceReady;
     if(isWaiter)renderHome();
     const data=operations();
@@ -298,7 +329,7 @@
   $('#dw-catalog-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){replacingLine='';review();}});
   function tick(){
     if(!allowed()||document.hidden)return;
-    const next=api().getToken();if(next!==token){token=next;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';catalog=null;sync();if(waiter())void loadCatalog();}
+    const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';catalog=null;sync();if(waiter())void loadCatalog();}
     sync();void loadOrders();
   }
   const editComanda=async(id,removeId='')=>{await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}};
