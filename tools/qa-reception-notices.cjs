@@ -68,6 +68,7 @@ const root=path.resolve(__dirname,'..');
   const arrived=create('Pedido recién llegado');
   await page.evaluate(id=>window.dispatchEvent(new StorageEvent('storage',{key:'don_pieros_order_signal_v1',newValue:JSON.stringify({orderId:id,at:Date.now()})})),arrived.orderId);
   const notice=page.locator(`[data-notice-key="order:${arrived.orderId}"]`);await notice.waitFor();
+  assert.equal(await notice.locator('button').evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(33, 134, 83)','Las órdenes recibidas usan verde money');
   await page.waitForFunction(()=>document.querySelector('#dashboard').classList.contains('section-active'));
   await page.waitForTimeout(700);
   assert.equal(await page.locator('.admin-sidebar a[href="#onlineorders"]').evaluate(link=>{

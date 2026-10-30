@@ -4,9 +4,15 @@ Corrección de mesas reutilizables (30 de octubre de 2026): una comanda nueva pu
 
 Para activar esta corrección, vuelve a ejecutar **`supabase/install/07_COMANDAS_MESERO.sql`** y publica los archivos web actualizados. No requiere reemplazar Apps Script. Si otro equipo ya abrió una cuenta distinta mientras se enviaba un borrador atrasado, se pide revisar el consumo actual para evitar mezclar clientes.
 
+Actualización 3.5.0 (30 de octubre de 2026): cajas y papel térmico. Los pedidos para recoger o domicilio suman $2.000 por Mini, Mediana o Pizzeta y $4.000 por Maxi o Super maxi, por cada unidad. «Comer en el local» no cobra caja. En ventas individuales y consumo de mesas, elige «Para llevar» y el tamaño de caja; el precio manual sigue siendo el precio del producto. El total incluye caja y la factura la desglosa. Las notas y la preparación se conservan en el historial para reimprimir. Los avisos de pedidos web usan verde.
+
+Publica una **Nueva versión** de la implementación existente con `appscript/Code.gs` para obtener **3.5.0-donpieros**, conservando la URL `/exec`. Se agregan `packagingFee` en Ordenes_Web y `notas` en Detalle_Ventas sin cambiar sus columnas anteriores. Este cambio de cajas no requiere SQL adicional; el SQL 07 sigue siendo necesario si aún falta la actualización anterior de comandas.
+
+La altura de impresión se calcula con el contenido, sin reservar la altura de la ventana. Comandas de cocina conservan su marco; las facturas no añaden marco. Los márgenes de página son cero y se conserva únicamente una pequeña separación para evitar cortar letras. Selecciona el rollo de 58/80 mm correspondiente, escala 100 %, márgenes ninguno y desactiva **Encabezados y pies de página** del navegador. El controlador debe permitir papel continuo o longitud variable; un tamaño fijo A4/carta o un avance configurado en la impresora puede seguir expulsando papel adicional. El programa no puede cambiar esos ajustes del controlador. El pie del documento dice **Devnex Soluciones Tecnologicas 3246394689**. Se validan PDF y navegador; la prueba con la impresora física queda en el equipo del negocio.
+
 Actualización 3.4.0 (30 de octubre de 2026): eliminación inmediata de pedidos web, productos del menú y comandas de mesero. La intención de eliminar se guarda por usuario y negocio en el navegador antes de ocultar el registro. Si se pierde la conexión o la respuesta, el registro permanece oculto y la operación se reintenta sin límite de intentos, con pausas de 1 a 30 segundos. Las operaciones pendientes sobreviven a una recarga y al reinicio del navegador; se reanudan con la sesión iniciada y conexión. No borres los datos del navegador mientras haya operaciones pendientes. Los conflictos de versión se consultan y se reintentan con la versión actual. Los pedidos web eliminados conservan su identificador internamente para impedir que un reintento del cliente los cree otra vez.
 
-Para activar esta actualización: vuelve a ejecutar **`supabase/install/07_COMANDAS_MESERO.sql`**, reemplaza **`appscript/Code.gs`** y publica una **Nueva versión** de la implementación existente conservando la URL. `/exec` debe indicar **`3.4.0-donpieros`**, `capabilities.orderDeletion: true` y `capabilities.fastOrderReception: true`. Publica también los archivos web actualizados, incluido **`pending-deletions.js`**. El SQL se puede repetir y conserva los datos.
+Para activar esta actualización: vuelve a ejecutar **`supabase/install/07_COMANDAS_MESERO.sql`**, reemplaza **`appscript/Code.gs`** y publica una **Nueva versión** de la implementación existente conservando la URL. `/exec` debe indicar **`3.5.0-donpieros`**, `capabilities.orderDeletion: true` y `capabilities.fastOrderReception: true`. Publica también los archivos web actualizados, incluido **`pending-deletions.js`**. El SQL se puede repetir y conserva los datos.
 
 “Aceptar” una notificación del mesero abre la comanda para revisar e imprimir; **Agregar a la mesa** aplica sus productos una sola vez. Las comandas sin productos se retiran del inicio. Un retiro de comanda aceptada conserva las validaciones de abonos de la cuenta: si todavía no puede aplicarse, queda pendiente y continúa reintentando. Disponible, imprimir y los avisos del mesero usan verde; Agotado usa gris.
 
@@ -30,7 +36,7 @@ Las fotos de ejemplo se incluyen en `images/ejemplos/` y se seleccionan por tipo
 
 ## Actualización final: carta y tamaños (3.2.0)
 
-Para una instalación con los pasos 01 a 06 aplicados, esta actualización no añade SQL. Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.4.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
+Para una instalación con los pasos 01 a 06 aplicados, esta actualización no añade SQL. Reemplaza el código de Apps Script por el `appscript/Code.gs` actualizado, publica una **Nueva versión** conservando la URL y abre `/exec`: debe indicar **3.5.0-donpieros**. También puedes ejecutar `CARGAR_MENU_INICIAL_DON_PIEROS` desde el editor después de pegar el código.
 
 La inicialización carga en Sheets los **51 productos de las cartas entregadas**, con precios, ingredientes indicados, seis categorías y 15 opciones. No crea ventas ni pedidos. La carga es única y no sobrescribe precios, disponibilidad ni nombres que posteriormente edites. `menu-inicial.json` permite revisar el listado completo.
 
@@ -62,7 +68,7 @@ Hoja: **1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E**.
 2. Reemplaza todo el contenido de `Code.gs` con **`appscript/Code.gs`**. No pegues otro `.gs` ni necesitas HTML.
 3. **Implementar → Nueva implementación → Aplicación web**.
 4. **Ejecutar como: Yo** y **Acceso: Cualquier persona**. Autoriza la cuenta propietaria de la hoja.
-5. En instalaciones nuevas copia la URL **`/exec`**; en instalaciones existentes conserva la URL editando la implementación actual. Ábrela una vez. Debe responder `ok: true`, `version: "3.4.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
+5. En instalaciones nuevas copia la URL **`/exec`**; en instalaciones existentes conserva la URL editando la implementación actual. Ábrela una vez. Debe responder `ok: true`, `version: "3.5.0-donpieros"`, el ID anterior y `capabilities.onlineOrders: true`.
 
 Google no ejecuta todas las funciones al pulsar Implementar. La inicialización está conectada a `doGet` y `doPost`: **abrir `/exec` después de implementar, o recibir la primera petición del sitio, crea automáticamente todas las pestañas y encabezados**. No crea ventas ni productos. Ese es el [funcionamiento de las aplicaciones web de Apps Script](https://developers.google.com/apps-script/guides/web).
 

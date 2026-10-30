@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.4.0-donpieros",
+  version: "3.5.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -44,7 +44,7 @@ var HEADERS = {
   ],
   details: [
     "sale_id", "factura", "line_id", "menu_item_id", "producto", "cantidad",
-    "precio_unitario", "total_linea", "costo_unitario", "costo_total", "utilidad_bruta"
+    "precio_unitario", "total_linea", "costo_unitario", "costo_total", "utilidad_bruta", "notas"
   ],
   payments: ["sale_id", "factura", "medio", "valor", "referencia", "fecha"],
   movements: [
@@ -409,6 +409,7 @@ function ensureAllSheets_(spreadsheet) {
   ensureSheet_(spreadsheet, APP.sheets.shifts, HEADERS.shifts);
   ensureSheet_(spreadsheet, APP.sheets.sales, HEADERS.sales);
   ensureSheet_(spreadsheet, APP.sheets.details, HEADERS.details);
+  spreadsheet.getSheetByName(APP.sheets.details).getRange(1,HEADERS.details.length).setValue('notas');
   ensureSheet_(spreadsheet, APP.sheets.payments, HEADERS.payments);
   ensureSheet_(spreadsheet, APP.sheets.movements, HEADERS.movements);
   ensureSheet_(spreadsheet, APP.sheets.daily, HEADERS.daily);
@@ -663,7 +664,7 @@ function getIncomeReport_(filters) {
       unitPrice: asNumber_(row[6]),
       total: asNumber_(row[7]),
       cost: asNumber_(row[9]),
-      profit: asNumber_(row[10])
+      profit: asNumber_(row[10]),notes:String(row[11]||'')
     });
   });
 
@@ -1180,7 +1181,7 @@ function recordSale_(invoice, user, authToken) {
       totalCost += lineCost;
       details.push([
         saleId, safeText_(invoice.number), safeText_(line.id), productId, safeText_(line.item_name),
-        quantity, unitPrice, lineTotal, cost, lineCost, lineTotal - lineCost
+        quantity, unitPrice, lineTotal, cost, lineCost, lineTotal - lineCost, safeText_(line.notes)
       ]);
     });
 
@@ -1290,7 +1291,7 @@ function editSale_(invoice, user, operationId) {
       var cost = line.unit_cost !== undefined && line.unit_cost !== null && line.unit_cost !== "" ? Math.max(0, asNumber_(line.unit_cost)) : (inventoryIndex >= 0 ? asNumber_(inventory.rows[inventoryIndex][5]) : 0);
       var quantity = Math.max(0, asNumber_(line.quantity));
       var price = Math.max(0, asNumber_(line.unit_price));
-      nextDetails.push([saleId, safeText_(invoice.number), safeText_(line.id), safeText_(line.menu_item_id), safeText_(line.item_name), quantity, price, quantity * price, cost, quantity * cost, quantity * (price - cost)]);
+      nextDetails.push([saleId, safeText_(invoice.number), safeText_(line.id), safeText_(line.menu_item_id), safeText_(line.item_name), quantity, price, quantity * price, cost, quantity * cost, quantity * (price - cost), safeText_(line.notes)]);
     });
 
 
@@ -1704,7 +1705,7 @@ var DP_TABLES = {
   toppings: { name: 'Adicionales_Web', headers: ['id','name','kind','price','available','sort_order','version'] },
   payments: { name: 'Pagos_Web', headers: ['id','name','account_value','instructions','available','sort_order','version'] },
   neighborhoods: { name: 'Barrios_Web', headers: ['id','name','delivery_fee','available','sort_order','version'] },
-  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version','deliveryFeePending'] }
+  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version','deliveryFeePending','packagingFee'] }
 };
 var DP_STATUSES = ['nueva','atendiendo','lista','despachada','cancelada'];
 
@@ -1723,7 +1724,10 @@ function dpEnsureSheets_(spreadsheet) {
   Object.keys(DP_TABLES).forEach(function (key) {
     var definition = DP_TABLES[key];
     var sheet = ensureSheet_(spreadsheet, definition.name, definition.headers);
-    if(key==='orders')sheet.getRange(1,definition.headers.length).setValue('deliveryFeePending');
+      if(key==='orders'){
+        sheet.getRange(1,definition.headers.indexOf('deliveryFeePending')+1).setValue('deliveryFeePending');
+        sheet.getRange(1,definition.headers.indexOf('packagingFee')+1).setValue('packagingFee');
+      }
   });
   // Payment configuration only. No demo products, clients, orders or sales.
   var payments = spreadsheet.getSheetByName(DP_TABLES.payments.name);
@@ -1781,7 +1785,7 @@ function dpObjects_(key,rows) {
   return rows.filter(function(row){return row[0];}).map(function(row){
     var result = {};
     definition.headers.forEach(function(header,i){result[header]=row[i] instanceof Date ? row[i].toISOString() : row[i];});
-    ['price','delivery_fee','sort_order','version','sequence','total','subtotal','deliveryFee','queuePosition','ordersAhead'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=Number(result[field]) || 0;});
+    ['price','delivery_fee','sort_order','version','sequence','total','subtotal','deliveryFee','queuePosition','ordersAhead','packagingFee'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=Number(result[field]) || 0;});
     ['available','featured','deliveryFeePending'].forEach(function(field){if(Object.prototype.hasOwnProperty.call(result,field))result[field]=dpBoolean_(result[field]);});
     if(key==='products') { try {result.modifiers=JSON.parse(result.modifiers || '[]');} catch(_){result.modifiers=[];} }
     if(key==='orders') { try {result.items=JSON.parse(result.itemsJson || '[]');} catch(_){result.items=[];} delete result.itemsJson; }
@@ -1858,14 +1862,25 @@ function dpDeleteCatalog_(payload,user) {
   });
 }
 
+function dpBox_(product,labels) {
+  var text=normalizeSearch_((labels||[]).length?labels.join(' '):product.name),name=normalizeSearch_(product.name+' '+product.category),size='';
+  if(!/pizza|pizzeta/.test(name))return {size:'',fee:0};
+  if(/pizzeta/.test(name))size='Pizzeta';
+  else if(/super\s*maxi/.test(text))size='Super maxi';
+  else if(/\bmaxi\b/.test(text))size='Maxi';
+  else if(/\bmediana\b/.test(text))size='Mediana';
+  else if(/\bmini\b/.test(text))size='Mini';
+  return {size:size,fee:size==='Maxi'||size==='Super maxi'?4000:size?2000:0};
+}
 function dpPriceOrder_(raw,catalog) {
   if(!raw || !Array.isArray(raw.items) || !raw.items.length || raw.items.length>60)throw new Error('La orden debe contener entre 1 y 60 productos.');
+  var fulfillment=raw.fulfillment==='delivery'?'delivery':raw.fulfillment==='dinein'?'dinein':'pickup';
   var items=raw.items.map(function(line){
     var product=catalog.products.filter(function(p){return p.id===line.productId;})[0];
     if(!product || !product.available)throw new Error('Un producto ya no está disponible. Actualiza la carta.');
     var quantity=Number(line.quantity);
     if(!Number.isInteger(quantity) || quantity<1 || quantity>99)throw new Error('Cantidad inválida.');
-    var unitPrice=dpMoney_(product.price),labels=[],selectionIds=line.selectionIds||{},groupIds=[];
+    var unitPrice=dpMoney_(product.price),labels=[],sizeLabels=[],selectionIds=line.selectionIds||{},groupIds=[];
     (product.modifiers||[]).forEach(function(group){
       groupIds.push(group.id);
       var ids=selectionIds[group.id] || [];
@@ -1875,14 +1890,16 @@ function dpPriceOrder_(raw,catalog) {
       ids.forEach(function(id){
         var option=catalog.toppings.filter(function(t){return t.id===id && t.available && t.kind===group.source;})[0];
         if(!option)throw new Error('Un adicional ya no está disponible.');
+        if(/tamano pizza/.test(normalizeSearch_(group.source)))sizeLabels.push(option.name);
         var price=group.usePrice ? dpMoney_(option.price) : 0;unitPrice+=price;labels.push(group.name+': '+option.name+(price?' (+$'+price+')':''));
       });
     });
     Object.keys(selectionIds).forEach(function(id){if(groupIds.indexOf(id)<0 && selectionIds[id].length)throw new Error('Las opciones del producto cambiaron. Actualiza la carta.');});
     if(Number(line.unitPrice)!==unitPrice)throw new Error('El precio de '+product.name+' cambió. Actualiza la carta antes de confirmar.');
-    return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels};
+    var box=dpBox_(product,sizeLabels);
+    return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels,packagingSize:box.size,packagingUnitFee:fulfillment==='dinein'?0:box.fee};
   });
-  var fulfillment=raw.fulfillment==='delivery'?'delivery':'pickup',neighborhood=null,deliveryFee=0,deliveryFeePending=false,neighborhoodName='';
+  var neighborhood=null,deliveryFee=0,deliveryFeePending=false,neighborhoodName='';
   if(fulfillment==='delivery') {
     neighborhoodName=dpText_(raw.neighborhood,80);
     var neighborhoodId=dpText_(raw.neighborhoodId,80);
@@ -1896,11 +1913,12 @@ function dpPriceOrder_(raw,catalog) {
   var payment=catalog.payments.filter(function(p){return p.id===raw.paymentId && p.available;})[0];
   if(!payment)throw new Error('Selecciona un medio de pago disponible.');
   var subtotal=items.reduce(function(sum,line){return sum+line.unitPrice*line.quantity;},0);
-  return {items:items,fulfillment:fulfillment,neighborhood:neighborhoodName,deliveryFee:deliveryFee,deliveryFeePending:deliveryFeePending,subtotal:subtotal,total:subtotal+deliveryFee,payment:payment};
+  var packagingFee=items.reduce(function(sum,line){return sum+line.quantity*line.packagingUnitFee;},0);
+  return {items:items,fulfillment:fulfillment,neighborhood:neighborhoodName,deliveryFee:deliveryFee,deliveryFeePending:deliveryFeePending,subtotal:subtotal,packagingFee:packagingFee,total:subtotal+packagingFee+deliveryFee,payment:payment};
 }
 
 function dpOrderResult_(order,duplicate) {
-  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
+  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,packagingFee:Number(order.packagingFee)||0,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
 }
 
 function dpCreateOrder_(raw) {
@@ -1925,7 +1943,7 @@ function dpCreateOrder_(raw) {
     var active=metadata.filter(function(row){return ['nueva','atendiendo','lista'].indexOf(String(row[5]))>=0;});
     var id='DP-'+Utilities.formatDate(new Date(),'America/Bogota','yyyyMMdd')+'-'+String(sequence).padStart(4,'0');
     var order={id:id,request_id:raw.requestId,sequence:sequence,createdAt:now,updatedAt:now,status:'nueva',customerName:customerName,phone:phone,fulfillment:priced.fulfillment,address:priced.fulfillment==='delivery'?dpText_(raw.address,300):'',neighborhood:priced.neighborhood,deliveryFee:priced.deliveryFee,subtotal:priced.subtotal,total:priced.total,paymentMethod:priced.payment.name,paymentValue:priced.payment.account_value,notes:dpText_(raw.notes,1000),itemsJson:JSON.stringify(priced.items),queuePosition:active.length+1,ordersAhead:active.length,handledByName:'',version:1};
-    order.deliveryFeePending=priced.deliveryFeePending;
+    order.deliveryFeePending=priced.deliveryFeePending;order.packagingFee=priced.packagingFee;
     try {
       sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
       SpreadsheetApp.flush();

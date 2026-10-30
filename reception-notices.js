@@ -31,6 +31,7 @@
     const card = document.createElement('article');
     card.className = 'dp-reception-notice'; card.dataset.noticeKey = key;
     if(kind==='waiter')card.classList.add('is-waiter');
+    if(kind==='order')card.classList.add('is-money');
     const heading = document.createElement('strong'), text = document.createElement('p');
     heading.textContent = title; text.textContent = detail;
     const label = document.createElement('span'); label.className = 'dp-notice-label';

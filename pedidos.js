@@ -55,8 +55,8 @@
     });
     const deliveryLines = order.fulfillment === 'delivery'
       ? ['🚚 *Entrega:* Domicilio', `📍 *Barrio:* ${order.neighborhood}`, `🏠 *Dirección:* ${order.address}`]
-      : ['🏪 *Entrega:* Recoger en Don Pieros Pizza'];
-    const totalValue = confirmedTotal ?? (Number(order.subtotal) + Number(order.deliveryFee));
+      : [`🏪 *Entrega:* ${order.fulfillment==='dinein'?'Para comer en mesa':'Recoger en local'}`];
+    const totalValue = confirmedTotal ?? (Number(order.subtotal) + Number(order.packagingFee||0) + Number(order.deliveryFee));
     const lines = [
       '🧾 *Nuevo pedido · DON PIEROS PIZZA 🍕✅*',
       `🧾 *Pedido:* ${orderId}`,
@@ -68,7 +68,8 @@
       '🍕 *Detalle del pedido:*',
       ...productLines,
       `🧮 *Subtotal:* ${money(order.subtotal)}`,
-      order.fulfillment === 'delivery' ? `🛵 *Domicilio:* ${order.deliveryFeePending ? 'Por confirmar con el negocio' : money(order.deliveryFee)}` : '🏪 *Envío:* Sin costo (recoge en el negocio)',
+      ...(order.packagingFee ? ['Caja(s): '+money(order.packagingFee)] : []),
+      order.fulfillment === 'delivery' ? `🛵 *Domicilio:* ${order.deliveryFeePending ? 'Por confirmar con el negocio' : money(order.deliveryFee)}` : (order.fulfillment==='dinein'?'Para comer en mesa':'Recoger en local'),
       `💰 *${order.deliveryFeePending ? 'Total de productos' : 'TOTAL'}: ${money(totalValue)}*`,
       ...(order.deliveryFeePending ? ['El valor del domicilio se confirma por este chat.'] : []),
       ...(order.receipt ? ['📎 Comprobante adjunto a la orden.'] : []),
@@ -156,6 +157,9 @@
     }, 2900);
   }
   function subtotal() { return state.cart.reduce((sum,item) => sum + item.unitPrice * item.quantity, 0); }
+  function boxForItem(item) { const product=productById(item.productId)||item.productSnapshot;return window.DonPierosPackaging.forProduct(product,(product?.modifiers||[]).filter(group=>/tama[ñn]o pizza/i.test(group.source||'')).flatMap(group=>item.selectionLabels?.[group.id]||[])); }
+  function packagingFee() { return state.fulfillment==='dinein'?0:state.cart.reduce((sum,item)=>sum+boxForItem(item).fee*item.quantity,0); }
+  function selectedBox() { return window.DonPierosPackaging.forProduct(state.active,(state.active?.modifiers||[]).filter(group=>/tama[ñn]o pizza/i.test(group.source||'')).flatMap(group=>(state.selections[group.id]||[]).map(id=>group.options.find(option=>option.id===id)?.name||''))); }
   function deliveryFee() { return state.fulfillment === 'delivery' ? Number(state.selectedNeighborhood?.delivery_fee || 0) : 0; }
   function deliveryFeePending() { return state.fulfillment === 'delivery' && !state.selectedNeighborhood; }
   function neighborhoodKey(value) { return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLocaleLowerCase('es'); }
@@ -167,7 +171,7 @@
     $('#neighborhood-help').textContent=state.selectedNeighborhood ? 'Tarifa del domicilio: '+money(deliveryFee()) : 'Puedes escribir tu barrio. Si no tiene tarifa, confirmaremos el valor del domicilio por WhatsApp.';
     $('#confirm-order').textContent='Confirmar pedido · '+money(total())+(deliveryFeePending()?' + domicilio por confirmar':'');
   }
-  function total() { return subtotal() + deliveryFee(); }
+  function total() { return subtotal() + packagingFee() + deliveryFee(); }
   function productById(id) { return products.find(product => product.id === id) || state.cart.find(item => item.productId === id)?.productSnapshot; }
 
   function cartAvailabilityIssues() {
@@ -204,7 +208,7 @@
     return definitions.map(definition => {
       const options = toppingRows.filter(item => item.available !== false && item.kind === definition.source).map(item => option(item.id, item.name, definition.usePrice ? Number(item.price || 0) : 0));
       return group(definition.id, definition.name, definition.max === 1 ? 'single' : 'multiple', options, {
-        required:Boolean(definition.required), min:Number(definition.min || 0), max:Number(definition.max || 99)
+        source:definition.source,required:Boolean(definition.required), min:Number(definition.min || 0), max:Number(definition.max || 99)
       });
     });
   }
@@ -306,11 +310,13 @@
       return `<label class="option"><span><input type="${modifier.type === 'single' ? 'radio' : 'checkbox'}" name="${escapeHtml(modifier.id)}" value="${escapeHtml(item.id)}" data-group="${escapeHtml(modifier.id)}" ${checked ? 'checked' : ''}>${escapeHtml(item.name)}</span><em>${item.price ? `+${money(item.price)}` : 'Incluido'}</em></label>`;
     }).join('')}</fieldset>`).join('');
     const complete = !firstMissingGroup();
-    $('#product-detail').innerHTML = `<div class="detail-content"><div class="detail-photo"><img src="${escapeHtml(fast.imageUrl(product.image))}" alt="${escapeHtml(product.name)}">${product.isExampleImage ? '<small class="example-photo-label">Foto de referencia</small>' : ''}</div><div class="detail-head"><div><h2 id="product-title">${escapeHtml(product.name)}</h2><p>${escapeHtml(product.description)}</p></div><strong>${(product.modifiers || []).some(group => group.options.some(option => option.price > 0)) ? "Desde " : ""}${money(product.price)}</strong></div><div class="modifier-list">${modifiers}<div class="qty-block"><div><strong>Cantidad</strong><small>¿Cuántos quieres?</small></div>${quantityMarkup(state.quantity)}</div></div></div><div class="sticky-action"><button id="add-product" class="${complete ? '' : 'is-disabled'}" aria-disabled="${!complete}">${state.editingKey ? 'Actualizar pedido' : 'Agregar al pedido'} · <span id="detail-total">${money(selectedUnitPrice() * state.quantity)}</span></button></div>`;
+    $('#product-detail').innerHTML = `<div class="detail-content"><div class="detail-photo"><img src="${escapeHtml(fast.imageUrl(product.image))}" alt="${escapeHtml(product.name)}">${product.isExampleImage ? '<small class="example-photo-label">Foto de referencia</small>' : ''}</div><div class="detail-head"><div><h2 id="product-title">${escapeHtml(product.name)}</h2><p>${escapeHtml(product.description)}</p></div><strong>${(product.modifiers || []).some(group => group.options.some(option => option.price > 0)) ? "Desde " : ""}${money(product.price)}</strong></div><div class="modifier-list">${modifiers}<p class="dp-pack-note" id="detail-packaging"></p><div class="qty-block"><div><strong>Cantidad</strong><small>¿Cuántos quieres?</small></div>${quantityMarkup(state.quantity)}</div></div></div><div class="sticky-action"><button id="add-product" class="${complete ? '' : 'is-disabled'}" aria-disabled="${!complete}">${state.editingKey ? 'Actualizar pedido' : 'Agregar al pedido'} · <span id="detail-total">${money(selectedUnitPrice() * state.quantity)}</span></button></div>`;
     refreshDetailTotal();
   }
   function refreshDetailTotal() {
-    $('#detail-total').textContent = money(selectedUnitPrice() * state.quantity);
+    const box=selectedBox(),fee=state.fulfillment==='dinein'?0:box.fee;
+    $('#detail-total').textContent = money((selectedUnitPrice()+fee) * state.quantity);
+    $('#detail-packaging').textContent=fee?'Incluye caja '+window.DonPierosPackaging.sizes[box.size]+': '+money(fee)+' por unidad. Sin cobro de caja al comer en el local.':'Al recoger o pedir domicilio, las pizzas incluyen caja según el tamaño: Mini, Mediana y Pizzeta $2.000; Maxi y Super maxi $4.000.';
     $('[data-quantity="detail"] b').textContent = state.quantity;
     (state.active?.modifiers || []).forEach(modifier => {
       const field = $(`.modifier[data-modifier="${CSS.escape(modifier.id)}"]`);
@@ -414,7 +420,7 @@
       const paymentInfo = selectedPayment ? `<div class="payment-info"><div><small>Dato para pagar</small><strong>${escapeHtml(selectedPayment.account_value || 'Pendiente de configurar')}</strong><span>${escapeHtml(selectedPayment.instructions || '')}</span></div>${selectedPayment.account_value ? '<button type="button" id="copy-payment" aria-label="Copiar dato de pago">▣</button>' : ''}</div>` : '';
       const neighborhoodOptions = neighborhoods.map(item => `<option value="${escapeHtml(item.name)}"></option>`).join('');
       const deliveryFields = state.fulfillment === 'delivery' ? `<div class="delivery-fields"><label>Dirección<input name="address" value="${escapeHtml(state.customer.address)}" placeholder="Calle, carrera, número y detalles" maxlength="120" autocomplete="street-address" required><div class="neighborhood-suggestions" id="neighborhood-suggestions"></div></label><label>Barrio<input name="neighborhood" aria-describedby="neighborhood-help" list="neighborhood-list" value="${escapeHtml(state.customer.neighborhood)}" placeholder="Escribe tu barrio o elige uno" maxlength="60" autocomplete="off" required><datalist id="neighborhood-list">${neighborhoodOptions}</datalist><small id="neighborhood-help"></small></label></div>` : '';
-      root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido?</legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''}><span><b>⌂</b><strong>Recoger</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''}><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}<label>Nombre completo<input name="name" value="${escapeHtml(state.customer.name)}" placeholder="¿A nombre de quién?" maxlength="60" autocomplete="name" required></label><label>Teléfono<input name="phone" type="tel" inputmode="tel" value="${escapeHtml(state.customer.phone)}" placeholder="300 000 0000" maxlength="20" autocomplete="tel" required></label><label>Indicaciones especiales <small><span id="note-count">${state.customer.notes.length}</span>/180</small><textarea name="notes" maxlength="180" placeholder="Ej: sin cebolla, alergias o alguna indicación...">${escapeHtml(state.customer.notes)}</textarea></label><fieldset class="checkout-choice payment-choice"><legend>Método de pago</legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''}><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${state.fulfillment === 'delivery' ? `<div><span>Domicilio</span><span id="checkout-delivery-fee">${state.selectedNeighborhood ? money(deliveryFee()) : 'Por confirmar'}</span></div>` : ''}<div class="total"><strong id="checkout-total-label">${deliveryFeePending()?'Total de productos':'Total'}</strong><strong id="checkout-total">${money(total())}</strong></div></div></form>`;
+      root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido?</legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''}><span><b>⌂</b><strong>Recoger en local</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="dinein" ${state.fulfillment === 'dinein' ? 'checked' : ''}><span><b>♧</b><strong>Comer en el local</strong><small>Sin cobro de caja</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''}><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}<label>Nombre completo<input name="name" value="${escapeHtml(state.customer.name)}" placeholder="¿A nombre de quién?" maxlength="60" autocomplete="name" required></label><label>Teléfono<input name="phone" type="tel" inputmode="tel" value="${escapeHtml(state.customer.phone)}" placeholder="300 000 0000" maxlength="20" autocomplete="tel" required></label><label>Indicaciones especiales <small><span id="note-count">${state.customer.notes.length}</span>/180</small><textarea name="notes" maxlength="180" placeholder="Ej: sin cebolla, alergias o alguna indicación...">${escapeHtml(state.customer.notes)}</textarea></label><fieldset class="checkout-choice payment-choice"><legend>Método de pago</legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''}><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${packagingFee()?`<div><span>Cajas para llevar</span><span>${money(packagingFee())}</span></div>`:''}${state.fulfillment === 'delivery' ? `<div><span>Domicilio</span><span id="checkout-delivery-fee">${state.selectedNeighborhood ? money(deliveryFee()) : 'Por confirmar'}</span></div>` : ''}<div class="total"><strong id="checkout-total-label">${deliveryFeePending()?'Total de productos':'Total'}</strong><strong id="checkout-total">${money(total())}</strong></div></div></form>`;
       if (state.fulfillment === 'delivery') {
         const wrapper = document.createElement('div'); wrapper.id = 'checkout-location'; wrapper.innerHTML = delivery.markup(); $('.delivery-fields', root).after(wrapper);
       }
@@ -423,8 +429,8 @@
     }
     if (!state.cart.length) { root.innerHTML = '<div class="cart-empty"><i>♢</i><h3>Tu pedido está vacío</h3><p>Explora el menú y agrega algo delicioso.</p><button id="explore-menu">Explorar el menú</button></div>'; action.innerHTML = ''; return; }
     const issues = cartAvailabilityIssues();
-    root.innerHTML = `<div class="cart-items">${state.cart.map(item => { const product = productById(item.productId) || item.productSnapshot; const issue = issues.find(entry => entry.item.key === item.key); return `<article class="cart-item ${issue ? 'is-unavailable' : ''}"><div class="cart-thumb"><img src="${escapeHtml(fast.imageUrl(product.image))}" alt="${escapeHtml(product.name)}">${issue ? '<span>Agotado</span>' : ''}</div><div class="cart-info"><div class="cart-name"><strong>${escapeHtml(product.name)}</strong><button class="delete" data-delete="${escapeHtml(item.key)}" aria-label="Eliminar ${escapeHtml(product.name)}">×</button></div>${issue ? `<div class="cart-availability">${issue.reasons.map(reason => escapeHtml(reason)).join(' ')}</div>` : `<p>${escapeHtml(optionLabel(item))}</p>`}<button class="edit" data-edit="${escapeHtml(item.key)}">✎ Editar</button><div class="cart-line">${quantityMarkup(item.quantity,item.key)}<strong>${money(item.unitPrice * item.quantity)}</strong></div></div></article>`; }).join('')}</div><button class="continue" id="continue-shopping">＋ Seguir agregando</button><div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div><div class="total"><strong>Total</strong><strong>${money(subtotal())}</strong></div></div>`;
-    action.innerHTML = `<button id="go-checkout" ${issues.length ? 'disabled' : ''}>${issues.length ? 'Revisa lo agotado' : `Continuar · ${money(subtotal())}`}</button>`;
+    root.innerHTML = `<div class="cart-items">${state.cart.map(item => { const product = productById(item.productId) || item.productSnapshot; const issue = issues.find(entry => entry.item.key === item.key); return `<article class="cart-item ${issue ? 'is-unavailable' : ''}"><div class="cart-thumb"><img src="${escapeHtml(fast.imageUrl(product.image))}" alt="${escapeHtml(product.name)}">${issue ? '<span>Agotado</span>' : ''}</div><div class="cart-info"><div class="cart-name"><strong>${escapeHtml(product.name)}</strong><button class="delete" data-delete="${escapeHtml(item.key)}" aria-label="Eliminar ${escapeHtml(product.name)}">×</button></div>${issue ? `<div class="cart-availability">${issue.reasons.map(reason => escapeHtml(reason)).join(' ')}</div>` : `<p>${escapeHtml(optionLabel(item))}</p>`}<button class="edit" data-edit="${escapeHtml(item.key)}">✎ Editar</button><div class="cart-line">${quantityMarkup(item.quantity,item.key)}<strong>${money(item.unitPrice * item.quantity)}</strong></div></div></article>`; }).join('')}</div><button class="continue" id="continue-shopping">＋ Seguir agregando</button><div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${packagingFee()?`<div><span>Cajas para llevar</span><span>${money(packagingFee())}</span></div>`:''}<div class="total"><strong>Total</strong><strong>${money(subtotal()+packagingFee())}</strong></div></div>`;
+    action.innerHTML = `<button id="go-checkout" ${issues.length ? 'disabled' : ''}>${issues.length ? 'Revisa lo agotado' : `Continuar · ${money(subtotal()+packagingFee())}`}</button>`;
   }
 
   function openCart() { state.cartStep = readPendingOrder() ? 'recovery' : 'cart'; renderCart(); showOverlay('cart'); }
@@ -474,7 +480,7 @@
       requestId: getPendingOrderId(), paymentId:state.payment, neighborhoodId:state.selectedNeighborhood?.id || "",
       customerName:state.customer.name,phone:state.customer.phone,fulfillment:state.fulfillment,
       address:state.customer.address,neighborhood:state.customer.neighborhood.trim(),deliveryFee:deliveryFee(),deliveryFeePending:deliveryFeePending(),
-      subtotal:subtotal(),paymentMethod:selectedPayment?.name || state.payment,paymentValue:selectedPayment?.account_value || '',notes:state.customer.notes,
+      subtotal:subtotal(),packagingFee:packagingFee(),paymentMethod:selectedPayment?.name || state.payment,paymentValue:selectedPayment?.account_value || '',notes:state.customer.notes,
       items:state.cart.map(item => ({ productId:item.productId,name:(productById(item.productId) || item.productSnapshot).name,quantity:item.quantity,unitPrice:item.unitPrice,selectionIds:item.selections || {},selections:Object.values(item.selectionLabels || {}).flat() }))
     };
     if (state.receipt) order.receipt = { name:state.receipt.name, mimeType:state.receipt.mimeType, base64:state.receipt.base64 };
@@ -491,7 +497,7 @@
       const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
       notifyOrderCreated(result.orderId);
       await waitForReception(result.orderId);
-      order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;
+      order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;order.packagingFee=Number(result.packagingFee)||0;
       order.deliveryFeePending=!!result.deliveryFeePending;
       if(result.neighborhood)order.neighborhood=result.neighborhood;
       const whatsappUrl = orderWhatsAppUrl(order, result.orderId, result.total,result.queuePosition,result.ordersAhead);
@@ -543,7 +549,7 @@
     if (event.target.name === 'receiptFile') return;
     if (!event.target.name) return;
     event.target.closest('.checkout-attention')?.classList.remove('checkout-attention');
-    if (event.target.name === 'fulfillment') { state.fulfillment = event.target.value; if (state.fulfillment === 'delivery') setNeighborhood(state.customer.neighborhood); if (state.fulfillment === 'pickup') { state.selectedNeighborhood = null; if (!delivery.confirmed) void delivery.stop(); } renderCart(); return; }
+    if (event.target.name === 'fulfillment') { state.fulfillment = event.target.value; if (state.fulfillment === 'delivery') setNeighborhood(state.customer.neighborhood); if (state.fulfillment !== 'delivery') { state.selectedNeighborhood = null; if (!delivery.confirmed) void delivery.stop(); } renderCart(); return; }
     if (event.target.name === 'payment') { state.payment = event.target.value; renderCart(); return; }
     state.customer[event.target.name] = event.target.value;
     if (event.target.name === 'notes') $('#note-count').textContent = event.target.value.length;

@@ -4,10 +4,10 @@
 .dp-reception-notices{position:fixed;top:max(18px,env(safe-area-inset-top));right:max(18px,env(safe-area-inset-right));z-index:1900;width:min(370px,calc(100vw - 28px));display:grid;gap:10px;max-height:calc(100dvh - 36px);overflow:auto;pointer-events:none;scrollbar-width:thin;scrollbar-color:#efc642 transparent}
 .dp-reception-notice{position:relative;padding:19px 20px 17px;border:1px solid #efcc74;border-left:5px solid #d71920;border-radius:18px;background:linear-gradient(120deg,#fffdf4,#fff2c7);color:#211c10;box-shadow:0 12px 38px #291b0026;pointer-events:auto;animation:dp-notice-enter .3s ease-out}
 .dp-notice-label{display:block;font-size:10px;font-weight:800;letter-spacing:.13em;color:#a71d22;margin-bottom:7px}
-.dp-reception-notice.is-waiter{border-color:#a4d5b7;border-left-color:#218653;background:linear-gradient(120deg,#f7fff9,#e1f4e8);box-shadow:0 12px 38px #164e2d20}
-.dp-reception-notice.is-waiter .dp-notice-label{color:#196a41}
-.dp-reception-notice.is-waiter button{background:#218653;color:#fff}
-.dp-reception-notice.is-waiter button:hover{background:#196d43}
+.dp-reception-notice:is(.is-waiter,.is-money){border-color:#a4d5b7;border-left-color:#218653;background:linear-gradient(120deg,#f7fff9,#e1f4e8);box-shadow:0 12px 38px #164e2d20}
+.dp-reception-notice:is(.is-waiter,.is-money) .dp-notice-label{color:#196a41}
+.dp-reception-notice:is(.is-waiter,.is-money) button{background:#218653;color:#fff}
+.dp-reception-notice:is(.is-waiter,.is-money) button:hover{background:#196d43}
 .alert-card.alert-waiter-order{border-color:#a4d5b7;border-left:4px solid #218653;background:#f1fbf5}
 .alert-waiter-order .alert-origin.is-waiter{color:#196a41;background:#dcf2e5}
 .alert-card.alert-waiter-order .primary{background:#218653;color:#fff;border-color:#218653}

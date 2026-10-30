@@ -7047,6 +7047,8 @@ const App = (() => {
     if (!item || !form || !search) return;
     form.menu_item_id.value = item.id;
     form.item_name.value = item.name || "";
+    if(form.elements?.namedItem("packing_size"))delete form.elements.namedItem("packing_size").dataset.manual;
+    globalThis.DonPierosPackaging?.update(form);
     setCurrencyInputValue(form.unit_price, Number(item.price || 0));
     form.quantity.value = "";
     search.value = `${inventoryFor(item).code} · ${item.name}`;
@@ -8176,6 +8178,7 @@ const App = (() => {
           lineId: line.id || "",
           menuItemId: line.menu_item_id || null,
           name: line.item_name || "Producto",
+          notes:line.notes||"",
           quantity,
           unitPrice,
           total: quantity * unitPrice,
@@ -9092,9 +9095,10 @@ const App = (() => {
       item_name: row.querySelector('[data-line-field="name"]')?.value.trim() || "",
       quantity: Number(row.querySelector('[data-line-field="quantity"]')?.value || 0),
       unit_price: currencyInputNumber(row.querySelector('[data-line-field="price"]')),
+      notes:record.items?.[Number(row.dataset.incomeLine)]?.notes||"",
       unit_cost: Number(record.items?.[Number(row.dataset.incomeLine)]?.cost || 0) / Math.max(1, Number(record.items?.[Number(row.dataset.incomeLine)]?.quantity || 1))
     })).filter((item) => item.item_name && item.quantity > 0);
-    if (!items.length || items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.unit_price < 0)) {
+    if (!items.length || items.some((item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.unit_price < (globalThis.DonPierosPackaging?.read(item.notes).fee||0))) {
       toast("La venta debe conservar al menos un producto con cantidad y precio validos.", "error", "invalid-income-edit");
       return;
     }
@@ -9162,6 +9166,7 @@ const App = (() => {
         menuItemId: item.menu_item_id,
         name: item.item_name,
         quantity: item.quantity,
+        notes:item.notes||"",
         unitPrice: item.unit_price,
         total: item.quantity * item.unit_price,
         cost: item.quantity * item.unit_cost,
@@ -9982,6 +9987,7 @@ const App = (() => {
         <div class="meta">
           <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
           <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
+          <span>Entrega:</span><strong>${invoice?.fulfillment==='delivery'?'Domicilio':items.some(item=>globalThis.DonPierosPackaging?.read(item.notes).fulfillment==='pickup')?'Recoger en local':'Para comer en mesa'}</strong>
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
           <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
@@ -9989,7 +9995,7 @@ const App = (() => {
         </div>
         <div class="rule"></div>
         <div class="items">
-          ${items.map((item) => `<div class="item"><span>${Number(item.quantity || 0)} x ${escapeHTML(item.item_name)}<small>${money(item.unit_price)} c/u</small></span><strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong></div>`).join("") || "<div class=\"center\">Sin consumos</div>"}
+          ${items.flatMap(item=>{const box=globalThis.DonPierosPackaging?.read(item.notes);const price=Number(item.unit_price)-(box?.fee||0);return [`<div class="item"><span>${Number(item.quantity||0)} x ${escapeHTML(item.item_name)}<small>${money(price)} c/u</small>${box?.notes?`<small>${escapeHTML(box.notes)}</small>`:""}</span><strong>${money(price*Number(item.quantity))}</strong></div>`,...(box?.fee?[`<div class="item"><span>${Number(item.quantity)} x Caja ${escapeHTML(globalThis.DonPierosPackaging.sizes[box.size])}<small>Para llevar</small></span><strong>${money(box.fee*Number(item.quantity))}</strong></div>`]:[])];}).join("") || "<div class=\"center\">Sin consumos</div>"}
         </div>
         <div class="rule"></div>
         <div class="totals">
@@ -10007,7 +10013,7 @@ const App = (() => {
         ${isPaid ? `<div class="rule"></div><div class="paid">PAGADO</div><div class="meta" style="margin-top:2mm">${payments.map((payment) => `<span>${escapeHTML(paymentMethodLabel(payment.method))}</span><strong>${money(payment.amount)}</strong>`).join("")}${Number(invoice.cashReceived || 0) ? `<span>Recibido</span><strong>${money(invoice.cashReceived)}</strong><span>Cambio</span><strong>${money(invoice.changeDue)}</strong>` : ""}${invoice.reference ? `<span>Referencia</span><strong>${escapeHTML(invoice.reference)}</strong>` : ""}</div>` : ""}
         <div class="rule"></div>
         <div class="footer">Gracias por su compra<br><strong>${escapeHTML(businessName)}</strong></div>
-        ${isPaid ? `<div class="devnex-credit"><strong>Devnex Soluciones Tecnologicas - Devnex.tech</strong><span class="devnex-contact"><svg viewBox="0 0 24 24" aria-label="Instagram"><rect width="18" height="18" x="3" y="3" rx="5"></rect><circle cx="12" cy="12" r="4"></circle><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"></circle></svg>3246394689 <svg viewBox="0 0 24 24" aria-label="WhatsApp"><path d="M20.5 11.6a8.6 8.6 0 0 1-12.7 7.6L3 20.5l1.3-4.7a8.6 8.6 0 1 1 16.2-4.2Z"></path><path d="M8 7.5c-.8 1.2-.2 3.3 1.8 5.3s4.1 2.6 5.3 1.8l.5-1.7-2.2-1-1 1c-1.2-.5-2.6-1.9-3.1-3.1l1-1-1-2.2Z"></path></svg></span></div>` : ""}
+        ${isPaid ? `<div class="devnex-credit"><strong>Devnex Soluciones Tecnologicas</strong><span class="devnex-contact"><svg viewBox="0 0 24 24" aria-label="Instagram"><rect width="18" height="18" x="3" y="3" rx="5"></rect><circle cx="12" cy="12" r="4"></circle><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"></circle></svg><strong>3246394689</strong> <svg viewBox="0 0 24 24" aria-label="WhatsApp"><path d="M20.5 11.6a8.6 8.6 0 0 1-12.7 7.6L3 20.5l1.3-4.7a8.6 8.6 0 1 1 16.2-4.2Z"></path><path d="M8 7.5c-.8 1.2-.2 3.3 1.8 5.3s4.1 2.6 5.3 1.8l.5-1.7-2.2-1-1 1c-1.2-.5-2.6-1.9-3.1-3.1l1-1-1-2.2Z"></path></svg></span></div>` : ""}
       </body></html>`;
   };
 
@@ -10020,9 +10026,9 @@ const App = (() => {
     popup.document.open();
     popup.document.write(thermalReceiptHtml(session, invoice));
     popup.document.close();
-    popup.requestAnimationFrame(() => {
+    popup.requestAnimationFrame(async () => {
       if (!popup.closed) {
-        try { popup.focus(); popup.print(); }
+        try { if(window.DonPierosThermal)await window.DonPierosThermal.prepare(popup,80);popup.focus(); popup.print(); }
         catch (error) {
           console.error("Falló la impresión del comprobante", error);
           toast(invoice ? "Cobro guardado. No se pudo imprimir; reimprime desde Ventas." : "No se pudo imprimir la pre-cuenta.", "error", "receipt-print-failed");
@@ -10262,6 +10268,7 @@ const App = (() => {
       item_name: item.name || item.item_name || "Producto",
       quantity: Number(item.quantity || 0),
       unit_price: Number(item.unitPrice ?? item.unit_price ?? 0),
+      notes:item.notes||"",
       status: "confirmed"
     }));
     const subtotal = Number(record.subtotal || 0);
@@ -10544,6 +10551,7 @@ const App = (() => {
         item_name: item.item_name,
         quantity: Number(item.quantity || 0),
         unit_price: Number(item.unit_price || 0),
+        notes: item.notes || "",
         unit_cost: Number(state.inventoryMeta[item.menu_item_id]?.costPrice || 0),
         status: item.status
       }))
@@ -10592,7 +10600,7 @@ const App = (() => {
     box.hidden = drafts.length === 0;
     count.textContent = `${drafts.length} ${drafts.length === 1 ? "producto" : "productos"}`;
     total.textContent = money(drafts.reduce((sum, draft) => sum + draft.quantity * draft.unitPrice, 0));
-    lines.innerHTML = drafts.map((draft, index) => `<div class="${state.consumptionDraftEditIndex === index ? "is-editing" : ""} ${state.individualProductFlashes?.get(draft) > Date.now() ? "consumption-just-added" : ""}"><span class="consumption-draft-product" data-edit-consumption-product="${index}" title="Doble clic para cambiar este producto"><strong>${escapeHTML(draft.itemName)}</strong><small>${draft.quantity} × ${money(draft.unitPrice)}</small></span><strong${canEditPrice ? ` class="consumption-draft-price" data-edit-consumption-price="${index}" title="Doble clic para editar el precio unitario"` : ""}>${money(draft.quantity * draft.unitPrice)}</strong><button class="icon-btn danger" type="button" data-remove-consumption-draft="${index}" aria-label="Quitar ${escapeHTML(draft.itemName)}">${icon("x", 15)}</button></div>`).join("");
+    lines.innerHTML = drafts.map((draft, index) => `<div class="${state.consumptionDraftEditIndex === index ? "is-editing" : ""} ${state.individualProductFlashes?.get(draft) > Date.now() ? "consumption-just-added" : ""}"><span class="consumption-draft-product" data-edit-consumption-product="${index}" title="Doble clic para cambiar este producto"><strong>${escapeHTML(draft.itemName)}</strong><small>${draft.quantity} × ${money(draft.unitPrice)}${globalThis.DonPierosPackaging?.read(draft.notes).fee?` · Caja: ${money(globalThis.DonPierosPackaging.read(draft.notes).fee)} c/u`:""}</small></span><strong${canEditPrice ? ` class="consumption-draft-price" data-edit-consumption-price="${index}" title="Doble clic para editar el precio unitario"` : ""}>${money(draft.quantity * draft.unitPrice)}</strong><button class="icon-btn danger" type="button" data-remove-consumption-draft="${index}" aria-label="Quitar ${escapeHTML(draft.itemName)}">${icon("x", 15)}</button></div>`).join("");
     const form = $("#consumptionForm");
     if (form) form.quantity.required = drafts.length === 0;
     updateConsumptionDraftAction();
@@ -10617,9 +10625,10 @@ const App = (() => {
     form.menu_item_id.value = draft.menuItemId || "";
     form.item_name.value = draft.itemName || "";
     form.quantity.value = draft.quantity || 1;
-    form.notes.value = draft.notes || "";
+    const packing=globalThis.DonPierosPackaging?.restore(form,draft.notes,draft.unitPrice);
+    form.notes.value = packing?.notes ?? draft.notes ?? "";
     form.payer_name.value = draft.payerName || form.payer_name.value;
-    setCurrencyInputValue(form.unit_price, draft.unitPrice || 0);
+    setCurrencyInputValue(form.unit_price, packing?.price ?? draft.unitPrice ?? 0);
     const product = state.items.find((item) => item.id === draft.menuItemId);
     search.value = product ? `${inventoryFor(product).code} · ${product.name}` : draft.itemName || "";
     renderConsumptionProductOptions(product?.name || draft.itemName || "");
@@ -10642,15 +10651,16 @@ const App = (() => {
     input.inputMode = "numeric";
     input.autocomplete = "off";
     input.setAttribute("aria-label", `Precio unitario de ${draft.itemName}`);
-    input.value = formattedCurrencyInput(draft.unitPrice);
+    const boxFee=globalThis.DonPierosPackaging?.read(draft.notes).fee||0;
+    input.value = formattedCurrencyInput(draft.unitPrice-boxFee);
     let finished = false;
     const save = () => {
       if (finished) return;
       finished = true;
-      draft.unitPrice = currencyInputNumber(input);
+      draft.unitPrice = currencyInputNumber(input)+boxFee;
       if (state.consumptionDraftEditIndex === index) {
         const form = $("#consumptionForm");
-        if (form?.unit_price) setCurrencyInputValue(form.unit_price, draft.unitPrice);
+        if (form?.unit_price) setCurrencyInputValue(form.unit_price, draft.unitPrice-boxFee);
       }
       renderConsumptionSelection();
     };
@@ -10690,8 +10700,7 @@ const App = (() => {
       menuItemId: selectedItem?.id || null,
       itemName,
       quantity,
-      unitPrice,
-      notes: form.notes.value.trim(),
+      ...(globalThis.DonPierosPackaging?.draft(form,itemName,unitPrice,form.notes.value.trim()) || {unitPrice,notes:form.notes.value.trim()}),
       payerName: form.payer_name.value.trim()
     };
   };
@@ -10701,6 +10710,7 @@ const App = (() => {
     form.item_name.value = "";
     form.quantity.value = "";
     form.notes.value = "";
+    globalThis.DonPierosPackaging?.restore(form,"",0);
     setCurrencyInputValue(form.unit_price, 0);
     if ($("#consumptionProductSearch")) $("#consumptionProductSearch").value = "";
     renderConsumptionProductOptions("");
@@ -11187,8 +11197,9 @@ const App = (() => {
     form.item_name.value = item.item_name || "";
     form.payer_name.value = session.payer_name || "";
     form.quantity.value = item.quantity || 1;
-    setCurrencyInputValue(form.unit_price, item.unit_price || 0);
-    form.notes.value = item.notes || "";
+    const packing=globalThis.DonPierosPackaging?.restore(form,item.notes,item.unit_price);
+    setCurrencyInputValue(form.unit_price, packing?.price ?? item.unit_price ?? 0);
+    form.notes.value = packing?.notes ?? item.notes ?? "";
     const optionalFields = $("#consumptionOptionalFields");
     if (optionalFields) optionalFields.open = true;
     const product = state.items.find((entry) => entry.id === item.menu_item_id);
@@ -11277,7 +11288,9 @@ const App = (() => {
     const pendingTableId = form.pending_table_id.value;
     const selectedItem = state.items.find((item) => item.id === form.menu_item_id.value);
     const name = form.item_name.value.trim() || selectedItem?.name;
-    const price = form.unit_price.value.trim() ? currencyInputNumber(form.unit_price) : Number(selectedItem?.price || 0);
+    const basePrice = form.unit_price.value.trim() ? currencyInputNumber(form.unit_price) : Number(selectedItem?.price || 0);
+    const packing=globalThis.DonPierosPackaging?.draft(form,name,basePrice,form.notes.value.trim());
+    const price=packing?.unitPrice ?? basePrice;
     const quantityText = String(form.quantity.value || "").trim();
     const quantity = Number(quantityText);
     const itemId = form.session_item_id.value || "";
@@ -11315,7 +11328,7 @@ const App = (() => {
       item_name: name,
       unit_price: price,
       quantity,
-      notes: form.notes.value.trim(),
+      notes: packing?.notes ?? form.notes.value.trim(),
       status: "served",
       created_by_user_id: itemId ? undefined : state.currentUser?.id || null,
       updated_by_user_id: state.currentUser?.id || null

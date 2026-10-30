@@ -1,5 +1,6 @@
 (() => {
   'use strict';
+  const fulfillmentLabel=value=>value==='delivery'?'Domicilio':value==='dinein'?'Para comer en mesa':'Recoger en local';
   if(document.body.dataset.page !== 'admin') return;
   const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
   const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -26,7 +27,7 @@
     let text=searchText.get(order);
     if(text===undefined){
       text=normalize([order.id,order.sequence,order.customerName,order.phone,order.address,order.neighborhood,order.notes,
-        labels[order.status],order.fulfillment==='delivery'?'domicilio':'recoger en tienda',order.paymentMethod,order.paymentValue,
+        labels[order.status],fulfillmentLabel(order.fulfillment),order.paymentMethod,order.paymentValue,
         order.total,money(order.total),date(order.createdAt),...(order.items||[]).flatMap(item=>[item.name,item.quantity,...(item.selections||[])])].join(' '));
       searchText.set(order,text);
     }
@@ -224,7 +225,7 @@
       if(arrived.length&&api().getUser()?.role!=='waiter'){
         api().announceWebOrders(arrived);
         for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:'order',title:order.customerName,
-          detail:`${order.id} · ${order.fulfillment==='delivery'?'Domicilio':'Recoger en tienda'}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
+          detail:`${order.id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
           action:()=>openOrder(order.id)});
       }
       for(const order of dashboardOrders)if(order.status!=='nueva')window.DonPierosReception?.dismiss('order:'+order.id);
@@ -234,7 +235,7 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${order.fulfillment==='delivery'?'Domicilio':'Recoge en tienda'}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
+  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status">${labels[order.status]||esc(order.status)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
   function overlayOrders(rows){
     const next=new Map(rows.map(row=>[row.id,row]));
     for(const [id,write] of orderWrites){
@@ -308,8 +309,8 @@
           <div class="dp-detail-lines">${order.items.map(item=>`<article><span class="dp-item-quantity">${Number(item.quantity)||0} ×</span><div><strong>${esc(item.name)}</strong>${item.selections.length?`<ul>${item.selections.map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</div></article>`).join('')}</div>
           ${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}
         </section>
-        <aside class="dp-order-summary"><section class="dp-order-customer"><small>DATOS DEL CLIENTE</small><h3>${esc(order.customerName)}</h3>${order.phone?`<a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a>`:''}<div class="dp-fulfillment-label">${order.fulfillment==='delivery'?'Entrega a domicilio':'Recoger en tienda'}</div>${order.fulfillment==='delivery'?`<p><strong>Barrio:</strong> ${esc(order.neighborhood)}<br><strong>Dirección:</strong> ${esc(order.address)}</p>`:''}</section>
-          <div class="dp-totals">${order.fulfillment==='delivery'?`<p>Productos <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<small>${esc(order.paymentValue)}</small>`:''}</div>
+        <aside class="dp-order-summary"><section class="dp-order-customer"><small>DATOS DEL CLIENTE</small><h3>${esc(order.customerName)}</h3>${order.phone?`<a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a>`:''}<div class="dp-fulfillment-label">${fulfillmentLabel(order.fulfillment)}</div>${order.fulfillment==='delivery'?`<p><strong>Barrio:</strong> ${esc(order.neighborhood)}<br><strong>Dirección:</strong> ${esc(order.address)}</p>`:''}</section>
+          <div class="dp-totals">${order.packagingFee?`<p>Cajas para llevar <b>${money(order.packagingFee)}</b></p>`:''}${order.fulfillment==='delivery'?`<p>Productos <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<small>${esc(order.paymentValue)}</small>`:''}</div>
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
@@ -339,35 +340,33 @@
     document.body.append(frame);
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     const d=frame.contentDocument;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
-      @page{size:${width}mm auto;margin:3mm}*{box-sizing:border-box}
-      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding-top:5mm;width:${width-6}mm}
-      .kitchen-ticket{border:1px solid #000;padding:${width===58?'3mm 2mm':'4mm 3mm'}}
+      @page{size:${width}mm auto;margin:0}*{box-sizing:border-box}
+      html{background:#fff}body{font:${width===58?'13':'15'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
+      .kitchen-ticket{border:1px solid #000;padding:2mm}
       h1{font-size:${width===58?'16':'18'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:19px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
-      .center{text-align:center}.rule{border-top:1px dashed #000;margin:11px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
+      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:21px;font-weight:900;text-align:center;margin:8px 0}
       .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:16px}
-      .kitchen-item{border-bottom:1px dashed #000;padding:11px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
+      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'18':'21'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
       .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'15':'17'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
       .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:15px}.notes p{white-space:pre-wrap;font-weight:700}
-      .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:10px;text-align:center;margin-top:12px}
+      .total{font-size:13px;font-weight:900}.total-amount{display:block;font-size:22px}.total-amount small{font-size:11px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
       </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
-      <div class="fulfillment">${order.fulfillment==='delivery'?'DOMICILIO':'RECOGER EN TIENDA'}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
+      <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
       ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3>${item.selections.length?`<ul class="options">${item.selections.map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
-      <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
-      <footer>Comanda de cocina · No es factura fiscal</footer></main></body></html>`);d.close();
+      ${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
+      <footer><strong>Devnex Soluciones Tecnologicas<br>3246394689</strong></footer></main></body></html>`);d.close();
     frame.contentWindow.addEventListener('afterprint',()=>frame.remove(),{once:true});
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
-    void (d.fonts?.ready||Promise.resolve()).then(()=>requestAnimationFrame(()=>{
+    void window.DonPierosThermal.prepare(frame.contentWindow,width).then(()=>{
       if(!frame.isConnected)return;
-      const height=Math.max(60,Math.ceil(d.body.getBoundingClientRect().height*25.4/96)+8);
-      const paper=d.createElement('style');paper.dataset.paperSize='';paper.textContent=`@page{size:${width}mm ${height}mm;margin:3mm}`;d.head.append(paper);
       frame.contentWindow.focus();frame.contentWindow.print();
-    }));
+    });
     setTimeout(()=>frame.remove(),120000);
   }
 
@@ -522,7 +521,7 @@
         if(order.status==='nueva'&&!seenOrderIds.has(id)&&api().getUser()?.role!=='waiter'){
           api().announceWebOrders([order]);
           window.DonPierosReception?.show({key:'order:'+id,kind:'order',title:order.customerName,
-            detail:`${id} · ${order.fulfillment==='delivery'?'Domicilio':'Recoger en tienda'}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,action:()=>openOrder(id)});
+            detail:`${id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,action:()=>openOrder(id)});
         }
         seenOrderIds.add(id);
       }else if(!order&&!orderWrites.get(id)?.pending){

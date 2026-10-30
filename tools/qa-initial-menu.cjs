@@ -17,7 +17,7 @@ const assert=require('node:assert/strict');const {chromium}=require('playwright-
  assert.equal(await client.locator('.modifier-attention').first().evaluate(node=>getComputedStyle(node).borderTopColor),'rgb(229, 57, 53)');
  assert.equal(await client.locator('.requirement-badge.is-pending').first().evaluate(node=>getComputedStyle(node).color),'rgb(180, 35, 24)');
  assert.equal(await client.locator('#nav-cart .cart-count').innerText(),'0');
- await client.locator('.option').filter({hasText:'Mediana · 37 × 37 cm'}).click();await client.locator('.option').filter({hasText:'Hawaiana'}).click();assert.match(await client.locator('#detail-total').innerText(),/56.000/);
+ await client.locator('.option').filter({hasText:'Mediana · 37 × 37 cm'}).click();await client.locator('.option').filter({hasText:'Hawaiana'}).click();assert.match(await client.locator('#detail-total').innerText(),/58.000/);
  assert.equal(await client.locator('.modifier.is-complete').count(),2);assert.equal(await client.locator('.modifier-attention').count(),0);
  await client.waitForFunction(()=>getComputedStyle(document.querySelector('.modifier.is-complete')).borderTopColor==='rgb(22, 163, 106)');
  assert.equal(await client.locator('.modifier.is-complete').first().evaluate(node=>getComputedStyle(node).borderTopColor),'rgb(22, 163, 106)');

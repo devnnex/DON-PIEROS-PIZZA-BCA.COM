@@ -85,7 +85,7 @@ test('la actualización de órdenes agrega el indicador sin cambiar pedidos ante
  const h=harness(),p=h.product();h.call('createOrder',{order:h.order(p)});
  const sheet=h.sheets.get('Ordenes_Web');sheet.rows[0].pop();sheet.rows[1].pop();
  const original=JSON.stringify(sheet.rows[1]);h.props.set('DP_SCHEMA_VERSION','3.2.0-donpieros');h.context.ensureSystemReady_();
- assert.equal(sheet.rows[0].at(-1),'deliveryFeePending');assert.equal(JSON.stringify(sheet.rows[1]),original);
+ assert.equal(sheet.rows[0].at(-1),'packagingFee');assert.equal(JSON.stringify(sheet.rows[1]),original);
  assert.equal(h.call('dp_get_orders').orders[0].deliveryFeePending,false);
 });
 test('pedidos privados, roles, conflictos de versión y revisiones',()=>{
@@ -125,7 +125,7 @@ test('la carta inicial contiene los 51 productos, tamaños y dos mitades repetib
  assert.equal(catalog.products.find(p=>p.name==='Gaseosa 1,5 litros').price,9000);
  const p=catalog.products.find(p=>p.name==='Pizza Hawaiana'&&p.category==='Pizzas sencillas'),size=catalog.toppings.find(t=>t.kind==='Tamaño pizza sencilla'&&t.name==='Mediana · 37 × 37 cm'),second=catalog.toppings.find(t=>t.kind==='Sabor pizza sencilla'&&t.name==='Hawaiana');
  const order=h.order(p);order.items[0].unitPrice=56000;order.items[0].selectionIds={[p.modifiers[0].id]:[size.id],[p.modifiers[1].id]:[second.id]};
- assert.equal(h.call('createOrder',{order}).total,56000);
+ assert.equal(h.call('createOrder',{order}).total,58000);
  h.save('products',{...p,price:44000,available:false});h.context.CARGAR_MENU_INICIAL_DON_PIEROS();
  const refreshed=h.call('dp_admin_catalog');assert.equal(refreshed.products.length,51);assert.equal(refreshed.products.find(row=>row.id===p.id).price,44000);assert.equal(refreshed.products.find(row=>row.id===p.id).available,false);
 });
