@@ -9323,7 +9323,7 @@ const App = (() => {
         <div class="account-detail-breakdown-head"><strong>Productos y desglose</strong><span>${items.length} ${items.length === 1 ? "consumo" : "consumos"}</span></div>
         <div class="account-detail-lines">
           ${items.map((item) => `
-            <div class="account-detail-line">
+            <div class="account-detail-line"${session.table_id?` data-table-consumption-edit="${escapeHTML(item.id)}" data-session-id="${escapeHTML(session.id)}" title="Doble clic para editar este producto"`:""}>
               <div><strong>${escapeHTML(item.item_name)}</strong><span>${Number(item.quantity || 0)} × ${money(item.unit_price)}</span><small>${escapeHTML(item.created_by_user?.full_name || "Cliente")}${item.created_at ? ` · ${prettyDateTime(item.created_at)}` : ""}${item.notes ? ` · ${escapeHTML(item.notes)}` : ""}</small></div>
               <strong>${money(Number(item.unit_price) * Number(item.quantity))}</strong>
               <button class="icon-btn" type="button" data-edit-consumption="${item.id}" data-session-id="${session.id}" aria-label="Editar consumo">${icon("pencil", 15)}</button>
@@ -11217,6 +11217,12 @@ const App = (() => {
   };
 
   const openConsumptionDialog = (sessionId = "", { pendingTableId = "", quickCheckout = false } = {}) => {
+    const tableSession = state.sessions.find((entry) => entry.id === sessionId);
+    const tableId = pendingTableId || tableSession?.table_id;
+    if (tableId && window.DonPierosWaiter?.startTableOrder) {
+      void window.DonPierosWaiter.startTableOrder(tableId);
+      return;
+    }
     const dialog = $("#consumptionDialog");
     const form = $("#consumptionForm");
     if (!dialog || !form) return;
@@ -11283,8 +11289,8 @@ const App = (() => {
       toast("Confirma o elimina la seleccion pendiente antes de editar un consumo.", "error", "pending-items-before-edit");
       return;
     }
-    if (item.waiter_comanda_id && window.DonPierosWaiter?.editComanda) {
-      dialog.close();void window.DonPierosWaiter.editComanda(item.waiter_comanda_id);return;
+    if (session.table_id && window.DonPierosWaiter?.editConsumptionLine) {
+      dialog.close();void window.DonPierosWaiter.editConsumptionLine(session.id,item.id);return;
     }
     form.reset();
     form.session_id.value = session.id;
@@ -13768,6 +13774,24 @@ const App = (() => {
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
     openWebOrderCheckout,
+    saveLegacyTableLine: async (sessionId,itemId,line) => {
+      const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
+      const item=session?.session_items?.find(row=>row.id===itemId&&row.status!=='cancelled');
+      const form=$("#consumptionForm");
+      if(!item||!session.table_id||!form||form.dataset.localSubmitInProgress==='1'||state.consumptionDrafts.length)throw Error("Termina la selección actual antes de editar este consumo.");
+      form.reset();form.session_id.value=sessionId;form.session_item_id.value=itemId;form.pending_table_id.value='';form.quick_checkout.value='0';
+      form.menu_item_id.value=item.menu_item_id||'';form.item_name.value=line.name;form.quantity.value=line.quantity;form.payer_name.value=session.payer_name||'';
+      const packing=globalThis.DonPierosPackaging?.restore(form,line.notes,line.unit_price);
+      setCurrencyInputValue(form.unit_price,packing?.price??line.unit_price);form.notes.value=packing?.notes??line.notes;
+      form.dataset.localSubmitInProgress='1';
+      try{return await addManualConsumption(form,{silent:true,openPaymentAfter:false});}
+      finally{delete form.dataset.localSubmitInProgress;}
+    },
+    openTableAccount: (tableId) => {
+      const session = state.sessions.find((entry) => entry.table_id === tableId && entry.status === "open");
+      if (session) openAccountDetailDialog(session.id);
+      else toast("Esta mesa todavía no tiene consumos.", "ok", "table-without-consumption");
+    },
     getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
     notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   window.addEventListener('don-pieros-before-update', event => {

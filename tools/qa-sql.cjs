@@ -178,5 +178,35 @@ const root=path.resolve(__dirname,'..');
   assert.notEqual(nextCustomer.session.id,afterDelete.session.id);assert.equal(nextCustomer.session.status,'open');
   await db.exec('reset role');
   console.log('Comandas editables y reutilización de mesas: cierre, eliminación, clientes sucesivos, aislamiento de cuentas y reintentos sin duplicar: OK.');
+  // Staff uses the public menu without linking these sales to inventory, even
+  // when an inventory product happens to have the same UUID.
+  await db.query('insert into menu_items(id,name,price) values($1,$2,$3)',[productId,'Producto de inventario conservado',17000]);
+  await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':login.token})]);await db.exec('set role anon');
+  const managerId=uuid(),managerOperation=uuid(),customId=uuid();
+  const managerItems=[{id:uuid(),product_id:productId,name:'Porción especial',quantity:2,unit_price:17000,options:{labels:[]},notes:''},
+    {id:uuid(),product_id:customId,name:'Postre del día',quantity:3,unit_price:12500,options:{custom:true,labels:[],selectionIds:{}},notes:'Sin azúcar'}];
+  const managerSaved=await save(managerOperation,managerId,0,managerItems,nextCustomer.session.id);
+  assert.ok(managerSaved.comanda.accepted_at,'La comanda creada por caja se agrega en la misma transacción.');
+  assert.equal(managerSaved.request.status,'acknowledged');assert.equal(managerSaved.session.session_items.length,2);
+  assert.ok(managerSaved.session.session_items.every(item=>item.menu_item_id===null),'Las líneas no descuentan inventario.');
+  assert.equal(managerSaved.session.assigned_waiter_id,waiter.user.id,'Caja conserva al mesero de la cuenta.');
+  assert.equal(managerSaved.session.session_items.reduce((sum,item)=>sum+item.quantity*Number(item.unit_price),0),71500);
+  assert.equal(managerSaved.session.session_items.find(item=>item.web_product_id===customId).waiter_options.custom,true);
+  const managerRetry=await save(managerOperation,managerId,0,managerItems,nextCustomer.session.id);
+  assert.equal(managerRetry.duplicate,true);assert.equal(managerRetry.session.session_items.length,2);
+  const managerChanged=await save(uuid(),managerId,1,[managerItems[0],{...managerItems[1],quantity:4,unit_price:13000}],nextCustomer.session.id);
+  assert.equal(managerChanged.session.session_items.length,2);assert.equal(managerChanged.comanda.version,2);
+  assert.equal(managerChanged.session.session_items.reduce((sum,item)=>sum+item.quantity*Number(item.unit_price),0),86000);
+  await assert.rejects(save(uuid(),managerId,2,[{...managerItems[0],unit_price:-1}],nextCustomer.session.id),/datos inválidos/);
+  await assert.rejects(save(uuid(),managerId,2,[{...managerItems[0],name:'   '}],nextCustomer.session.id),/datos inválidos/);
+  await db.exec('reset role');await db.exec(comandaSql);
+  assert.equal((await db.query('select count(*)::int n from session_items where waiter_comanda_id=$1',[managerId])).rows[0].n,2,'Repetir SQL conserva las líneas.');
+  assert.equal((await db.query('select name from menu_items where id=$1',[productId])).rows[0].name,'Producto de inventario conservado');
+  await db.query('select save_user($1,gen_random_uuid(),$2,$3,$4,$5,true,$6::jsonb)',[login.token,'Solo inventario','qainventory','1234','admin','["inventory"]']);
+  const inventoryLogin=(await db.query("select login('qainventory','1234') as data")).rows[0].data;
+  await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':inventoryLogin.token})]);await db.exec('set role anon');
+  await assert.rejects(save(uuid(),uuid(),0,managerItems,nextCustomer.session.id),/permiso/);
+  await db.exec('reset role');
+  console.log('Carta y Otro en mesas: caja agrega y acepta atómicamente, cantidades/precios/notas, permisos, edición, inventario intacto, reintento y SQL repetible: OK.');
  }finally{await db.close();}
 })().catch(e=>{console.error(e.message);if(e.query)console.error(e.query.slice(0,800));process.exitCode=1;});

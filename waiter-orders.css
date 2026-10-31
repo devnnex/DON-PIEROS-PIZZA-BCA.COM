@@ -38,6 +38,10 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 .dw-paper{display:grid;gap:5px;font-size:11px;color:#75654b}.dw-paper select{padding:10px;border:1px solid #dedbd4;border-radius:10px;background:#fff;font:inherit}
 .dw-received-card{border-left-color:#218653}.dw-received-status em{color:#196a41}
 .dw-dialog button:hover,.dw-dialog button:active{transform:none}
+.dw-custom-choice{grid-column:1/-1;display:grid;gap:5px;text-align:left;margin:0;padding:15px;border-style:dashed}.dw-custom-choice small{font-weight:400;font-size:12px}
+.dw-custom-field{display:grid;gap:7px;margin:15px 0;font-size:13px;font-weight:700}.dw-custom-field input{box-sizing:border-box;width:100%;min-width:0;padding:13px;border:1px solid #e6d3a6;border-radius:13px;background:#fffcf2;color:#2b2115;font:inherit;font-size:16px}
+#dw-manager-catalog>[data-dw-account]{margin-bottom:16px}
+.dw-inline-price{box-sizing:border-box;width:150px;max-width:100%;padding:8px;border:1px solid #d4aa28;border-radius:8px;font:inherit;font-size:16px;background:#fff;color:#211c15}[data-dw-price]{cursor:text}[data-table-consumption-edit]{cursor:pointer}.dw-custom-field>small{font-weight:400;line-height:1.5}
 .dw-table-head,#dw-menu-view,#dw-account-view{animation:dw-fade-in .15s ease-out}#dw-manager-products{padding-bottom:0}
 @media(prefers-reduced-motion:reduce){.dw-table-head,#dw-menu-view,#dw-account-view{animation:none}}
 #dw-review-body *,#dw-kitchen-body *,.dw-received-card *,.dw-sent-order *{font-weight:900!important}

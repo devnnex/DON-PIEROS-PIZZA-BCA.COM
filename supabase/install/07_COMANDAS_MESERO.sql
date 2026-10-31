@@ -95,7 +95,8 @@ begin
     detail:=concat_ws(' · ',nullif(detail,''),nullif(item->>'notes',''));
     insert into public.session_items(id,session_id,table_id,menu_item_id,item_name,quantity,unit_price,notes,status,
       created_by_user_id,updated_by_user_id,waiter_comanda_id,web_product_id,waiter_options,waiter_line_notes)
-    values(line_id,account.id,c.table_id,(select id from public.menu_items where id=product_id),item->>'name',
+    -- The web menu and custom products are sales lines, independent of inventory.
+    values(line_id,account.id,c.table_id,null,item->>'name',
       (item->>'quantity')::integer,(item->>'unit_price')::numeric,detail,'served',c.created_by_user_id,p_actor,p_id,product_id,item->'options',coalesce(item->>'notes',''))
     on conflict(id) do update set item_name=excluded.item_name,menu_item_id=excluded.menu_item_id,quantity=excluded.quantity,
       unit_price=excluded.unit_price,notes=excluded.notes,status='served',updated_by_user_id=p_actor,web_product_id=excluded.web_product_id,
@@ -226,8 +227,7 @@ begin
     if account.id is null then insert into public.table_sessions(table_id,status,assigned_waiter_id) values(p_table_id,'open',actor.id) returning * into account;end if;
   end if;
   if is_new then
-    if actor.role<>'waiter' then raise exception 'Selecciona una comanda recibida para editarla.';end if;
-    if not exists(select 1 from public.app_users where id=account.assigned_waiter_id and role='waiter') then
+    if actor.role='waiter' and not exists(select 1 from public.app_users where id=account.assigned_waiter_id and role='waiter') then
       update public.table_sessions set assigned_waiter_id=actor.id,updated_at=now() where id=account.id;
     end if;
     if exists(select 1 from public.service_requests where id=p_comanda_id) then raise exception 'El identificador pertenece a otra solicitud.';end if;
@@ -253,7 +253,12 @@ begin
   end loop;
   update public.waiter_comandas set items=clean_items,notes=coalesce(p_notes,''),version=case when is_new then version else version+1 end,updated_at=now()
     where id=p_comanda_id returning * into c;
-  if c.accepted_at is not null then perform public.dp_apply_waiter_comanda(c.id,actor.id);end if;
+  -- Administration adds directly to the account. Waiter orders still require
+  -- explicit acceptance. Both paths apply the same stable line IDs atomically.
+  if c.accepted_at is not null or (is_new and can_manage) then
+    perform public.dp_apply_waiter_comanda(c.id,actor.id);
+    select * into c from public.waiter_comandas where id=p_comanda_id;
+  end if;
   select string_agg((value->>'quantity')||' × '||(value->>'name')||case when coalesce(value->>'notes','')<>'' then ' ('||(value->>'notes')||')' else '' end,'; ')
     into detail from jsonb_array_elements(clean_items);
   detail:=coalesce(detail,'Comanda retirada.');if coalesce(p_notes,'')<>'' then detail:=detail||E'\nNotas: '||p_notes;end if;
@@ -263,6 +268,10 @@ begin
     on conflict(id) do update set message=excluded.message,updated_at=now(),
       status=case when jsonb_array_length(clean_items)=0 then 'resolved' when c.accepted_at is not null then 'acknowledged' else 'pending' end;
   if jsonb_array_length(clean_items)=0 then update public.service_requests set status='resolved' where id=p_comanda_id;end if;
+  if c.accepted_at is not null and jsonb_array_length(clean_items)>0 then
+    update public.service_requests set status='acknowledged',acknowledged_at=coalesce(acknowledged_at,now()),
+      acknowledged_by_user_id=coalesce(acknowledged_by_user_id,actor.id) where id=p_comanda_id;
+  end if;
   result:=public.dp_waiter_comanda_result(c.id);
   insert into public.waiter_comanda_operations(id,actor_id,signature,result) values(p_operation_id,actor.id,fingerprint,result);
   return result||jsonb_build_object('duplicate',false);
