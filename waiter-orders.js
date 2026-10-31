@@ -204,7 +204,7 @@
     if(replacingLine||draft.managerMode&&$('#dw-catalog-dialog').open){replacingLine='';$('#dw-replace-banner')?.remove();$('#dw-catalog-dialog').close();review();}
     api().notify(editingLine?'Producto actualizado.':'Producto agregado al pedido.');
   }
-  function review(){if(!draft)return;renderReview();if(!$('#dw-review-dialog').open)$('#dw-review-dialog').showModal();}
+  function review(){if(!draft||!draft.items.length&&!draft.version&&!draft.pending)return;renderReview();if(!$('#dw-review-dialog').open)$('#dw-review-dialog').showModal();}
   function renderReview(){
     const locked=busy||!!draft.pending;
     $('#dw-review-body').innerHTML=`<header class="dw-dialog-head"><div><span class="eyebrow">${esc(tableLabel(operations().tables.find(t=>t.id===selectedTable)))}</span><h2 id="dw-review-title">${draft.version?'Editar comanda':'Revisar pedido'}</h2></div><button type="button" class="dw-close" data-dw-close aria-label="Cerrar">×</button></header>${draft.version?'<p class="dw-edit-notice">Los cambios actualizarán la misma comanda. No se enviará otra solicitud.</p>':''}<div class="dw-review-lines">${draft.items.map(item=>`<article><div><strong>${item.quantity} × ${esc(item.name)}</strong>${item.options.labels.map(label=>`<p>${esc(label)}</p>`).join('')}${item.notes?`<p class="dw-order-notes">${esc(item.notes)}</p>`:''}<small>${money(item.unit_price*item.quantity)}</small></div><div class="dw-line-actions"><button type="button" data-dw-edit-line="${esc(item.id)}" ${locked?'disabled':''}>Editar</button><button type="button" data-dw-replace-line="${esc(item.id)}" ${locked?'disabled':''}>Cambiar</button><button type="button" data-dw-remove-line="${esc(item.id)}" ${locked?'disabled':''}>Quitar</button></div></article>`).join('')||'<p class="dw-empty">Se retirarán todos los productos de esta comanda.</p>'}</div><label class="dw-notes-label">Notas para cocina <small>Opcional</small><textarea id="dw-order-notes" maxlength="500" placeholder="Indicaciones generales para este pedido…" ${locked?'disabled':''}>${esc(draft.notes)}</textarea></label><div class="dw-review-total"><span>Total de esta comanda</span><strong>${money(total(draft.items))}</strong></div><p id="dw-send-error" class="dw-error" role="alert">${draft.pending&&!busy?'Hay un envío pendiente de confirmar. Reintenta para comprobarlo sin duplicarlo.':''}</p><button class="dw-primary" type="button" id="dw-send-order" ${busy?'disabled':''}>${busy?'Guardando…':draft.pending?'Confirmar envío pendiente':draft.version?'Guardar cambios':'Enviar comanda'}</button>`;
@@ -450,7 +450,11 @@
   });
   $('#dw-review-dialog').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
   $('#dw-review-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!draft.pending&&!busy&&!$('#dw-product-dialog').open&&!$('#dw-catalog-dialog').open){draft=null;selectedTable='';}});
-  $('#dw-catalog-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){replacingLine='';review();}});
+  $('#dw-catalog-dialog').addEventListener('close',()=>{
+    if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){
+      persist();replacingLine='';draft=null;selectedTable='';
+    }
+  });
   function tick(){
     if(!allowed()||document.hidden)return;
     const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';sync();void loadCatalog();}
