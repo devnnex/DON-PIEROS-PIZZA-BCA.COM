@@ -9997,14 +9997,17 @@ const App = (() => {
         .subtitle, .center { text-align: center; }
         .subtitle { margin: 1mm 0 3mm; font-weight: 700; }
         .rule { margin: 2.5mm 0; border-top: 1px dashed #000; }
-        .meta, .totals { display: grid; grid-template-columns: 1fr auto; gap: 1mm 3mm; }
+        /* Keep values inside the printer's safe right edge, including PDF output. */
+        .meta, .totals { display: grid; gap: 1mm 3mm; }
         .items { display: grid; gap: 2mm; }
-        .item { display: grid; grid-template-columns: 1fr auto; gap: 2mm; }
+        .item { display: grid; gap: 2mm; }
         .item small { display: block; font-weight: 800; }
         strong { font-weight: 900; }
         .meta > *, .totals > *, .item > * { min-width: 0; overflow-wrap: anywhere; }
-        .totals strong, .item > strong { white-space: nowrap; }
-        .meta, .totals, .item { grid-template-columns: minmax(0, 1fr) max-content; }
+        .meta, .totals, .item { margin-right: 6mm; }
+        .meta { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
+        .totals, .item { grid-template-columns: minmax(0, 1fr) fit-content(65%); }
+        .totals > strong, .item > strong { text-align: right; white-space: normal; }
         @media print { body { margin: 0 auto; padding: 0; width: 72mm; color: #000 !important; font-weight: 800 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         .total { margin-top: 1.5mm; font-size: 16px; font-weight: 900; }
         .paid { padding: 1.5mm; border: 2px solid #000; text-align: center; font-weight: 900; }
