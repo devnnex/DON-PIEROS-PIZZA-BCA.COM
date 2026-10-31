@@ -5496,9 +5496,11 @@ body[data-page="client"] .client-queue-badge { gap: .65rem; margin-inline: 1rem;
 .client-actions-settings .tip-setting-status{display:block;margin-top:10px}
 @media(max-width:620px){.client-actions-settings{padding:16px}.client-actions-settings-grid{grid-template-columns:1fr}}
 button,a,[role="button"]{touch-action:manipulation}
+.reception-toolbar{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:16px 0}.reception-toolbar h2{margin:4px 0}.reception-toolbar label{display:grid;gap:6px;flex:1;min-width:150px}.reception-toolbar input,.reception-toolbar select{width:100%}.reception-filter-hidden{display:none!important}#individualSalesPanel{margin-top:22px;padding-top:18px;border-top:1px solid #e7dfc9}#individualSalesGrid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}.individual-sale-tile{height:auto!important;min-height:160px;gap:7px;padding:16px!important}.individual-sale-tile span{font-size:14px;overflow-wrap:anywhere}.individual-sale-tile em{position:static!important;font-size:11px!important;background:#fff3c4!important;color:#735000!important}#individualSaleActions[hidden],#individualCustomerField[hidden]{display:none!important}.individual-sale-actions{display:flex;gap:8px;flex-wrap:wrap}.payment-sale-lines button{min-height:32px;padding:5px 9px}.reception-toolbar input{min-width:180px}
 
 /* Editing starts with the selected product and fields, even on short screens. */
 #consumptionForm:not(.is-editing-consumption) .dp-packing-controls { display: none; }
+#consumptionMenuButton[hidden]{display:none!important}
 #consumptionDialog:has(.is-editing-consumption) { width: min(calc(100vw - 1.5rem), 900px); }
 #consumptionDialog .is-editing-consumption { display: flex; flex-direction: column; min-height: 0; height: auto; max-height: 94dvh; overflow-y: auto; }
 #consumptionDialog .is-editing-consumption .consumption-layout { display: block; overflow: visible; }

@@ -321,7 +321,9 @@
   }
   function renderReception(){
     if(waiter()||!allowed()){reception.hidden=true;return;}reception.hidden=false;
-    const visible=orders.filter(order=>order.items.length&&!isRemoved(order));
+    const board=window.DonPierosReceptionBoard;
+    const visible=orders.filter(order=>order.items.length&&!isRemoved(order)&&(!board||board.matches('table',order)));
+    if(board)visible.sort(board.compare);
     const signature=JSON.stringify(visible);if(signature===managerSignature)return;managerSignature=signature;
     reception.innerHTML=`<div class="section-head"><h3>Comandas de mesas <span class="dp-count">${visible.length}</span></h3></div>${visible.length?visible.map(order=>`<button type="button" class="dw-received-card" data-dw-open-comanda="${esc(order.id)}"><span><strong>${esc(tableLabel(order.table))}</strong><small>${esc(order.waiter_name)} · ${esc(window.DonPierosDates.dateTime(order.updated_at))}</small></span><b>${order.items.length?money(order.items.reduce((sum,item)=>sum+item.quantity*item.unit_price,0)):'Retirada'}</b><p>${esc(order.items.map(item=>`${item.quantity} × ${item.item_name}`).join(', '))}</p><span class="dw-received-status">${!order.items.length?'Retirada':!order.accepted_at?'Pendiente de aceptar':order.version>1?'Aceptada · Actualizada':'Aceptada'} <em>Ver comanda →</em></span></button>`).join(''):'<p class="dw-muted">Los pedidos tomados por meseros aparecerán aquí.</p>'}`;
     if(managerOpen&&$('#dw-kitchen-dialog').open)showKitchen(managerOpen);
@@ -481,5 +483,6 @@
     if(event.detail.state==='done'){void loadOrders(true);void api().refreshOperations();}
   });
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
+  window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});
   window.DonPierosWaiter={openTable,startTableOrder,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();

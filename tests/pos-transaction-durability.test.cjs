@@ -148,7 +148,7 @@ test('respuesta de cierre perdida y fallo al guardar su estado conservan la iden
     tx.objectStore = () => store;
     return tx;
   };
-  await assert.rejects(a.api.finish({ invoice, session: a.account, paid: 0, stage: 'prepared' }), /IndexedDB/);
+  await assert.rejects(a.api.finish({ invoice, session: a.account, paid: 0, stage: 'prepared' }), /No pudimos conservar el cobro/);
   db.transaction = transaction;
   const reload = harness(h.indexedDB, storage());
   await reload.api.hydrate('donpieros_checkout_intents_v1');

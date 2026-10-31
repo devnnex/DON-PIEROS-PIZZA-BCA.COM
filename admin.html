@@ -2,7 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="utf-8">
-    <meta name="app-version" content="20261031-v39">
+    <meta name="app-version" content="20261031-v40">
     <script defer src="./pwa-updates.js?v=1"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#050505" id="pwaThemeColor">
@@ -18,7 +18,7 @@
     <link rel="icon" href="./images/admin-icon-192.png?v=admin-v1" id="appFavicon" type="image/png" sizes="192x192">
     <link rel="apple-touch-icon" href="./images/admin-icon-512.png?v=admin-v1" id="appleTouchIcon" sizes="512x512">
     <script>
-      window.__APP_ASSET_VERSION__ = "donpieros-20261031-v39";
+      window.__APP_ASSET_VERSION__ = "donpieros-20261031-v40";
       document.write(`<link rel="stylesheet" href="style.css?v=${window.__APP_ASSET_VERSION__}-mobile-menu-v4">`);
     </script>
     <link rel="stylesheet" href="menu-cards.css?v=20261019-visual-details-v1">
@@ -30,7 +30,7 @@
     <script defer src="vendor/supabase.js"></script>
   <link rel="stylesheet" href="system-dialogs.css?v=1">
   <script defer src="system-dialogs.js?v=1"></script>
-  <link rel="stylesheet" href="online-admin.css?v=13">
+  <link rel="stylesheet" href="online-admin.css?v=14">
   <link rel="stylesheet" href="reception-notices.css?v=3">
   <link rel="stylesheet" href="waiter-orders.css?v=8">
   <script defer src="product-images.js?v=donpieros-photos-v1"></script>
@@ -115,9 +115,10 @@
         <article class="metric-card metric-open-balance"><div class="metric-label-row"><span>Abierto</span><button class="metric-balance-toggle" id="toggleOpenBalance" type="button" aria-label="Ocultar saldo abierto" aria-controls="metricSales" aria-pressed="false" title="Ocultar saldo abierto"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg></button></div><strong id="metricSales">$0</strong></article>
       </section>
 
+      <section class="panel" data-admin-section="dashboard"><div class="reception-toolbar"><div><span class="eyebrow">Organizar Inicio</span><h2>Recepción</h2></div><label>Buscar<input id="receptionSearch" type="search" placeholder="Cliente, pedido, mesa, producto…" autocomplete="off"></label><label>Mostrar<select id="receptionSource"><option value="all">Todo</option><option value="online">Pedidos en línea</option><option value="table">Comandas de mesa</option><option value="individual">Ventas individuales</option><option value="requests">Solicitudes</option></select></label><label>Estado<select id="receptionStage"><option value="all">Todos</option><option value="pending">Por atender / cobrar</option><option value="preparing">En preparación / aceptados</option><option value="ready">Listos</option></select></label><label>Orden<select id="receptionSort"><option value="oldest">Más antiguos primero</option><option value="newest">Más recientes primero</option></select></label><button class="ghost" id="receptionReset" type="button">Limpiar filtros</button></div></section>
       <section class="admin-grid" data-admin-section="dashboard">
         <div class="panel">
-          <div class="section-head">
+          <div class="section-head" id="requestsHeading">
             <div>
               <span class="eyebrow">Alarma</span>
               <h2>Solicitudes activas</h2>
@@ -150,6 +151,7 @@
             </label>
           </div>
           <div class="tables-grid" id="tablesGrid"></div>
+          <section id="individualSalesPanel" data-manager-only><div class="section-head"><div><h3>Ventas individuales pendientes <span id="individualSalesCount">0</span></h3><small>Guardadas en este equipo · sin ocupar mesas</small></div><button class="ghost" type="button" data-new-individual>Nueva venta</button></div><div id="individualSalesGrid" class="tables-grid compact-tables-grid"></div></section>
         </div>
       </section>
 
@@ -760,8 +762,10 @@
           <label><input type="radio" name="tip_choice" value="with"><span><i data-lucide="hand-coins"></i><strong id="paymentWithTipLabel">Con propina</strong><small id="paymentWithTipAmount">Propina voluntaria</small></span></label>
         </fieldset>
 
+        <label id="individualCustomerField" hidden>Cliente / referencia de esta venta<input name="individual_customer" type="text" maxlength="120" placeholder="Nombre del cliente o número del pedido"></label>
         <div class="payment-sale-lines" id="paymentSaleLines"></div>
         <button class="ghost payment-add-item" id="paymentAddItem" type="button" hidden><i data-lucide="plus"></i> Agregar otro producto</button>
+        <div class="individual-sale-actions" id="individualSaleActions" hidden><button class="primary" id="holdIndividualSale" type="button">Guardar para cobrar después</button><button class="ghost" id="printIndividualSale" type="button">Imprimir comanda</button><button class="ghost danger-text" id="discardIndividualSale" type="button">Descartar venta</button></div>
 
         <fieldset class="payment-methods">
           <legend>Forma de pago</legend>
@@ -962,12 +966,13 @@
     <script defer src="https://unpkg.com/lucide@latest"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
-    <script defer src="sales-shift.js?v=donpieros-20261031-v39"></script>
+    <script defer src="sales-shift.js?v=donpieros-20261031-v40"></script>
     <script defer src="menu-cards.js?v=donpieros-20261027-v9"></script>
     <script>document.write(`<script defer src="app.js?v=${window.__APP_ASSET_VERSION__}"><\/script>`);</script>
   <script defer src="pending-deletions.js?v=1"></script>
   <script defer src="reception-notices.js?v=3"></script>
-  <script defer src="online-admin.js?v=24"></script>
-  <script defer src="waiter-orders.js?v=15"></script>
+  <script defer src="online-admin.js?v=25"></script>
+  <script defer src="waiter-orders.js?v=16"></script>
+  <script defer src="reception-board.js?v=1"></script>
   </body>
 </html>

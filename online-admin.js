@@ -36,12 +36,12 @@
   function receptionFilters(scope){return `<div class="dp-reception-filters"><label class="dp-order-search"><span>Buscar pedido</span><input type="search" data-dp-search="${scope}" placeholder="Cliente, teléfono, producto, tamaño…" autocomplete="off" aria-label="Buscar pedidos por cualquier información"></label><label>Estado<select data-dp-filter="${scope}" ${scope==='list'?'id="dp-order-filter"':''}><option value="active">En cola</option><option value="all">Todos en recepción</option>${Object.entries(labels).filter(([value])=>value!=='despachada').map(([value,label])=>`<option value="${value}">${label}</option>`).join('')}</select></label></div>`;}
   function searchRows(scope,fallback){
     const {status,query}=searchState[scope],saved=searchCache.get(status);
-    return overlayOrders((query||status!=='active')&&saved?.revision===dashboardRevision?saved.rows:fallback).filter(order=>!deletions()?.hidden('web-order',order.id)&&order.status!=='despachada'
+    return overlayOrders((scope==='dashboard'||query||status!=='active')&&saved?.revision===dashboardRevision?saved.rows:fallback).filter(order=>!deletions()?.hidden('web-order',order.id)&&order.status!=='despachada'
       &&(status==='active'?['nueva','atendiendo','lista'].includes(order.status):status==='all'||order.status===status)&&matchesOrder(order,query));
   }
   async function ensureSearchRows(scope){
     const status=searchState[scope].status;
-    if(!searchState[scope].query&&status==='active')return;
+    if(!searchState[scope].query&&status==='active'&&(scope!=='dashboard'||dashboardOrders.length>=activeCount))return;
     if(searchCache.get(status)?.revision===dashboardRevision)return;
     if(searchJobs.has(status))return searchJobs.get(status);
     const epoch=searchEpoch,token=api()?.getToken();
@@ -292,8 +292,10 @@
     const root=$('#dp-dashboard-orders');
     if(!$('#dp-dashboard-order-list'))root.innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count"></span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${receptionFilters('dashboard')}<p id="dp-dashboard-result" class="dp-muted" role="status"></p><div id="dp-dashboard-order-list"></div>`;
     root.querySelector('.dp-count').textContent=count;
-    const source=searchRows('dashboard',rows),searching=!!searchState.dashboard.query||searchState.dashboard.status!=='active';
-    const visible=searching?source:source.slice(0,6);
+    const board=window.DonPierosReceptionBoard;
+    const source=searchRows('dashboard',rows).filter(order=>!board||board.matches('online',order)),searching=!!searchState.dashboard.query||searchState.dashboard.status!=='active';
+    if(board)source.sort(board.compare);
+    const visible=source;
     $('#dp-dashboard-result').textContent=searching?`${source.length} pedido${source.length===1?'':'s'} encontrado${source.length===1?'':'s'}${searchJobs.has(searchState.dashboard.status)?' · Buscando en los demás pedidos…':''}`:'';
     $('#dp-dashboard-order-list').innerHTML=visible.map(orderCard).join('')||'<p class="dp-muted">No hay pedidos que coincidan con esta búsqueda y estado.</p>';
   }
@@ -316,6 +318,21 @@
       </div>
       <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
+    if(['nueva','atendiendo','lista'].includes(order.status)){
+      $('#dp-order-detail .dp-order-actions').insertAdjacentHTML('afterbegin',`<label>Estado del pedido<select id="dp-change-order-stage">${[['nueva','Por atender'],['atendiendo','En preparación'],['lista','Listo']].map(([value,label])=>`<option value="${value}" ${order.status===value?'selected':''}>${label}</option>`).join('')}</select></label>`);
+      $('#dp-change-order-stage').onchange=event=>void mutateOrder(order,{...order,status:event.target.value},'dp_update_order',{status:event.target.value});
+    }
+    $('#dp-order-detail .dp-detail-lines').querySelectorAll('article').forEach((row,index)=>{
+      const line=order.items[index];
+      row.querySelector('div').insertAdjacentHTML('beforeend',`<p class="dp-line-price">${money(line.unitPrice)} c/u · Productos: ${money(Number(line.unitPrice)*Number(line.quantity))}${line.packagingUnitFee?`<br>Caja ${esc(line.packagingSize)}: ${money(line.packagingUnitFee)} c/u · ${money(Number(line.packagingUnitFee)*Number(line.quantity))} en cajas`:''}</p>`);
+    });
+    if(['boss','admin'].includes(api().getUser()?.role)&&['nueva','atendiendo','lista'].includes(order.status)){
+      $('#dp-order-detail .dp-detail-lines').insertAdjacentHTML('afterend',`<button class="ghost" type="button" id="dp-edit-prices">Editar precios y cajas</button><form id="dp-order-price-form" class="dp-price-editor" hidden><p>Precio del producto por unidad. La caja se suma por cada unidad.</p>${order.items.map((line,index)=>`<fieldset data-price-line="${index}"><legend>${Number(line.quantity)} × ${esc(line.name)}</legend><label>Precio por unidad<input name="price_${index}" type="number" required min="0" max="100000000" step="1" value="${Number(line.unitPrice)}"></label><label>Caja<select name="box_${index}"><option value="">Sin caja</option>${/pizza|pizzeta/.test(normalize(line.name))?Object.entries(window.DonPierosPackaging.sizes).map(([id,label])=>`<option value="${esc(label)}" ${Number(line.packagingUnitFee)>0&&line.packagingSize===label?'selected':''}>${esc(label)} · ${money(window.DonPierosPackaging.fee(id))}</option>`).join(''):''}</select></label></fieldset>`).join('')}<p role="alert" id="dp-price-error"></p><button class="primary" type="submit">Guardar precios y cajas</button> <button class="ghost" id="dp-cancel-prices" type="button">Cancelar edición</button></form>`);
+      const priceForm=$('#dp-order-price-form');
+      $('#dp-edit-prices').onclick=()=>{priceForm.hidden=false;$('#dp-edit-prices').hidden=true;};
+      $('#dp-cancel-prices').onclick=()=>{priceForm.hidden=true;$('#dp-edit-prices').hidden=false;};
+      priceForm.onsubmit=event=>{event.preventDefault();void saveOrderPrices(order,priceForm);};
+    }
     if($('#dp-charge-order'))$('#dp-charge-order').onclick=()=>void checkoutOrder(id);
     $('#dp-delete-order').onclick=()=>void deleteOrder(id);
     $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
@@ -326,6 +343,13 @@
     if(!dialog.open)dialog.showModal();
     window.DonPierosReception?.dismiss('order:'+id);
   }
+  window.addEventListener('donpieros-reception-filter',()=>{
+    const board=window.DonPierosReceptionBoard?.getState();if(!board)return;
+    searchState.dashboard.query=board.query;searchState.dashboard.status=({pending:'nueva',preparing:'atendiendo',ready:'lista'})[board.stage]||'active';
+    const search=document.querySelector('[data-dp-search="dashboard"]'),select=document.querySelector('[data-dp-filter="dashboard"]');if(search)search.value=board.query;if(select)select.value=searchState.dashboard.status;
+    if($('#dp-dashboard-order-list'))renderDashboard(dashboardOrders,activeCount);
+    if(canOrders())void ensureSearchRows('dashboard');
+  });
 
   async function checkoutOrder(id){
     const button=$('#dp-charge-order');if(button)button.disabled=true;
@@ -343,6 +367,23 @@
       }
       $('#dp-order-dialog').close();api().openWebOrderCheckout(order,fee);
     }catch(error){notify(String(error.message||error),true);}finally{if(button?.isConnected)button.disabled=false;}
+  }
+  async function saveOrderPrices(order,form){
+    if(orderWrites.get(order.id)?.pending)return;
+    const token=api().getToken(),lines=order.items.map((line,index)=>({productId:line.productId,unitPrice:Number(form.elements.namedItem('price_'+index).value),packagingSize:form.elements.namedItem('box_'+index).value}));
+    const buttons=[...$('#dp-order-dialog').querySelectorAll('button,input,select')];buttons.forEach(button=>button.disabled=true);
+    orderWrites.set(order.id,{before:order,after:order,pending:true});
+    try{
+      const result=await request('dp_edit_order',{id:order.id,version:order.version,lines});
+      if(token!==api().getToken())return;
+      if(!result.order)throw Error('No pudimos confirmar los cambios. Actualiza la comanda.');
+      orderEpoch++;orderWrites.set(order.id,{before:order,after:result.order,pending:false});
+      searchEpoch++;searchCache.clear();repaintOrders();openOrder(order.id);signal('order-updated');notify('Precios y cajas guardados.');void loadOrders(true);
+    }catch(error){
+      if(token!==api().getToken())return;
+      orderWrites.delete(order.id);buttons.forEach(button=>button.disabled=false);
+      $('#dp-price-error').textContent=friendly(error);void loadOrders(true);
+    }
   }
   window.addEventListener('don-pieros-web-order-paid',event=>{
     const id=event.detail?.id;if(!id)return;
@@ -376,7 +417,7 @@
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
-      ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3>${item.selections.length?`<ul class="options">${item.selections.map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}</section>`).join('')}
+      ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>Caja ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${item.selections.map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}</section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
       ${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>

@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.6.1-donpieros",
+  version: "3.7.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1782,12 +1782,13 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
   var user = validateSupabaseUser_(request.authToken);
-  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order'].indexOf(action)>=0) {
+  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
     if (action === 'dp_get_order') return Object.assign(dpGetOrder_(payload),{checkoutAvailable:true});
     if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
+    if (action === 'dp_edit_order') return dpEditOrder_(payload,user);
     return dpUpdateOrder_(payload,user);
   }
   requireSection_(user,'inventory');
@@ -2037,6 +2038,39 @@ function dpUpdateOrder_(payload,user) {
   });
   dpSignalOrder_('order-updated',payload.id);
   return result;
+}
+
+function dpEditOrder_(payload,user) {
+  requireManager_(user);
+  var result=dpWithLock_(function(){
+    recoverPendingSaleJournal_();
+    var found=dpWebSaleOrder_({webOrderId:dpText_(payload.id,100)}),order=found.order;
+    if(['nueva','atendiendo','lista'].indexOf(order.status)<0)throw new Error('Solo puedes editar pedidos pendientes de cobrar y entregar.');
+    if(!Array.isArray(payload.lines)||payload.lines.length!==order.items.length)throw new Error('Los productos del pedido cambiaron. Actualiza la comanda.');
+    var sizes={'':0,'Mini':2000,'Mediana':2000,'Pizzeta':2000,'Maxi':4000,'Super maxi':4000};
+    var items=order.items.map(function(item,index){
+      var edit=payload.lines[index]||{},price=Number(edit.unitPrice),size=String(edit.packagingSize||'');
+      if(!edit||edit.productId!==item.productId||typeof edit.unitPrice!=='number'||!Number.isSafeInteger(price)||price<0||price>100000000||!Object.prototype.hasOwnProperty.call(sizes,size))throw new Error('Revisa el precio y la caja de cada producto.');
+      if(size&&!/pizza|pizzeta/.test(normalizeSearch_(item.name)))throw new Error('Este producto no lleva caja de pizza.');
+      return Object.assign({},item,{unitPrice:price,packagingSize:size,packagingUnitFee:sizes[size]});
+    });
+    var unchanged=JSON.stringify(items)===JSON.stringify(order.items);
+    if(unchanged)return {ok:true,duplicate:true,order:order};
+    if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza antes de editar.');
+    var row=found.cells,headers=DP_TABLES.orders.headers;
+    var subtotal=items.reduce(function(sum,line){return sum+line.quantity*line.unitPrice;},0);
+    var boxes=items.reduce(function(sum,line){return sum+line.quantity*line.packagingUnitFee;},0);
+    row[headers.indexOf('itemsJson')]=JSON.stringify(items);
+    row[headers.indexOf('subtotal')]=subtotal;row[headers.indexOf('packagingFee')]=boxes;
+    row[headers.indexOf('total')]=subtotal+boxes+Number(order.deliveryFee||0);
+    row[headers.indexOf('updatedAt')]=new Date().toISOString();row[headers.indexOf('version')]=Number(order.version)+1;
+    row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);
+    try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}
+    finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+    appendAudit_('WEB_ORDER_PRICES',order.id,user.full_name,'OK','Precios y cajas actualizados');
+    return {ok:true,order:dpObjects_('orders',[row])[0]};
+  });
+  dpSignalOrder_('order-updated',payload.id);return result;
 }
 
 function dpGetOrder_(payload) {

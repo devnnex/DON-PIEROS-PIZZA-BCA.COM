@@ -2,7 +2,7 @@
 
 Pega únicamente el contenido completo de Code.gs en el proyecto nuevo de Apps Script. Ya incorpora el servicio original de caja y la extensión de menú/pedidos.
 
-Versión actual: **3.4.0-donpieros**. Incluye eliminación idempotente de pedidos web y aviso de recepción antes de responder al cliente. Para actualizar una instalación, reemplaza Code.gs y publica una nueva versión de la implementación existente, conservando su URL. Publica también los archivos web nuevos, incluido `pending-deletions.js`, y vuelve a ejecutar `supabase/install/07_COMANDAS_MESERO.sql` para separar la revisión de la comanda de su asignación a la mesa.
+Versión actual: **3.7.0-donpieros**. Agrega la edición de precios y cajas de pedidos web activos desde administración, con recálculo de totales, control de versiones y validación al cobrar. Para actualizar una instalación, reemplaza Code.gs y publica una nueva versión de la implementación existente, conservando su URL. Publica también los archivos web nuevos, incluido `reception-board.js`. Esta actualización no requiere SQL adicional si ya ejecutaste los archivos de instalación 01 a 07.
 
 Hoja: 1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E.
 
