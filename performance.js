@@ -15,7 +15,7 @@
   function remove(key,storage = sessionStorage) { try {storage.removeItem(namespace+key)}catch { /* Optional cache. */ } }
   window.DonPierosPerformance = Object.freeze({imageUrl,read,write,remove});
   if ('serviceWorker' in navigator) window.addEventListener('load',() => {
-    const register = () => { void navigator.serviceWorker.register('./service-worker.js').catch(() => {}); };
+    const register = () => { void navigator.serviceWorker.register('./service-worker.js',{scope:'./',updateViaCache:'none'}).then(registration=>registration.update()).catch(() => {}); };
     if ('requestIdleCallback' in window) requestIdleCallback(register,{timeout:3000}); else setTimeout(register,300);
   });
 })();

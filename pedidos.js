@@ -24,13 +24,17 @@
   let products = [], toppingCatalog = [], paymentMethods = [], neighborhoods = [], categories = ["Todo el menú"];
   const state = {
     category:'Todo el menú', query:'', active:null, selections:{}, quantity:1, editingKey:null,
-    cart:[], cartStep:'cart', fulfillment:'pickup', payment:'transferencia', selectedNeighborhood:null,
+    cart:[], cartStep:'cart', fulfillment:'pickup', payment:'', selectedNeighborhood:null,
     customer:{name:'',phone:'',address:'',neighborhood:'',notes:''}, orderTotal:0, realtime:null, orderSignal:null,
     sendingTimer:null,
     receipt:null, receiptBusy:false, receiptRevision:0, lastWhatsappUrl:'',
     availabilitySignature:''
   };
   const receptionReceipts=new Set(),receptionWaiters=new Map();
+  window.addEventListener('don-pieros-before-update',event=>{
+    if(['checkout','sending','recovery','success'].includes(state.cartStep)||state.receiptBusy
+      || !document.querySelector('#product-overlay')?.hidden)event.preventDefault();
+  });
   let favoriteIds;try{favoriteIds=new Set(JSON.parse(localStorage.getItem('don_pieros_favorites_v1')||'[]'));}catch(_){favoriteIds=new Set();}
   state.favoritesOnly=false;
   state.catalogReady = false;
@@ -240,7 +244,7 @@
       if (state.customer.neighborhood) setNeighborhood(state.customer.neighborhood);
       categories = ['Todo el menú', ...new Set(products.map(product => product.category))];
       if (!categories.includes(state.category)) state.category = 'Todo el menú';
-      if (!paymentMethods.some(method => method.id === state.payment)) state.payment = paymentMethods[0]?.id || '';
+      if (!paymentMethods.some(method => method.id === state.payment)) state.payment = '';
       renderCategories(); renderProducts();
       if (!$('#cart-overlay').hidden && ['cart','checkout'].includes(state.cartStep)) renderCart();
       showAvailabilityAlert();
@@ -537,7 +541,7 @@
       localStorage.removeItem('don_pieros_pending_order_v1');localStorage.removeItem('don_pieros_pending_order_id');
       state.customer.name=order.customerName;state.queuePosition = result.queuePosition; state.ordersAhead = result.ordersAhead; state.lastWhatsappUrl = whatsappUrl; state.lastOrderId = result.orderId; state.orderTotal = result.total; state.cartStep = 'success';
       if(cartFingerprint()===fingerprint)state.cart=[];
-      state.receipt=null;saveCart();renderCart();
+      state.payment='';state.receipt=null;saveCart();renderCart();
       clearTimeout(state.redirectTimer);
       state.redirectTimer=setTimeout(()=>{if(state.cartStep==='success'&&!$('#cart-overlay').hidden)openOrderWhatsApp(whatsappUrl);},4000);
     } catch (error) {

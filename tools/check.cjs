@@ -10,3 +10,9 @@ for(const file of ['index.html','admin.html','mesa.html']){
 }
 for(const file of ['manifest.webmanifest','cliente.webmanifest']){const manifest=JSON.parse(fs.readFileSync(path.join(root,file),'utf8'));for(const icon of manifest.icons)if(!fs.existsSync(path.resolve(root,icon.src.split('?')[0])))throw new Error('Falta icono '+icon.src);}
 console.log('Referencias HTML e iconos: OK');
+const release=JSON.parse(fs.readFileSync(path.join(root,'app-release.json'),'utf8'));
+for(const name of ['index.html','admin.html','mesa.html']){
+ const html=fs.readFileSync(path.join(root,name),'utf8');
+ if(!html.includes(`name="app-version" content="${release.version}"`))throw Error(name+': actualizar app-version junto con app-release.json');
+}
+console.log('Versión PWA: '+release.version);

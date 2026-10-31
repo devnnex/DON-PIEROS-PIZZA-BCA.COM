@@ -17,6 +17,7 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   }
   await page.locator('[data-product]').filter({hasText:'Pizza Don Pieros'}).click();await page.locator('.option').filter({hasText:/^Mediana/}).click();await page.locator('#add-product').click();
   await page.locator('#header-cart').click();await page.locator('#go-checkout').click();
+  assert.equal(await page.locator('[name=payment]:checked').count(),0,'El cliente debe elegir el pago');
   await page.locator('[name=fulfillment][value=delivery]').check({force:true});
   // Native radio inputs are visually hidden; changing via their label is also supported.
   await page.locator('#checkout-form [name=address]').waitFor();
@@ -30,6 +31,7 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
    await phone.fill(value);assert.equal(await field('phone').locator('.checkout-field-status').innerText(),'Obligatorio');await page.locator('#confirm-order').click();assert.equal(submissions,0);
   }
   await phone.fill('313 718 3666');assert.equal(await field('phone').locator('.checkout-field-status').innerText(),'✓ Correcto');
+  await page.locator('#confirm-order').click();assert.equal(submissions,0,'Un formulario completo exige elegir el pago');
   assert.equal(await phone.evaluate(el=>getComputedStyle(el).borderTopColor),'rgb(32, 131, 75)');
   for(const text of ['Efectivo','Transferencia Nequi','Bre-B'])assert.equal(await page.locator('.payment-grid label').filter({hasText:text}).count(),1);
   await page.locator('.payment-grid label').filter({hasText:'Transferencia Nequi'}).click();
@@ -38,6 +40,7 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   const geometry=await page.evaluate(()=>{const input=document.querySelector('[name=neighborhood]').getBoundingClientRect(),help=document.querySelector('#neighborhood-help').getBoundingClientRect();return {inputBottom:input.bottom,helpTop:help.top,overflows:document.documentElement.scrollWidth>innerWidth};});
   assert.ok(geometry.helpTop>=geometry.inputBottom,JSON.stringify(geometry));assert.equal(geometry.overflows,false);
   const colors=await page.evaluate(()=>['.summary-packaging','.summary-delivery-pending','.summary .total'].map(s=>getComputedStyle(document.querySelector(s)).color));assert.equal(new Set(colors).size,3);
+  for(const selector of ['.summary-packaging','.summary-delivery-pending'])assert.equal(await page.locator(selector).evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
   await field('neighborhood').locator('input').fill('Barrio conocido');assert.equal(await page.locator('.summary-delivery-pending').count(),0);assert.match(await page.locator('#checkout-delivery-fee').innerText(),/6.000/);
   await field('neighborhood').locator('input').fill('Barrio nuevo');assert.equal(await page.locator('.summary-delivery-pending').count(),1);
   await field('neighborhood').scrollIntoViewIfNeeded();fs.mkdirSync('artifacts',{recursive:true});await page.screenshot({path:'artifacts/checkout-campos-movil.png'});
@@ -45,8 +48,13 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   assert.equal(await page.evaluate(()=>document.querySelector('#neighborhood-help').getBoundingClientRect().top>=document.querySelector('[name=neighborhood]').getBoundingClientRect().bottom),true);
   await page.locator('#confirm-order').click();await page.locator('.success-celebration').waitFor();assert.equal(submissions,1);
   const saved=h.call('dp_get_orders').orders[0];assert.equal(saved.phone,'3137183666');assert.equal(saved.paymentMethod,'Transferencia Nequi');assert.equal(saved.deliveryFeePending,true);assert.equal(saved.packagingFee,2000);
+  assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('don-pieros-cart-v2'))),[],'El pedido confirmado limpia el carrito guardado');
+  assert.equal(await page.locator('#header-cart .cart-count').innerText(),'0');
   const whatsapp=new URL(await page.locator('.success-celebration .dp-whatsapp').getAttribute('href'));
   assert.ok(['573138367511','573185536604'].includes(whatsapp.searchParams.get('phone')));assert.ok(whatsapp.searchParams.get('text').includes(saved.id));
+  await page.locator('#finish-order').click();await page.locator('#header-cart').click();await page.locator('.cart-empty').waitFor();
+  await page.locator('#cart-back').click();await page.locator('[data-product]').filter({hasText:'Pizza Don Pieros'}).click();await page.locator('.option').filter({hasText:/^Mediana/}).click();await page.locator('#add-product').click();
+  await page.locator('#header-cart').click();await page.locator('#go-checkout').click();assert.equal(await page.locator('[name=payment]:checked').count(),0,'El siguiente pedido tampoco reutiliza el método anterior');
   assert.deepEqual(errors,[]);console.log('OK: móvil 390/320 px, barrio bajo input, obligatorios/correctos, teléfono válido, Nequi/Bre-B, colores y pedido real local.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

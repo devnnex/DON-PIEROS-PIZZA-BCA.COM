@@ -1,5 +1,5 @@
 const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v3";
-const APP_ASSET_CACHE = "don-pieros-assets-20261030-v32";
+const APP_ASSET_CACHE = "don-pieros-assets-20261030-v33";
 const DYNAMIC_PWA_ASSETS = new Set([
   "pwa-manifest.webmanifest",
   "pwa-icon-192.png",
@@ -24,8 +24,17 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
   if (url.origin === self.location.origin && event.request.mode === "navigate") {
+    const pageKey = new URL(url);
+    pageKey.searchParams.delete('__fresh');pageKey.searchParams.delete('__app_update');
     url.searchParams.set("__fresh", Date.now().toString(36));
-    event.respondWith(fetch(url.href, { cache: "no-store", credentials: "same-origin" }));
+    event.respondWith((async()=>{
+      const cache=await caches.open(APP_ASSET_CACHE);
+      try {
+        const response=await fetch(url.href,{cache:'no-store',credentials:'same-origin'});
+        if(response.ok)event.waitUntil(cache.put(pageKey.href,response.clone()).catch(()=>{}));
+        return response;
+      }catch(error){const saved=await cache.match(pageKey.href);if(saved)return saved;throw error;}
+    })());
     return;
   }
   const isCurrentAppAsset = url.origin === self.location.origin
@@ -42,7 +51,7 @@ self.addEventListener("fetch", (event) => {
       const cache = await caches.open(APP_ASSET_CACHE).catch(() => null);
       const cached = await cache?.match(event.request).catch(() => null);
       if (cached) return cached;
-      const response = await fetch(event.request);
+      const response = await fetch(event.request, { cache: "no-cache" });
       if (response.ok && cache) event.waitUntil(cache.put(event.request, response.clone()).catch(() => undefined));
       return response;
     })());

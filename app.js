@@ -13767,6 +13767,10 @@ const App = (() => {
     openWebOrderCheckout,
     getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
     notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
+  window.addEventListener('don-pieros-before-update', event => {
+    if (state.paymentProcessing || checkoutSubmissionBusy || checkoutRecoveryBusy
+      || state.appsScriptOutboxBusy || state.consumptionDrafts?.length) event.preventDefault();
+  });
   return { init };
 })();
 

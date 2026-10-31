@@ -7,8 +7,8 @@
 #checkout-form .is-complete .checkout-field-status{color:#166534;background:#dcfce7}
 #checkout-form .checkout-choice>legend{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;width:100%}
 #checkout-form .checkout-choice.is-complete input:checked+span{border-color:#20834b;background:#f0fdf4}
-.cart-sheet .summary>.summary-packaging{color:#1e40af;background:#eff6ff;border-radius:10px;padding:10px 12px;gap:12px}
-.cart-sheet .summary>.summary-delivery-pending{color:#92400e;background:#fff4d6;border-radius:10px;padding:10px 12px;gap:12px}
+.cart-sheet .summary>.summary-packaging{color:#1e40af;gap:12px}
+.cart-sheet .summary>.summary-delivery-pending{color:#92400e;gap:12px}
 .cart-sheet .summary>:is(.summary-packaging,.summary-delivery-pending)>:last-child{font-weight:800}
 .store-details .store-whatsapp{flex-wrap:wrap;gap:5px}
 .store-whatsapp a{color:inherit;font-weight:750;text-underline-offset:3px;white-space:nowrap}
