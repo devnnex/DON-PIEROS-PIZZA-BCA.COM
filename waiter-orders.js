@@ -221,6 +221,7 @@
     finally{busy=false;}
   }
   async function editConsumptionLine(sessionId,itemId){
+    if(api().editTableConsumption){api().editTableConsumption(sessionId,itemId);return;}
     const session=operations().sessions.find(row=>row.id===sessionId),item=session?.session_items?.find(row=>row.id===itemId&&row.status!=='cancelled');if(!allowed()||!session||!item||busy)return;
     if(item.waiter_comanda_id){
       if(!orders.some(order=>order.id===item.waiter_comanda_id))await loadOrders();
@@ -230,6 +231,25 @@
     if(draft?.pending||draft?.items.length){review();return api().notify('Termina la selección actual antes de editar otro consumo.','error');}
     selectedTable=session.table_id;draft={items:[{id:item.id,product_id:crypto.randomUUID(),name:item.item_name,quantity:Number(item.quantity),unit_price:Number(item.unit_price),notes:item.notes||'',options:{custom:true,labels:[],selectionIds:{}}}],legacy:{sessionId,itemId}};
     showProduct('custom',item.id);
+  }
+  async function updateConsumedLine(sessionId,itemId,changes){
+    if(!allowed()||busy)throw Error('Espera a que termine el cambio actual antes de guardar.');
+    const session=operations().sessions.find(row=>row.id===sessionId&&row.status==='open');
+    const consumed=session?.session_items?.find(row=>row.id===itemId&&row.status!=='cancelled');
+    if(!consumed?.waiter_comanda_id)throw Error('Este consumo ya no está disponible. Actualiza la cuenta.');
+    if(!orders.some(order=>order.id===consumed.waiter_comanda_id))await loadOrders();
+    const order=orders.find(row=>row.id===consumed.waiter_comanda_id);
+    if(!order||!order.items.some(item=>item.id===itemId))throw Error('No puedes editar esta comanda o la cuenta ya terminó.');
+    const items=order.items.map(item=>({id:item.id,product_id:item.web_product_id,name:item.item_name,quantity:Number(item.quantity),unit_price:Number(item.unit_price),options:clone(item.waiter_options||{labels:[],selectionIds:{}}),notes:item.waiter_line_notes||''}));
+    const edited=items.find(item=>item.id===itemId);
+    Object.assign(edited,{name:changes.name,quantity:changes.quantity,unit_price:changes.unitPrice,notes:changes.notes});
+    edited.options.manualUnitPrice=changes.unitPrice;
+    const currentToken=api().getToken();
+    const {data,error}=await rpc('dp_save_waiter_comanda',{p_operation_id:crypto.randomUUID(),p_comanda_id:order.id,p_table_id:order.table_id,p_session_id:sessionId,p_expected_version:order.version,p_items:items,p_notes:order.notes||''});
+    if(error||!data?.comanda){void loadOrders(true);throw Error(errorText(error||Error('No pudimos confirmar el cambio. Intenta de nuevo.')));}
+    if(currentToken!==api().getToken())throw Error('La sesión cambió. Vuelve a abrir la cuenta.');
+    rememberResult(data);api().applyWaiterResult(data);renderAccount();void loadOrders();
+    return data.session.session_items.find(item=>item.id===itemId);
   }
   function rememberResult(data){
     const previous=orders.find(order=>order.id===data.comanda.id)||{};
@@ -437,5 +457,5 @@
     managerSignature='';homeSignature='';renderReception();renderAccount();if(waiter())renderHome();
     if(event.detail.state==='done'){void loadOrders(true);void api().refreshOperations();}
   });
-  window.DonPierosWaiter={openTable,startTableOrder,editConsumptionLine,sync,editComanda,openRequest,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
+  window.DonPierosWaiter={openTable,startTableOrder,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();

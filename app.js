@@ -7017,6 +7017,13 @@ const App = (() => {
     const combobox = $("#consumptionProductCombobox");
     const hint = $("#consumptionProductHint");
     if (!options || !combobox) return;
+    if ($("#consumptionForm")?.dataset.tableMenu === "1") {
+      options.innerHTML = ""; state.productPickerMatches = []; delete combobox.dataset.renderSignature;
+      if (hint) hint.textContent = $("#consumptionForm").session_item_id.value
+        ? "Edita los datos de este consumo y guarda los cambios."
+        : "Usa Agregar producto de la carta para elegir del menú o agregar Otro producto.";
+      return;
+    }
     const products = matchingProducts(searchValue).slice(0, 30);
     const previousId = combobox.dataset.activeProduct || "";
     const signature = JSON.stringify([searchValue, products.map(item => [item.id,item.name,item.price,inventoryFor(item)])]);
@@ -7051,6 +7058,7 @@ const App = (() => {
   };
 
   const showConsumptionProductOptions = () => {
+    if ($("#consumptionForm")?.dataset.tableMenu === "1") return;
     const options = $("#consumptionProductOptions");
     const combobox = $("#consumptionProductCombobox");
     const input = $("#consumptionProductSearch");
@@ -10008,6 +10016,7 @@ const App = (() => {
         .meta { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
         .totals, .item { grid-template-columns: minmax(0, 1fr) fit-content(65%); }
         .totals > strong, .item > strong { text-align: right; white-space: normal; }
+        .meta > strong, .totals > strong, .item > strong { position: relative; left: -6px; }
         @media print { body { margin: 0 auto; padding: 0; width: 72mm; color: #000 !important; font-weight: 800 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
         .total { margin-top: 1.5mm; font-size: 16px; font-weight: 900; }
         .paid { padding: 1.5mm; border: 2px solid #000; text-align: center; font-weight: 900; }
@@ -10852,12 +10861,13 @@ const App = (() => {
   const applyConsumptionRoleRestrictions = (form) => {
     if (!form) return;
     const waiter = isWaiter();
-    [form.item_name, form.unit_price].forEach((field) => {
+    [form.item_name].forEach((field) => {
       if (!field) return;
       field.readOnly = waiter;
       field.setAttribute("aria-readonly", String(waiter));
       field.title = waiter ? "Solo un administrador puede cambiar este dato." : "";
     });
+    if (form.unit_price) { form.unit_price.readOnly = false; form.unit_price.setAttribute("aria-readonly", "false"); form.unit_price.title = ""; }
   };
 
   const setTableConsumptionPreviewVisible = (visible) => {
@@ -10906,7 +10916,7 @@ const App = (() => {
     const previewWasVisible = $("#consumptionDialog")?.open && !preview.hidden;
     preview.hidden = quickCheckout || (window.matchMedia("(max-width: 640px)").matches && !previewWasVisible);
     $("#consumptionLayout")?.classList.toggle("without-consumption-preview", quickCheckout);
-    preview.innerHTML = `<div class="table-consumption-preview-head"><span class="table-consumption-preview-title"><span>Consumo actual</span><small>${productCount.toLocaleString("es-CO")} ${productCount === 1 ? "producto" : "productos"}</small></span><strong>${money(session ? sessionTotal(session) : 0)}</strong></div><div class="table-consumption-preview-lines">${items.map((item) => { const formatted = formatConsumptionTimestamp(item.created_at); return `<button class="table-consumption-edit" type="button" data-consumption-item="${escapeHTML(item.id)}" data-edit-consumption="${escapeHTML(item.id)}" data-session-id="${escapeHTML(session.id)}" aria-label="Editar ${escapeHTML(item.item_name)}" aria-pressed="${$("#consumptionForm")?.session_item_id.value === item.id}"><span class="table-consumption-item"><span>${Number(item.quantity || 0)} × ${escapeHTML(item.item_name)}</span>${formatted ? `<time datetime="${escapeHTML(item.created_at)}">${escapeHTML(formatted)}</time>` : ""}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong></button>`; }).join("") || "<small>Sin consumos registrados.</small>"}</div>`;
+    preview.innerHTML = `<div class="table-consumption-preview-head"><span class="table-consumption-preview-title"><span>Consumo actual</span><small>${productCount.toLocaleString("es-CO")} ${productCount === 1 ? "producto" : "productos"}</small></span><strong>${money(session ? sessionTotal(session) : 0)}</strong></div><div class="table-consumption-preview-lines">${items.map((item) => { const formatted = formatConsumptionTimestamp(item.created_at); return `<button class="table-consumption-edit" type="button" data-consumption-item="${escapeHTML(item.id)}" data-edit-current-consumption="${escapeHTML(item.id)}" data-session-id="${escapeHTML(session.id)}" aria-label="Editar ${escapeHTML(item.item_name)}" aria-pressed="${$("#consumptionForm")?.session_item_id.value === item.id}"><span class="table-consumption-item"><span>${Number(item.quantity || 0)} × ${escapeHTML(item.item_name)}</span>${formatted ? `<time datetime="${escapeHTML(item.created_at)}">${escapeHTML(formatted)}</time>` : ""}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong></button>`; }).join("") || "<small>Sin consumos registrados.</small>"}</div>`;
     if (session) preview.innerHTML += abonoRowsHtml(session) + (sessionPaid(session) ? `<div class="account-abono-summary">Saldo pendiente: ${money(sessionBalance(session))}</div>` : "");
     if (!quickCheckout) setTableConsumptionPreviewVisible(Boolean(previewWasVisible));
   };
@@ -11119,7 +11129,15 @@ const App = (() => {
 
   const confirmConsumptionSelection = async (form) => {
     if (form.dataset.localSubmitInProgress === "1") return null;
-    if (form.session_item_id.value) return addManualConsumption(form);
+    if (form.session_item_id.value) {
+      const keepOpen = Boolean(state.sessions.find(row=>row.id===form.session_id.value)?.table_id && $("#consumptionDialog")?.open);
+      form.dataset.localSubmitInProgress = "1"; form.inert = true;
+      try {
+        const result = await addManualConsumption(form, { keepOpen, openPaymentAfter: false });
+        if (result && keepOpen) { openConsumptionDialog(result.sessionId); setTableConsumptionPreviewVisible(true); }
+        return result;
+      } finally { form.inert = false; delete form.dataset.localSubmitInProgress; }
+    }
     const hasPendingEntry = Boolean(form.menu_item_id.value || form.item_name.value.trim() || form.quantity.value || $("#consumptionProductSearch")?.value.trim());
     const pendingEntry = currentConsumptionDraft(form, { quiet: true });
     if (hasPendingEntry && !pendingEntry) { currentConsumptionDraft(form); return null; }
@@ -11217,12 +11235,6 @@ const App = (() => {
   };
 
   const openConsumptionDialog = (sessionId = "", { pendingTableId = "", quickCheckout = false } = {}) => {
-    const tableSession = state.sessions.find((entry) => entry.id === sessionId);
-    const tableId = pendingTableId || tableSession?.table_id;
-    if (tableId && window.DonPierosWaiter?.startTableOrder) {
-      void window.DonPierosWaiter.startTableOrder(tableId);
-      return;
-    }
     const dialog = $("#consumptionDialog");
     const form = $("#consumptionForm");
     if (!dialog || !form) return;
@@ -11232,6 +11244,7 @@ const App = (() => {
     form.pending_table_id.value = pendingTableId;
     form.quick_checkout.value = quickCheckout ? "1" : "0";
     form.quantity.required = true;
+    form.quantity.max = "100";
     applyConsumptionRoleRestrictions(form);
     state.consumptionDrafts = [];
     state.consumptionDraftEditIndex = -1;
@@ -11244,6 +11257,10 @@ const App = (() => {
     const optionalFields = $("#consumptionOptionalFields");
     if (optionalFields) optionalFields.open = false;
     const table = state.tables.find((entry) => String(entry.id) === String(pendingTableId || session?.table_id));
+    form.dataset.tableMenu = table ? "1" : "0";
+    if (productSearch) productSearch.readOnly = Boolean(table);
+    if ($("#consumptionMenuButton")) $("#consumptionMenuButton").hidden = !table;
+    if (table) renderConsumptionProductOptions("");
     if ($("#consumptionEyebrow")) $("#consumptionEyebrow").textContent = quickCheckout ? "Venta individual" : "Consumo";
     if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = quickCheckout ? "Agregar producto y cobrar" : `Agregar a ${table ? tableLabel(table) : "la cuenta"}`;
     const submitLabel = $("#consumptionSubmitButton span");
@@ -11284,20 +11301,19 @@ const App = (() => {
     const form = $("#consumptionForm");
     const dialog = $("#consumptionDialog");
     if (!session || !item || item.status === "cancelled" || !form || !dialog || form.dataset.localSubmitInProgress === "1") return;
-    const keepPreview = dialog.open && !$("#tableConsumptionPreview")?.hidden && form.session_id.value === session.id;
+    const keepPreview = Boolean(session.table_id) || dialog.open && !$("#tableConsumptionPreview")?.hidden && form.session_id.value === session.id;
     if (keepPreview && state.consumptionDrafts.length) {
       toast("Confirma o elimina la seleccion pendiente antes de editar un consumo.", "error", "pending-items-before-edit");
       return;
-    }
-    if (session.table_id && window.DonPierosWaiter?.editConsumptionLine) {
-      dialog.close();void window.DonPierosWaiter.editConsumptionLine(session.id,item.id);return;
     }
     form.reset();
     form.session_id.value = session.id;
     form.session_item_id.value = item.id;
     form.pending_table_id.value = "";
     form.quick_checkout.value = "0";
+    form.dataset.tableMenu = session.table_id ? "1" : "0";
     form.quantity.required = true;
+    form.quantity.max = item.waiter_comanda_id ? "99" : "100";
     applyConsumptionRoleRestrictions(form);
     state.consumptionDrafts = [];
     state.consumptionDraftEditIndex = -1;
@@ -11315,15 +11331,18 @@ const App = (() => {
     form.quantity.value = item.quantity || 1;
     const packing=globalThis.DonPierosPackaging?.restore(form,item.notes,item.unit_price);
     setCurrencyInputValue(form.unit_price, packing?.price ?? item.unit_price ?? 0);
-    form.notes.value = packing?.notes ?? item.notes ?? "";
+    form.notes.value = item.waiter_comanda_id ? String(item.waiter_line_notes || "") : packing?.notes ?? item.notes ?? "";
     const optionalFields = $("#consumptionOptionalFields");
     if (optionalFields) optionalFields.open = true;
     const product = state.items.find((entry) => entry.id === item.menu_item_id);
     const productSearch = $("#consumptionProductSearch");
+    if (productSearch) productSearch.readOnly = Boolean(session.table_id);
+    if ($("#consumptionMenuButton")) $("#consumptionMenuButton").hidden = true;
     if (productSearch) productSearch.value = product ? `${inventoryFor(product).code} · ${product.name}` : item.item_name || "";
     renderConsumptionProductOptions(product?.name || item.item_name || "");
     closeConsumptionProductOptions();
     if (keepPreview) renderTableConsumptionPreview(session);
+    if (session.table_id) setTableConsumptionPreviewVisible(true);
     if ($("#tableSessionActions")) $("#tableSessionActions").hidden = true;
     if (!dialog.open) dialog.showModal();
     void refreshConsumptionInventory();
@@ -11424,6 +11443,14 @@ const App = (() => {
     if (session && itemId && !consumptionChangeAllowed(session, itemId, { quantity, unit_price: price, status: "served" })) {
       toast("No puedes reducir este consumo por debajo de los abonos registrados.", "error", "consumption-below-payments");
       return;
+    }
+    if (previousLine?.waiter_comanda_id && window.DonPierosWaiter?.updateConsumedLine) {
+      try {
+        const saved = await window.DonPierosWaiter.updateConsumedLine(sessionId, itemId, { name, quantity, unitPrice: price, notes: form.notes.value.trim() });
+        if (!keepOpen) $("#consumptionDialog")?.close();
+        if (!silent) toast("Consumo actualizado.", "ok", `consumption-saved:${itemId}`);
+        return { sessionId, item: saved };
+      } catch (error) { toast(String(error.message || error), "error", `consumption-edit-failed:${itemId}`); return null; }
     }
     if (!session && !pendingTableId) return;
     if (!session && pendingTableId) {
@@ -12253,6 +12280,17 @@ const App = (() => {
       else queueConsumptionDraft();
     });
     $("#consumptionQueueButton")?.addEventListener("click", queueConsumptionDraft);
+    $("#consumptionMenuButton")?.addEventListener("click", () => {
+      const form = $("#consumptionForm"), session = state.sessions.find(row=>row.id===form.session_id.value);
+      const tableId = form.pending_table_id.value || session?.table_id;
+      if (tableId) void window.DonPierosWaiter?.startTableOrder(tableId);
+    });
+    const editCurrentConsumption = (event) => {
+      const row = event.target.closest("[data-edit-current-consumption]");
+      if (row) { event.preventDefault(); editConsumption(row.dataset.sessionId, row.dataset.editCurrentConsumption); }
+    };
+    $("#tableConsumptionPreview")?.addEventListener("dblclick", editCurrentConsumption);
+    $("#tableConsumptionPreview")?.addEventListener("keydown", event => { if (event.key === "Enter") editCurrentConsumption(event); });
     $("#consumptionSelectionLines")?.addEventListener("dblclick", (event) => {
       const price = event.target.closest("[data-edit-consumption-price]");
       if (price) {
@@ -13758,6 +13796,10 @@ const App = (() => {
     const session = {...result.session, restaurant_tables:state.tables.find(table=>table.id===result.session.table_id)};
     state.sessions = [session,...state.sessions.filter(entry=>entry.id!==session.id)];
     state.optimisticSessionStates.set(session.id,{mode:"upsert",session,expectedItems:session.session_items});
+    const consumptionForm = $("#consumptionForm");
+    if ($("#consumptionDialog")?.open && consumptionForm?.pending_table_id.value === session.table_id) {
+      consumptionForm.session_id.value = session.id; consumptionForm.pending_table_id.value = "";
+    }
     if (result.request) receiveAdminRequests([result.request]);
     renderAdminLive();notifyAdminPeers({operational:true});void refreshAdminNow();
   };
@@ -13774,6 +13816,7 @@ const App = (() => {
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
     openWebOrderCheckout,
+    editTableConsumption: editConsumption,
     saveLegacyTableLine: async (sessionId,itemId,line) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
       const item=session?.session_items?.find(row=>row.id===itemId&&row.status!=='cancelled');
@@ -13789,7 +13832,8 @@ const App = (() => {
     },
     openTableAccount: (tableId) => {
       const session = state.sessions.find((entry) => entry.table_id === tableId && entry.status === "open");
-      if (session) openAccountDetailDialog(session.id);
+      if (session && $("#consumptionDialog")?.open) { renderTableConsumptionPreview(session); setTableConsumptionPreviewVisible(true); }
+      else if (session) openAccountDetailDialog(session.id);
       else toast("Esta mesa todavía no tiene consumos.", "ok", "table-without-consumption");
     },
     getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,

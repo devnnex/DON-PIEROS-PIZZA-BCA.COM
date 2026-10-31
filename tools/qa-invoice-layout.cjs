@@ -75,11 +75,13 @@ cases.push({...cases[1],id:'precuenta',invoice:null});
      }
     }
     const rightCells=[...document.querySelectorAll('.meta>strong,.totals>strong,.item>strong')];
-    return {height,data:pdf.output('datauristring'),failures,values:rightCells.map(cell=>cell.textContent),rightEdge:Math.max(...rightCells.map(cell=>cell.getBoundingClientRect().right))/mm,metaStart:document.querySelector('.meta>strong').getBoundingClientRect().left/mm};
+    return {height,data:pdf.output('datauristring'),failures,shifts:rightCells.map(cell=>parseFloat(getComputedStyle(cell).left)),leftColumn:parseFloat(getComputedStyle(document.querySelector('.meta>span')).left)||0,values:rightCells.map(cell=>cell.textContent),rightEdge:Math.max(...rightCells.map(cell=>cell.getBoundingClientRect().right))/mm,metaStart:document.querySelector('.meta>strong').getBoundingClientRect().left/mm};
    },width);
    const label=fixture.id+'-'+width+'mm';
    assert.deepEqual(result.failures,[],label);
-   assert.ok(result.rightEdge<=width-8+.2,label+': reserva 8 mm hasta el borde derecho del papel');
+   assert.ok(result.rightEdge<=width-8-6*25.4/96+.2,label+': valores otros 6 px a la izquierda');
+   assert.ok(result.shifts.every(shift=>shift===-6),label+': toda la columna de valores se desplaza 6 px');
+   assert.equal(result.leftColumn,0,label+': etiquetas conservan su posición');
    assert.ok(result.metaStart<width/2,label+': los datos comienzan en la mitad izquierda');
    const format=value=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(value);
    const totals=(fixture.invoice||fixture.session).totals;

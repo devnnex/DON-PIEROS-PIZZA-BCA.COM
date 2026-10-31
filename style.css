@@ -248,6 +248,8 @@ body[data-user-role="waiter"] #consumptionOptionalFields,
 body[data-user-role="waiter"] #tableSessionActions,
 body[data-user-role="waiter"] #tableConsumptionPreview,
 body[data-user-role="waiter"] .sound-box { display: none !important; }
+body[data-user-role="waiter"] #consumptionForm[data-table-menu="1"] #consumptionOptionalFields,
+body[data-user-role="waiter"] #consumptionForm[data-table-menu="1"] #tableConsumptionPreview:not([hidden]) { display: block !important; }
 body[data-user-role="waiter"] .service-sales-layout { grid-template-columns: minmax(0, 1fr); }
 
 .qr-camera {

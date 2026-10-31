@@ -2,7 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="utf-8">
-    <meta name="app-version" content="20261030-v35">
+    <meta name="app-version" content="20261030-v36">
     <script defer src="./pwa-updates.js?v=1"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#050505" id="pwaThemeColor">
@@ -18,7 +18,7 @@
     <link rel="icon" href="./images/admin-icon-192.png?v=admin-v1" id="appFavicon" type="image/png" sizes="192x192">
     <link rel="apple-touch-icon" href="./images/admin-icon-512.png?v=admin-v1" id="appleTouchIcon" sizes="512x512">
     <script>
-      window.__APP_ASSET_VERSION__ = "donpieros-20261030-v35";
+      window.__APP_ASSET_VERSION__ = "donpieros-20261030-v36";
       document.write(`<link rel="stylesheet" href="style.css?v=${window.__APP_ASSET_VERSION__}-mobile-menu-v4">`);
     </script>
     <link rel="stylesheet" href="menu-cards.css?v=20261019-visual-details-v1">
@@ -660,6 +660,7 @@
             <!-- [html-validate-disable-next prefer-native-element] -->
             <div class="product-combobox-options" id="consumptionProductOptions" role="listbox" hidden></div>
           </div>
+          <button class="primary" id="consumptionMenuButton" type="button" hidden>＋ Agregar producto de la carta</button>
           <small id="consumptionProductHint">Selecciona un producto del inventario o escribe un consumo personalizado.</small>
         </div>
         <label class="consumption-quantity">Cantidad
@@ -670,7 +671,7 @@
           <div class="consumption-optional-grid">
             <label class="consumption-admin-field">Nombre personalizado<input name="item_name" type="text" placeholder="Solo si no eliges un producto"></label>
             <label>Quién paga<input name="payer_name" type="text" placeholder="Responsable de la cuenta"></label>
-            <label class="consumption-admin-field">Precio manual<input name="unit_price" type="text" value="$0" inputmode="numeric" autocomplete="off" data-currency-input></label>
+            <label>Precio manual<input name="unit_price" type="text" value="$0" inputmode="numeric" autocomplete="off" data-currency-input></label>
             <label class="wide">Nota<textarea name="notes" rows="2" placeholder="Observaciones opcionales"></textarea></label>
           </div>
         </details>
@@ -960,12 +961,12 @@
     <script defer src="https://unpkg.com/lucide@latest"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
-    <script defer src="sales-shift.js?v=donpieros-20261030-v35"></script>
+    <script defer src="sales-shift.js?v=donpieros-20261030-v36"></script>
     <script defer src="menu-cards.js?v=donpieros-20261027-v9"></script>
     <script>document.write(`<script defer src="app.js?v=${window.__APP_ASSET_VERSION__}"><\/script>`);</script>
   <script defer src="pending-deletions.js?v=1"></script>
   <script defer src="reception-notices.js?v=3"></script>
   <script defer src="online-admin.js?v=23"></script>
-  <script defer src="waiter-orders.js?v=11"></script>
+  <script defer src="waiter-orders.js?v=12"></script>
   </body>
 </html>
