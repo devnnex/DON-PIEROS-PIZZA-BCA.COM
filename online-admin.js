@@ -429,12 +429,18 @@
     catch(error){pendingAvailability.delete(item.id);applyCatalogItem('products',item);renderCatalog();notify(error.message,true);void loadCatalog();}
   }
   const field=(name,label,value='',type='text',extra='')=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
+  const productCategory=form=>form.category.value==='__other__'?form.new_category.value.trim():form.category.value;
+  function categoryField(selected=''){
+    const categories=[...new Set((catalog.products||[]).map(product=>product.category).filter(Boolean))];
+    if(selected&&!categories.includes(selected))categories.push(selected);
+    return `<label>Categoría<select name="category" required><option value="">Elige una categoría</option>${categories.map(name=>`<option value="${esc(name)}" ${name===selected?'selected':''}>${esc(name)}</option>`).join('')}<option value="__other__">Otra categoría…</option></select></label><label id="dp-new-category" hidden>Nombre de la nueva categoría<input name="new_category" type="text" maxlength="80" disabled placeholder="Ej.: Postres"></label>`;
+  }
   function openItem(item){
     if(item&&catalogWrites.get(catalogKind+':'+item.id)?.pending)return;
     if(!catalog)return notify('Primero conecta y carga el menú.',true);editItem=item||{id:crypto.randomUUID(),version:0};removeImage=false;
     $('#dp-item-title').textContent=(item?'Editar ':'Agregar ')+({products:'producto',toppings:'adicional',payments:'medio de pago',neighborhoods:'barrio'})[catalogKind];
     let fields=field('name','Nombre',item?.name||'','text','required maxlength="120"');
-    if(catalogKind==='products')fields+=field('category','Categoría',item?.category||'Pizzas','text','required maxlength="80"')+field('price','Precio de venta',item?.price||0,'number','required min="0" step="1"')+`<label>Descripción<textarea name="description" maxlength="1000">${esc(item?.description||'')}</textarea></label>`+field('badge','Etiqueta (opcional)',item?.badge||'')+`<div class="dp-image-editor"><img id="dp-image-preview" src="${esc(window.DonPierosImages.resolve(item||{}))}" alt="Vista previa"><div class="dp-image-heading"><strong>Fotografía del producto</strong><span id="dp-image-file" role="status">${item?.image_url?'Imagen guardada':'Imagen de referencia'}</span></div><input id="dp-product-image" name="image" type="file" accept="image/png,image/jpeg,image/webp" hidden><div class="dp-image-actions"><button class="dp-upload-image" type="button" id="dp-select-image" aria-controls="dp-product-image" aria-describedby="dp-image-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>Subir imagen</button><button class="ghost" type="button" id="dp-remove-image">Quitar imagen</button></div><small id="dp-image-hint">JPG, PNG o WebP · hasta 5 MB. La foto propia reemplaza la de referencia.</small></div><label class="dp-check"><input type="checkbox" name="featured" ${item?.featured?'checked':''}> Destacado</label><details><summary>Opciones del producto: tamaños y adicionales</summary><p>Primero crea adicionales con un grupo (por ejemplo Tamaño o Extra). Agrega los grupos que este producto podrá elegir.</p><div id="dp-modifier-list"></div><button class="ghost" type="button" id="dp-add-modifier">＋ Grupo de opciones</button></details>`;
+    if(catalogKind==='products')fields+=categoryField(item?.category)+field('price','Precio de venta',item?.price||0,'number','required min="0" step="1"')+`<label>Descripción<textarea name="description" maxlength="1000">${esc(item?.description||'')}</textarea></label>`+field('badge','Etiqueta (opcional)',item?.badge||'')+`<div class="dp-image-editor"><img id="dp-image-preview" src="${esc(window.DonPierosImages.resolve(item||{}))}" alt="Vista previa"><div class="dp-image-heading"><strong>Fotografía del producto</strong><span id="dp-image-file" role="status">${item?.image_url?'Imagen guardada':'Imagen de referencia'}</span></div><input id="dp-product-image" name="image" type="file" accept="image/png,image/jpeg,image/webp" hidden><div class="dp-image-actions"><button class="dp-upload-image" type="button" id="dp-select-image" aria-controls="dp-product-image" aria-describedby="dp-image-hint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m-4 4 4-4 4 4M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg>Subir imagen</button><button class="ghost" type="button" id="dp-remove-image">Quitar imagen</button></div><small id="dp-image-hint">JPG, PNG o WebP · hasta 5 MB. La foto propia reemplaza la de referencia.</small></div><label class="dp-check"><input type="checkbox" name="featured" ${item?.featured?'checked':''}> Destacado</label><details><summary>Opciones del producto: tamaños y adicionales</summary><p>Primero crea adicionales con un grupo (por ejemplo Tamaño o Extra). Agrega los grupos que este producto podrá elegir.</p><div id="dp-modifier-list"></div><button class="ghost" type="button" id="dp-add-modifier">＋ Grupo de opciones</button></details>`;
     if(catalogKind==='toppings')fields+=field('kind','Grupo de opciones',item?.kind||'Extra','text','required maxlength="60" list="dp-option-groups"')+field('price','Valor que se suma al precio base',item?.price||0,'number','required min="0" step="1"');
     if(catalogKind==='payments')fields+=field('account_value','Cuenta, llave o número (opcional)',item?.account_value||'')+`<label>Instrucciones<textarea name="instructions" maxlength="500">${esc(item?.instructions||'')}</textarea></label>`;
     if(catalogKind==='neighborhoods')fields+=field('delivery_fee','Valor del domicilio',item?.delivery_fee||0,'number','required min="0" step="1"');
@@ -442,6 +448,8 @@
     fields+='<datalist id="dp-option-groups">'+[...new Set((catalog.toppings||[]).map(item=>item.kind))].map(kind=>'<option value="'+esc(kind)+'"></option>').join('')+'</datalist>';
     $('#dp-item-fields').innerHTML=fields;$('#dp-item-error').textContent='';$('#dp-item-save').disabled=false;
     if(catalogKind==='products'){
+      const form=$('#dp-item-form');
+      form.category.onchange=()=>{const other=form.category.value==='__other__';$('#dp-new-category').hidden=!other;form.new_category.disabled=!other;form.new_category.required=other;if(other)form.new_category.focus();};
       (item?.modifiers||[]).forEach(addModifier);$('#dp-add-modifier').onclick=()=>addModifier();
       $('#dp-select-image').onclick=()=>$('#dp-product-image').click();
       $('#dp-remove-image').onclick=()=>{removeImage=true;$('#dp-item-form').image.value='';if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl='';}$('#dp-image-file').textContent='Imagen de referencia';$('#dp-image-preview').src=window.DonPierosImages.example({name:$('#dp-item-form').elements.namedItem('name').value,category:$('#dp-item-form').category.value});};
@@ -471,7 +479,9 @@
     try{
       const item={...previous,name:form.elements.namedItem('name').value.trim(),available:form.available.checked,sort_order:Number(form.sort_order.value)};
       if(kind==='products'){
-        Object.assign(item,{category:form.category.value.trim(),price:Number(form.price.value),description:form.description.value,badge:form.badge.value,featured:form.featured.checked});
+        const name=productCategory(form),existingCategory=catalog.products.find(product=>normalize(product.category).trim()===normalize(name).trim())?.category;
+        if(!name)throw Error('Escribe el nombre de la categoría.');
+        Object.assign(item,{category:existingCategory||name,price:Number(form.price.value),description:form.description.value,badge:form.badge.value,featured:form.featured.checked});
         item.modifiers=$$('.dp-modifier').map(group=>({id:group.dataset.groupId,name:group.querySelector('[name=group_name]').value,source:group.querySelector('[name=group_source]').value,min:Number(group.querySelector('[name=group_min]').value),max:Number(group.querySelector('[name=group_max]').value),required:group.querySelector('[name=group_required]').checked,usePrice:group.querySelector('[name=group_price]').checked}));
         if(removeImage){item.image_url='';item.image_path='';}
       }
@@ -505,7 +515,7 @@
     try{deletions().enqueue('catalog-'+kind,id,{kind,id,version:item.version,image_path:item.image_path});catalogEpoch++;renderCatalog();notify('Registro retirado. Se está sincronizando.');}
     catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
-  function signal(event){if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
+  function signal(event){if(event==='catalog-changed')window.dispatchEvent(new Event('donpieros-catalog-change'));if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
   function confirmReception(orderId){
     const payload={orderId,at:Date.now()};
     try{localStorage.setItem('don_pieros_order_received_v1',JSON.stringify(payload));}catch(_){}
@@ -556,7 +566,7 @@
     const token=api()?.getToken();if(!token||!api()?.getUser()||document.hidden)return;
     if(connectedToken!==token){if(connectedToken)window.DonPierosReception?.reset();connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;newestOrderSequence=0;orderEpoch++;activeCount=0;orderWrites.clear();catalogWrites.clear();pendingAvailability.clear();seenOrderIds.clear();receivedOrderSignals.clear();searchEpoch++;searchCache.clear();searchJobs.clear();
       if(channel)void api().db.removeChannel(channel);
-      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
+      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).on('broadcast',{event:'catalog-changed'},()=>{if(canMenu())void loadCatalog();window.dispatchEvent(new Event('donpieros-catalog-change'));}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
       if(canMenu())void loadCatalog();
     }
     if(canOrders())void loadOrders();

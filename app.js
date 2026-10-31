@@ -11239,6 +11239,7 @@ const App = (() => {
     const form = $("#consumptionForm");
     if (!dialog || !form) return;
     form.reset();
+    form.classList.remove("is-editing-consumption");
     form.session_id.value = sessionId;
     form.session_item_id.value = "";
     form.pending_table_id.value = pendingTableId;
@@ -11307,6 +11308,9 @@ const App = (() => {
       return;
     }
     form.reset();
+    form.classList.add("is-editing-consumption");
+    // Put the editor in front, replacing the catalog instead of leaving it below.
+    for (const id of ["dw-product-dialog", "dw-catalog-dialog", "dw-review-dialog", "accountDetailDialog"]) $("#" + id)?.close();
     form.session_id.value = session.id;
     form.session_item_id.value = item.id;
     form.pending_table_id.value = "";
@@ -11322,16 +11326,22 @@ const App = (() => {
     $("#consumptionLayout")?.classList.toggle("without-consumption-preview", !keepPreview);
     if ($("#consumptionQueueButton")) $("#consumptionQueueButton").hidden = true;
     if ($("#consumptionEyebrow")) $("#consumptionEyebrow").textContent = "Consumo";
-    if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = "Editar consumo";
+    if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = `Editar ${item.item_name || "consumo"}`;
     const submitLabel = $("#consumptionSubmitButton span");
     if (submitLabel) submitLabel.textContent = "Guardar cambios";
     form.menu_item_id.value = item.menu_item_id || "";
     form.item_name.value = item.item_name || "";
     form.payer_name.value = session.payer_name || "";
     form.quantity.value = item.quantity || 1;
-    const packing=globalThis.DonPierosPackaging?.restore(form,item.notes,item.unit_price);
+    const packing=globalThis.DonPierosPackaging?.restore(form,item.waiter_comanda_id ? item.waiter_line_notes : item.notes,item.unit_price);
+    if (item.waiter_comanda_id && globalThis.DonPierosPackaging) {
+      const box = globalThis.DonPierosPackaging.forProduct({name:item.item_name}, item.waiter_options?.labels || []);
+      const sizeSelect = form.elements.namedItem("packing_size");
+      if (box.size && sizeSelect) sizeSelect.value = box.size;
+      globalThis.DonPierosPackaging.update(form);
+    }
     setCurrencyInputValue(form.unit_price, packing?.price ?? item.unit_price ?? 0);
-    form.notes.value = item.waiter_comanda_id ? String(item.waiter_line_notes || "") : packing?.notes ?? item.notes ?? "";
+    form.notes.value = packing?.notes ?? item.notes ?? "";
     const optionalFields = $("#consumptionOptionalFields");
     if (optionalFields) optionalFields.open = true;
     const product = state.items.find((entry) => entry.id === item.menu_item_id);
@@ -11345,6 +11355,10 @@ const App = (() => {
     if (session.table_id) setTableConsumptionPreviewVisible(true);
     if ($("#tableSessionActions")) $("#tableSessionActions").hidden = true;
     if (!dialog.open) dialog.showModal();
+    dialog.scrollTop = 0;
+    form.scrollTop = 0;
+    const entryPanel = form.querySelector(".consumption-entry-panel");
+    if (entryPanel) entryPanel.scrollTop = 0;
     void refreshConsumptionInventory();
     form.quantity.focus({ preventScroll: true });
     form.quantity.select();
@@ -11446,7 +11460,7 @@ const App = (() => {
     }
     if (previousLine?.waiter_comanda_id && window.DonPierosWaiter?.updateConsumedLine) {
       try {
-        const saved = await window.DonPierosWaiter.updateConsumedLine(sessionId, itemId, { name, quantity, unitPrice: price, notes: form.notes.value.trim() });
+        const saved = await window.DonPierosWaiter.updateConsumedLine(sessionId, itemId, { name, quantity, unitPrice: price, notes: packing?.notes ?? form.notes.value.trim() });
         if (!keepOpen) $("#consumptionDialog")?.close();
         if (!silent) toast("Consumo actualizado.", "ok", `consumption-saved:${itemId}`);
         return { sessionId, item: saved };

@@ -5496,3 +5496,20 @@ body[data-page="client"] .client-queue-badge { gap: .65rem; margin-inline: 1rem;
 .client-actions-settings .tip-setting-status{display:block;margin-top:10px}
 @media(max-width:620px){.client-actions-settings{padding:16px}.client-actions-settings-grid{grid-template-columns:1fr}}
 button,a,[role="button"]{touch-action:manipulation}
+
+/* Editing starts with the selected product and fields, even on short screens. */
+#consumptionForm:not(.is-editing-consumption) .dp-packing-controls { display: none; }
+#consumptionDialog:has(.is-editing-consumption) { width: min(calc(100vw - 1.5rem), 900px); }
+#consumptionDialog .is-editing-consumption { display: flex; flex-direction: column; min-height: 0; height: auto; max-height: 94dvh; overflow-y: auto; }
+#consumptionDialog .is-editing-consumption .consumption-layout { display: block; overflow: visible; }
+#consumptionDialog .is-editing-consumption .consumption-entry-panel { display: flex; gap: .65rem; overflow: visible; }
+#consumptionDialog .is-editing-consumption .product-picker-field { display: none; }
+#consumptionDialog .is-editing-consumption .consumption-optional { display: block; border: 0; background: transparent; }
+#consumptionDialog .is-editing-consumption .consumption-optional-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#consumptionDialog .is-editing-consumption #consumptionQueueButton { display: none !important; }
+#consumptionDialog .is-editing-consumption :is(#tableConsumptionPreview, #viewTableConsumption, #consumptionProductHint, #consumptionLastAdded, #consumptionOptionalFields > summary) { display: none !important; }
+#consumptionDialog .is-editing-consumption .section-head { margin-bottom: .7rem; }
+#consumptionDialog .is-editing-consumption .consumption-optional-grid { padding: .65rem; }
+#consumptionDialog .is-editing-consumption .dp-packing-controls { margin: 0 .65rem .65rem; padding: .65rem; }
+#consumptionDialog .is-editing-consumption .modal-actions { position: sticky; bottom: 0; background: var(--panel, #fff); padding-top: .65rem; }
+@media(max-width:520px){#consumptionDialog .is-editing-consumption .consumption-optional-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }#consumptionDialog .is-editing-consumption .consumption-optional-grid .wide { grid-column: 1 / -1; }}

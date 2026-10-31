@@ -39,7 +39,7 @@
   }
   function mount(){
     const form=document.querySelector('#consumptionForm');if(!form)return;
-    form.querySelector('.consumption-quantity').insertAdjacentHTML('beforebegin',`<div class="dp-packing-controls"><label>Preparación<select name="packing_mode"><option value="local">En el local</option><option value="takeaway">Para llevar</option></select></label><label hidden>Tamaño de caja<select name="packing_size">${Object.entries(sizes).map(([id,label])=>`<option value="${id}">${label} · $${fee(id).toLocaleString('es-CO')}</option>`).join('')}</select></label><small data-packing-summary>Sin cobro de caja.</small></div>`);
+    form.querySelector('#consumptionOptionalFields').insertAdjacentHTML('beforeend',`<div class="dp-packing-controls"><label>Entrega<select name="packing_mode"><option value="local">En el local</option><option value="takeaway">Para llevar</option></select></label><label hidden>Tamaño de caja<select name="packing_size">${Object.entries(sizes).map(([id,label])=>`<option value="${id}">${label} · $${fee(id).toLocaleString('es-CO')}</option>`).join('')}</select></label><small data-packing-summary>Sin cobro de caja.</small></div>`);
     form.addEventListener('input',()=>update(form));form.addEventListener('change',event=>{if(event.target.name==='packing_size')event.target.dataset.manual='1';update(form);});
     form.addEventListener('reset',()=>{delete form.elements.namedItem('packing_size').dataset.manual;queueMicrotask(()=>update(form));});update(form);
   }

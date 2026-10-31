@@ -20,6 +20,12 @@
   let token='',lastSnapshot='',homeSignature='',managerSignature='',managerOpen='',editingLine='',replacingLine='',activeProduct=null,loadError='',catalogError='';
   let writeRevision=0,reloadWanted=false,serviceReady=false;const localWrites=new Map();
   let printWidth=80,directLineEdit=false;
+  // Share the public menu cache with the storefront. Refresh in the background.
+  const menuCache=()=>window.DonPierosPerformance;
+  const validCatalog=data=>Array.isArray(data?.products)&&Array.isArray(data?.toppings);
+  const warmCatalogImages=()=>{for(const product of (catalog?.products||[]).filter(product=>product.available).slice(0,6)){const photo=new Image();photo.src=window.DonPierosImages.resolve(product);}};
+  const cachedCatalog=menuCache()?.read('catalog',3*60000,localStorage);
+  if(validCatalog(cachedCatalog)){catalog=cachedCatalog;warmCatalogImages();}
   try{if(localStorage.getItem('don_pieros_order_paper')==='58')printWidth=58;}catch(_){}
   const root=document.createElement('div');root.id='dp-waiter-app';root.hidden=true;$('#service').append(root);
   const reception=document.createElement('section');reception.id='dp-table-comandas';reception.className='dw-reception';reception.hidden=true;
@@ -96,7 +102,8 @@
       try{
         const response=await fetch(window.DON_PIEROS_CONFIG.appsScriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'dp_get_catalog'}),signal:controller.signal});
         const data=await response.json();if(!response.ok||!data.ok)throw Error('No pudimos cargar la carta. Intenta de nuevo.');
-        catalog=data;
+        if(!validCatalog(data))throw Error('Carta inválida.');
+        catalog=data;menuCache()?.write('catalog',data,localStorage);warmCatalogImages();
       }catch(error){catalogError='No pudimos cargar la carta. Toca Cargar carta para reintentar.';}
       finally{clearTimeout(timer);catalogLoading=null;renderProducts();renderManagerProducts();}
     })();return catalogLoading;
@@ -151,12 +158,18 @@
       const min=group.required?Math.max(1,Number(group.min)||1):0;
       return `<fieldset data-dw-group="${esc(group.id)}" data-min="${min}" data-max="${Number(group.max)||99}"><legend>${esc(group.name)} <small>${min?'Obligatorio':'Opcional'}</small></legend>${catalog.toppings.filter(option=>option.available&&option.kind===group.source).map(option=>`<label><input type="${Number(group.max)===1?'radio':'checkbox'}" name="${esc(group.id)}" value="${esc(option.id)}" ${(ids[group.id]||[]).includes(option.id)?'checked':''}><span>${esc(option.name)}</span><small>${group.usePrice&&Number(option.price)?'+'+money(option.price):'Incluido'}</small></label>`).join('')}</fieldset>`;
     }).join('')}</div><div class="dw-quantity"><span>Cantidad</span><button type="button" data-dw-quantity="-1" aria-label="Disminuir cantidad">−</button><output id="dw-product-quantity">${existing?.quantity||1}</output><button type="button" data-dw-quantity="1" aria-label="Aumentar cantidad">＋</button></div><label class="dw-notes-label">Notas del producto <small>Opcional</small><textarea id="dw-line-notes" maxlength="500" placeholder="Ej.: sin cebolla, salsa aparte…">${esc(existing?.notes||'')}</textarea></label><p id="dw-product-error" class="dw-error" role="alert"></p><button type="submit" class="dw-primary" id="dw-add-product">${existing?'Actualizar producto':'Agregar al pedido'} · <span id="dw-product-price"></span></button>`;
+    const savedPacking=window.DonPierosPackaging.read(existing?.notes);
     if(!custom){
       const catalogPrice=productSelection().unitPrice;
-      const override=existing?.product_id===id&&(existing.options?.manualUnitPrice!=null||Number(existing.unit_price)!==catalogPrice)?existing.unit_price:'';
+      const basePrice=Number(existing?.unit_price)-savedPacking.fee;
+      const override=existing?.product_id===id&&(existing.options?.manualUnitPrice!=null||basePrice!==catalogPrice)?basePrice:'';
       $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Precio por unidad <small>Opcional · déjalo vacío para usar el precio de la carta</small><input id="dw-unit-price" type="number" min="0" max="10000000" step="1" inputmode="numeric" value="${override}" placeholder="${esc(money(catalogPrice))}"></label>`);
     }
-    updateProductOptions();$('#dw-product-dialog').showModal();
+    $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Entrega<select id="dw-fulfillment"><option value="dinein">Para comer en el local</option><option value="pickup" ${savedPacking.fulfillment==='pickup'?'selected':''}>Para llevar</option></select><small id="dw-packaging-summary" aria-live="polite"></small></label>`);
+    $('#dw-line-notes').value=savedPacking.notes;
+    // Stored prices include the box; the editable price always shows the food.
+    if(custom&&savedPacking.fee)$('#dw-custom-price').value=String(Math.max(0,Number(existing.unit_price)-savedPacking.fee));
+    updateProductOptions();$('#dw-product-dialog').showModal();$('#dw-product-dialog').scrollTop=0;
   }
   function productSelection(validate=false){
     let unitPrice=Number(activeProduct.price),valid=true;const selectionIds={},labels=[];
@@ -172,13 +185,17 @@
     }
     const catalogUnitPrice=unitPrice,manual=$('#dw-unit-price')?.value.trim()??'';
     if(manual!==''){unitPrice=Number(manual);valid=valid&&Number.isSafeInteger(unitPrice)&&unitPrice>=0&&unitPrice<=10000000;}
-    return {valid,unitPrice,catalogUnitPrice,options:{selectionIds,labels,...(activeProduct.custom?{custom:true}:{}),...(manual!==''?{manualUnitPrice:unitPrice}:{})}};
+    const takeaway=$('#dw-fulfillment')?.value==='pickup';
+    const box=window.DonPierosPackaging.forProduct(activeProduct.custom?{...activeProduct,name:$('#dw-custom-name').value}:activeProduct,labels);
+    const packagingFee=takeaway?box.fee:0;
+    if(takeaway)labels.push('Para llevar');
+    return {valid,unitPrice:unitPrice+packagingFee,catalogUnitPrice,box:takeaway?box:{size:'',fee:0},takeaway,options:{selectionIds,labels,...(activeProduct.custom?{custom:true}:{}),...(manual!==''?{manualUnitPrice:unitPrice}:{})}};
   }
-  function updateProductOptions(){if(!activeProduct)return;const selection=productSelection(),price=selection.unitPrice*Number($('#dw-product-quantity').value);if($('#dw-unit-price'))$('#dw-unit-price').placeholder=money(selection.catalogUnitPrice);$('#dw-product-price').textContent=money(price);}
+  function updateProductOptions(){if(!activeProduct)return;const selection=productSelection(),quantity=Number($('#dw-product-quantity').value),price=selection.unitPrice*quantity;if($('#dw-unit-price'))$('#dw-unit-price').placeholder=money(selection.catalogUnitPrice);$('#dw-product-price').textContent=money(price);const summary=$('#dw-packaging-summary');if(summary)summary.textContent=selection.box.fee?`Caja ${window.DonPierosPackaging.sizes[selection.box.size]}: ${money(selection.box.fee)} por unidad · ${money(selection.box.fee*quantity)} en cajas`:selection.takeaway?'Sin cobro de caja para este producto.':'Sin cobro de caja.';}
   function addProduct(event){
     event.preventDefault();if(busy||!draft||draft.pending)return;const selection=productSelection(true);
     if(!selection.valid){$('#dw-product-error').textContent=activeProduct.custom?'Escribe el nombre y un precio válido en pesos.':'Elige las opciones obligatorias para continuar.';$('#dw-product-body .is-invalid')?.scrollIntoView({block:'center',behavior:'smooth'});return;}
-    const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:$('#dw-line-notes').value.trim()};
+    const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:window.DonPierosPackaging.note($('#dw-line-notes').value.trim(),selection.box.size,selection.takeaway)};
     if([...(line.options.labels||[]),line.notes].join(' · ').length>500){$('#dw-product-error').textContent='Acorta un poco las notas de este producto.';return;}
     if(draft.legacy){void saveLegacyLine(line);return;}
     if(editingLine)draft.items=draft.items.map(item=>item.id===editingLine?line:item);else draft.items.push(line);
@@ -205,7 +222,7 @@
     const line=draft.items.find(item=>item.id===element.dataset.dwPrice);if(!line)return;
     const input=document.createElement('input');input.className='dw-inline-price';input.type='number';input.min='0';input.max='10000000';input.step='1';input.inputMode='numeric';input.value=String(line.unit_price);input.setAttribute('aria-label','Precio unitario de '+line.name);
     let finished=false;
-    const save=()=>{if(finished)return;const price=Number(input.value);if(input.value===''||!Number.isSafeInteger(price)||price<0||price>10000000){input.setCustomValidity('Escribe un precio válido en pesos.');input.reportValidity();return;}finished=true;line.unit_price=price;if(!line.options.custom)line.options.manualUnitPrice=price;persist();renderReview();renderSelection();};
+    const save=()=>{if(finished)return;const price=Number(input.value);if(input.value===''||!Number.isSafeInteger(price)||price<0||price>10000000){input.setCustomValidity('Escribe un precio válido en pesos.');input.reportValidity();return;}finished=true;line.unit_price=price;if(!line.options.custom)line.options.manualUnitPrice=price-window.DonPierosPackaging.read(line.notes).fee;persist();renderReview();renderSelection();};
     input.addEventListener('input',()=>input.setCustomValidity(''));
     input.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();save();}if(event.key==='Escape'){event.preventDefault();finished=true;renderReview();}});
     input.addEventListener('blur',save);element.replaceChildren(input);input.focus();input.select();
@@ -243,7 +260,9 @@
     const items=order.items.map(item=>({id:item.id,product_id:item.web_product_id,name:item.item_name,quantity:Number(item.quantity),unit_price:Number(item.unit_price),options:clone(item.waiter_options||{labels:[],selectionIds:{}}),notes:item.waiter_line_notes||''}));
     const edited=items.find(item=>item.id===itemId);
     Object.assign(edited,{name:changes.name,quantity:changes.quantity,unit_price:changes.unitPrice,notes:changes.notes});
-    edited.options.manualUnitPrice=changes.unitPrice;
+    edited.options.manualUnitPrice=changes.unitPrice-window.DonPierosPackaging.read(changes.notes).fee;
+    edited.options.labels=(edited.options.labels||[]).filter(label=>label!=='Para llevar');
+    if(window.DonPierosPackaging.read(changes.notes).fulfillment==='pickup')edited.options.labels.push('Para llevar');
     const currentToken=api().getToken();
     const {data,error}=await rpc('dp_save_waiter_comanda',{p_operation_id:crypto.randomUUID(),p_comanda_id:order.id,p_table_id:order.table_id,p_session_id:sessionId,p_expected_version:order.version,p_items:items,p_notes:order.notes||''});
     if(error||!data?.comanda){void loadOrders(true);throw Error(errorText(error||Error('No pudimos confirmar el cambio. Intenta de nuevo.')));}
@@ -357,7 +376,7 @@
     replacingLine=replacement;$('#dw-review-dialog').close();category='';query='';
     if(draft.managerMode){
       $('#dw-manager-catalog').innerHTML=`<header class="dw-dialog-head"><div><span class="eyebrow">${esc(tableLabel(operations().tables.find(table=>table.id===selectedTable)))}</span><h2 id="dw-catalog-title">${replacement?'Cambiar producto':'Agregar producto'}</h2></div><button type="button" class="dw-close" data-dw-close aria-label="Cerrar">×</button></header><button type="button" class="dw-button" data-dw-account>Ver consumo de la mesa</button><label class="dw-search">Buscar producto<input type="search" id="dw-manager-search" placeholder="Pizza, bebida, lasaña…"></label><div id="dw-manager-categories" class="dw-categories"></div><div id="dw-manager-products" class="dw-product-grid"></div>`;
-      $('#dw-catalog-dialog').showModal();if(!catalog)await loadCatalog();renderManagerProducts();
+      renderManagerProducts();$('#dw-catalog-dialog').showModal();$('#dw-catalog-dialog').scrollTop=0;if(!catalog)void loadCatalog();
     }else{
       tab='menu';renderTable();if(replacement)$('#dw-menu-view').insertAdjacentHTML('afterbegin','<p class="dw-edit-notice" id="dw-replace-banner">Elige el producto que reemplazará al anterior. <button type="button" class="dw-button" data-dw-cancel-replace>Cancelar</button></p>');
       root.scrollIntoView({block:'start',behavior:'instant'});
@@ -434,7 +453,7 @@
   $('#dw-catalog-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){replacingLine='';review();}});
   function tick(){
     if(!allowed()||document.hidden)return;
-    const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';catalog=null;sync();if(waiter())void loadCatalog();}
+    const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';sync();void loadCatalog();}
     sync();void loadOrders();
   }
   const editComanda=async(id,removeId='')=>{await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}};
@@ -457,5 +476,6 @@
     managerSignature='';homeSignature='';renderReception();renderAccount();if(waiter())renderHome();
     if(event.detail.state==='done'){void loadOrders(true);void api().refreshOperations();}
   });
+  window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.DonPierosWaiter={openTable,startTableOrder,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();

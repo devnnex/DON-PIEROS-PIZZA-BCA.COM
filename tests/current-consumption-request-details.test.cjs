@@ -9,7 +9,7 @@ function consumptionContext({open=true,drafts=[],custom=false}={}){
  const item={id:'saved-item',menu_item_id:custom?null:'product-1',item_name:'Producto guardado',quantity:3,unit_price:12000,notes:'Sin hielo',status:'served'};
  const session={id:'session-1',payer_name:'Ana',session_items:[item]};
  let resetCount=0,previewRenders=0,focused=0;
- const form={dataset:{},reset(){resetCount++;}};
+ const form={dataset:{},classList:{add(){}},querySelector:()=>null,reset(){resetCount++;}};
  for(const name of ['session_id','session_item_id','pending_table_id','quick_checkout','quantity','menu_item_id','item_name','payer_name','unit_price','notes'])form[name]={value:''};
  form.session_id.value=session.id;
  form.quantity.focus=()=>focused++;form.quantity.select=()=>{};
