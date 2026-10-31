@@ -8,11 +8,14 @@ function harness(options={}){
   getValue(){return this.getValues()[0][0];}
   setValues(values){values.forEach((row,r)=>row.forEach((value,c)=>{this.sheet.rows[this.row+r-1]??=[];this.sheet.rows[this.row+r-1][this.col+c-1]=value;}));return this;}
   setValue(v){return this.setValues([[v]]);}
+  clearContent(){return this.setValues(Array.from({length:this.rows},()=>Array(this.cols).fill('')));}
+  createTextFinder(value){const range=this;const finder={matchEntireCell(){return finder;},findNext(){for(let r=0;r<range.rows;r++)for(let c=0;c<range.cols;c++)if(String(range.sheet.rows[range.row+r-1]?.[range.col+c-1]??'')===String(value))return {getRow:()=>range.row+r};return null;}};return finder;}
   setFontWeight(){return this;}setBackground(){return this;}setFontColor(){return this;}
  }
  class Sheet{
   constructor(name){this.name=name;this.rows=[];}
   getName(){return this.name;}getLastRow(){return this.rows.length;}getLastColumn(){return Math.max(0,...this.rows.map(r=>r.length));}
+  getMaxColumns(){return Math.max(26,this.getLastColumn());}insertColumnsAfter(){}
   getRange(...args){return new Range(this,...args);}getDataRange(){return new Range(this,1,1,Math.max(1,this.getLastRow()),Math.max(1,this.getLastColumn()));}
   setFrozenRows(){}autoResizeColumns(){}appendRow(row){this.rows.push([...row]);}deleteRow(n){this.rows.splice(n-1,1);}
  }
@@ -23,7 +26,7 @@ function harness(options={}){
   PropertiesService:{getScriptProperties:()=>properties},
   CacheService:{getScriptCache:()=>({get:key=>cache.get(key)||null,put:(key,v)=>cache.set(key,v),remove:key=>cache.delete(key)})},
   LockService:{getScriptLock:()=>({tryLock:()=>{if(locked)return false;locked=true;return true;},waitLock:()=>{if(locked)throw Error('Busy');locked=true;},releaseLock:()=>{locked=false;}})},
-  Utilities:{getUuid:()=>crypto.randomUUID(),formatDate:()=> '20261027',computeDigest:()=>[],DigestAlgorithm:{SHA_256:1},Charset:{UTF_8:1}},
+  Utilities:{getUuid:()=>crypto.randomUUID(),formatDate:()=> '20261027',computeDigest:(_,value)=>[...crypto.createHash('sha256').update(String(value)).digest()],DigestAlgorithm:{SHA_256:1},Charset:{UTF_8:1}},
   ContentService:{MimeType:{JSON:'json'},createTextOutput:value=>({value,setMimeType(){return this;}})},
   Session:{getScriptTimeZone:()=> 'America/Bogota'},
  });

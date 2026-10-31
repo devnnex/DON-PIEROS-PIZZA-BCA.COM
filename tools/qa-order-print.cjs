@@ -47,6 +47,7 @@ const root=path.resolve(__dirname,'..');
    const frame=printWindow;
    await frame.locator('.kitchen-item').first().waitFor();
    const text=await frame.locator('body').innerText();
+   assert.equal(await frame.locator('body').evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),width===58?12:14,'Solo la comanda web reduce tres píxeles');
    assert.match(text,/COMANDA DE COCINA/);assert.match(text,/2 × Pizza/);assert.match(text,/1 × Pizza/);
    assert.match(text,/Mini/);assert.match(text,/Super maxi/);assert.match(text,/INDICACIONES PARA COCINA/);
    assert.match(text,/Alergia a maní/);assert.match(text,/Centro/);assert.match(text,/Domicilio/);

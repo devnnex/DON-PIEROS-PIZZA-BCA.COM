@@ -76,3 +76,5 @@
 .dp-order-card.dp-state-despachada{border-left:5px solid #24935a}.dp-state-despachada .dp-status{background:#d4f3df;color:#166539}
 #dp-dashboard-orders,#alertsPanel{scroll-margin-top:24px}
 @media(max-width:640px){.dp-reception-filters{flex-basis:100%;grid-template-columns:1fr}.dp-dashboard-orders>.dp-reception-filters{padding:12px}.dp-dashboard-orders .dp-order-card{padding:15px}.dp-order-card>div{align-items:flex-start}.dp-order-card small{line-height:1.5}.dp-order-card>div>small{text-align:right;max-width:55%}}
+.dp-order-actions .dp-charge-order{background:#218653;color:#fff;min-width:170px;flex:1;font-weight:800}.dp-order-actions .dp-charge-order:hover{background:#196d43}.dp-order-actions .dp-remove-order{margin-left:auto}.dp-order-actions{align-items:end}
+#paymentAddItem[hidden]{display:none!important}

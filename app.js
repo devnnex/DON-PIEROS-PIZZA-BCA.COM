@@ -906,7 +906,7 @@ const App = (() => {
   };
   const qrRegenerationEnabled = () => localStorage.getItem(QR_REGENERATION_STORAGE_KEY) === "1";
 
-  const sessionLabel = (session) => session?.sale_channel === "walk_in" || !session?.table_id
+  const sessionLabel = (session) => session?.web_order_id ? 'Pedido en línea '+session.web_order_id : session?.sale_channel === "walk_in" || !session?.table_id
     ? "Venta individual"
     : tableLabel(session?.restaurant_tables);
 
@@ -2663,6 +2663,7 @@ const App = (() => {
       }
       const batchRequest = action === "sync_sales_batch";
       const acceptResult = async (action, payload, result, operationId) => {
+        if(action==='checkout_web_order')return;
         if (result?.ok && ["upsert_inventory", "sync_inventory", "adjust_inventory", "set_inventory_stock", "delete_inventory", "clear_inventory", "update_inventory_movement_cost", "record_sale", "edit_sale", "delete_sale", "clear_inventory_movements", "clear_income"].includes(action)) {
           window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
         }
@@ -4723,6 +4724,7 @@ const App = (() => {
           state.alertAnnouncementQueue.unshift(...batch);
           break;
         }
+        try{const key='don_pieros_heard_alerts_v1',heard=new Set(JSON.parse(localStorage.getItem(key)||'[]'));batch.forEach(request=>heard.add(request.id));localStorage.setItem(key,JSON.stringify([...heard].slice(-5000)));}catch(_){}
         const voiceBatch = batch.filter((request) => request.request_type === "web_order" || !hasOpenAdminChatForRequest(request));
         if (state.soundEnabled && voiceBatch.length) await speakAlertRequests(voiceBatch);
       }
@@ -4734,7 +4736,8 @@ const App = (() => {
 
   const playAlarm = (requests = activeRequests()) => {
     if (!state.soundEnabled) return;
-    const unseen = requests.filter((request) => !state.announcedRequestIds.has(request.id));
+    let heard=[];try{heard=JSON.parse(localStorage.getItem('don_pieros_heard_alerts_v1')||'[]');}catch(_){}if(!Array.isArray(heard))heard=[];
+    const unseen = requests.filter((request) => !state.announcedRequestIds.has(request.id)&&!heard.includes(request.id));
     unseen.forEach((request) => state.announcedRequestIds.add(request.id));
     state.alertAnnouncementQueue.push(...unseen);
     void drainAlertAnnouncements();
@@ -6042,7 +6045,7 @@ const App = (() => {
     const button = $("#newWalkInSale");
     if (button) button.disabled = true;
     try {
-      const existing = state.sessions.find((session) => isLocalWalkInSession(session) && session.status === "open");
+      const existing = state.sessions.find((session) => isLocalWalkInSession(session) && !session.web_order_id && session.status === "open");
       if (existing) {
         openPaymentDialog(existing.id);
         return;
@@ -6071,6 +6074,28 @@ const App = (() => {
     } finally {
       if (button) button.disabled = false;
     }
+  };
+
+  const openWebOrderCheckout = (order,deliveryFee=Number(order.deliveryFee||0)) => {
+    if(!isManager())throw new Error('Tu usuario no tiene permiso para cobrar.');
+    if(!order?.id||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya no está disponible para cobrar.');
+    const id='walk-in-web-'+order.id;
+    if(state.invoiceHistory.some(invoice=>invoice.webOrderId===order.id))throw new Error('Este pedido ya fue cobrado. Revisa Ventas.');
+    const now=new Date().toISOString();
+    const session={id,local_only:true,table_id:null,status:'open',sale_channel:'walk_in',web_order_id:order.id,
+      web_delivery_fee:deliveryFee,fulfillment:order.fulfillment,payer_name:order.customerName,
+      waiter_name:'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
+      session_items:order.items.map((line,index)=>{
+        const sameName=state.items.filter(item=>normalizeText(item.name)===normalizeText(line.name));
+        const matched=state.items.find(item=>item.id===line.productId)||(sameName.length===1?sameName[0]:null);
+        const box=Number(line.packagingUnitFee||0),selected=window.DonPierosPackaging.size(line.packagingSize);
+        return {id:id+'-'+index,session_id:id,table_id:null,menu_item_id:matched?.id||null,item_name:line.name,
+          quantity:Number(line.quantity),unit_price:Number(line.unitPrice)+box,status:'served',
+          notes:box?window.DonPierosPackaging.note((line.selections||[]).join('\n'),selected):(line.selections||[]).join('\n'),created_at:now};
+      })};
+    if(deliveryFee)session.session_items.push({id:id+'-delivery',session_id:id,table_id:null,menu_item_id:null,item_name:'Domicilio',quantity:1,unit_price:deliveryFee,status:'served',notes:'',created_at:now});
+    state.sessions=[session,...state.sessions.filter(row=>row.id!==id)];
+    state.optimisticSessionStates.set(id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();openPaymentDialog(id);
   };
 
   // Los avisos públicos no llevan cuentas ni importes. La lectura requiere el token del empleado.
@@ -6269,7 +6294,7 @@ const App = (() => {
         if (!snapshot?.ok || snapshot.stale || !Array.isArray(snapshot.records)) throw transientAppsScriptError("Falta conciliar la operacion rechazada.");
         const record = snapshot.records.find(row => String(row.saleId) === saleId);
         const invoice = record ? { id: record.saleId, sessionId: record.sessionId, number: record.invoice, table: record.table,
-          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, reference: record.reference,
+          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',fulfillment:record.fulfillment||'',reference: record.reference,
           payments: record.payments, paymentMethod: record.isMixed ? "mixed" : record.payments?.[0]?.method,
           totals: { total: record.total, subtotal: record.subtotal, discount: record.discount, tax: record.tax, serviceFee: record.service },
           items: (record.items || []).map(line => ({ id: line.lineId, menu_item_id: line.menuItemId, item_name: line.name,
@@ -8055,10 +8080,11 @@ const App = (() => {
     };
   };
 
-  const incomeSaleTypeLabel = (type) => ({ all: "Todas las ventas", walk_in: "Venta individual", table: "Mesa", bar: "Barra", planter: "Matera" }[type] || "Todas las ventas");
+  const incomeSaleTypeLabel = (type) => ({ all: "Todas las ventas", online:"Pedido en línea",walk_in: "Venta individual", table: "Mesa", bar: "Barra", planter: "Matera" }[type] || "Todas las ventas");
 
   const incomeRecordSaleType = (record) => {
     const stored = (state.invoiceHistory || []).find((invoice) => String(invoice.id || invoice.sessionId) === String(record.saleId));
+    if(record.webOrderId||stored?.webOrderId||String(record.sessionId||'').startsWith('walk-in-web-'))return 'online';
     if (record.saleChannel === "walk_in" || stored?.saleChannel === "walk_in"
       || normalizeText(record.table || "") === "venta individual" || String(record.sessionId || "").startsWith("walk-in-")) return "walk_in";
     const tableId = record.tableId || stored?.tableId;
@@ -8199,6 +8225,7 @@ const App = (() => {
         date: invoice.createdAt || new Date().toISOString(),
         payer: invoice.payerName || "",
         waiter: invoice.waiterName || "",
+        cashier:invoice.cashierName||'',cashierRole:invoice.cashierRole||'',webOrderId:invoice.webOrderId||'',fulfillment:invoice.fulfillment||'',
         subtotal: Number(invoice.totals?.subtotal || 0),
         discount: Number(invoice.totals?.discount || 0),
         tax: Number(invoice.totals?.tax || 0),
@@ -8432,7 +8459,7 @@ const App = (() => {
             <div class="income-record-main">
               <div class="income-record-invoice${isBoss() ? " has-boss-actions" : ""}"><span>${escapeHTML(record.invoice || "Factura")}</span><small>${escapeHTML(formatIncomeDate(record.date))}</small><div class="income-record-actions"><button class="icon-btn" type="button" data-print-income="${escapeHTML(record.saleId)}" aria-label="Imprimir factura" title="Imprimir factura">${icon("printer", 15)}</button>${isBoss() ? `<button class="icon-btn" type="button" data-edit-income="${escapeHTML(record.saleId)}" aria-label="Editar venta">${icon("pencil", 15)}</button><button class="icon-btn danger" type="button" data-delete-income="${escapeHTML(record.saleId)}" aria-label="Eliminar venta completa">${icon("trash-2", 15)}</button>` : ""}</div></div>
               <div><small class="income-sale-type" data-sale-type="${incomeRecordSaleType(record)}">${escapeHTML(incomeSaleTypeLabel(incomeRecordSaleType(record)))}</small><strong>${escapeHTML(record.table || "Mesa")}</strong><span>${escapeHTML(record.payer || "Sin responsable")}</span></div>
-              <div><small>Atendido por</small><strong>${escapeHTML(record.waiter || "Sin asignar")}</strong><span>${escapeHTML(record.reference || "Sin referencia")}</span></div>
+              <div><small>Atendido por</small><strong>${escapeHTML(record.waiter || "Sin asignar")}</strong><span>Cobrado por: ${escapeHTML(record.cashier || "Sin registro")}${record.cashierRole?' · '+escapeHTML(roleLabel(record.cashierRole)):''}</span><span>${escapeHTML(record.reference || "Sin referencia")}</span></div>
               <div class="income-record-total"><small>Total</small><strong>${money(record.total)}</strong><span class="income-record-profit">Ganancia ${money(record.profit)}</span></div>
             </div>
             <div class="income-payment-badges">${paymentBadges || "<span>Medio no registrado</span>"}</div>
@@ -9124,11 +9151,12 @@ const App = (() => {
       id: record.saleId,
       number: record.invoice,
       sessionId: record.sessionId,
-      saleChannel: incomeRecordSaleType(record) === "walk_in" ? "walk_in" : "table",
+      saleChannel: ['walk_in','online'].includes(incomeRecordSaleType(record)) ? "walk_in" : "table",
       table: form.table.value.trim(),
       createdAt: correctedDate.toISOString(),
       payerName: form.payer.value.trim(),
       waiterName: form.waiter.value.trim(),
+      cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',fulfillment:record.fulfillment||'',
       paymentMethod: selectedPaymentMethod,
       payments: correctedPayments,
       reference: form.reference.value.trim(),
@@ -9991,7 +10019,8 @@ const App = (() => {
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
           <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
-          <span>Mesero:</span><strong>${escapeHTML(session.assigned_waiter?.full_name || state.currentUser?.full_name || "Equipo")}</strong>
+          <span>Atendido por:</span><strong>${escapeHTML(invoice?.waiterName || session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "Equipo")}</strong>
+          ${isPaid?`<span>Cobrado por:</span><strong>${escapeHTML(invoice.cashierName||'Sin registro')}${invoice.cashierRole?' · '+escapeHTML(roleLabel(invoice.cashierRole)):''}</strong>`:''}
         </div>
         <div class="rule"></div>
         <div class="items">
@@ -10138,12 +10167,12 @@ const App = (() => {
       : '<p class="payment-empty-sale">Agrega el producto para continuar con el cobro.</p>';
     const addItemButton = $("#paymentAddItem");
     if (addItemButton) {
-      addItemButton.hidden = !quickSale;
+      addItemButton.hidden = !quickSale||!!session.web_order_id;
       addItemButton.innerHTML = `<i data-lucide="plus"></i> ${activeItems.length ? "Agregar otro producto" : "Agregar producto"}`;
     }
     const tipChoice = $("#paymentTipChoice");
     if (tipChoice) tipChoice.hidden = !tipsEnabled();
-    if ($("#paymentDialogTitle")) $("#paymentDialogTitle").textContent = quickSale ? "Cobrar venta individual" : "Cobrar mesa";
+    if ($("#paymentDialogTitle")) $("#paymentDialogTitle").textContent = session.web_order_id?'Cobrar pedido en línea':quickSale ? "Cobrar venta individual" : "Cobrar mesa";
     $("#mixedPaymentFields").hidden = true;
     $("#cashReceivedFields").hidden = false;
     updatePaymentTipChoice();
@@ -10261,7 +10290,7 @@ const App = (() => {
     const receiptWindow = window.open("", "_blank", "width=420,height=720");
     const storedInvoice = state.invoiceHistory.find((entry) => String(entry.id || entry.sessionId) === String(record.saleId));
     const tableName = String(record.table || storedInvoice?.table || "Venta individual").trim() || "Venta individual";
-    const isWalkIn = normalizeText(tableName) === "venta individual";
+    const isWalkIn = !!record.webOrderId || normalizeText(tableName) === "venta individual";
     const items = (record.items || []).map((item) => ({
       id: item.lineId || item.id || "",
       menu_item_id: item.menuItemId || item.menu_item_id || null,
@@ -10290,6 +10319,7 @@ const App = (() => {
       createdAt: record.date,
       payerName: record.payer || "",
       waiterName: record.waiter || "",
+      cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',
       paymentMethod: record.isMixed || payments.length > 1 ? "mixed" : (payments[0]?.method || storedInvoice?.paymentMethod || "cash"),
       payments,
       reference: record.reference || "",
@@ -10306,6 +10336,7 @@ const App = (() => {
       id: invoice.sessionId,
       table_id: isWalkIn ? null : (storedInvoice?.tableId || "income-history"),
       sale_channel: isWalkIn ? "walk_in" : (storedInvoice?.saleChannel || "table"),
+      web_order_id:record.webOrderId||'',
       payer_name: record.payer || "",
       assigned_waiter: { full_name: record.waiter || "Equipo" },
       restaurant_tables: isWalkIn ? null : { table_name: tableName },
@@ -10370,6 +10401,7 @@ const App = (() => {
         void persistDurableJson(CHECKOUT_INTENTS_KEY, intents);
       });
       if (!saved) throw new Error("El cobro permanece protegido; no se pudo completar su guardado local.");
+      if(invoice.webOrderId)window.dispatchEvent(new CustomEvent('don-pieros-web-order-paid',{detail:{id:invoice.webOrderId}}));
       return true;
     } finally {
       if (!saved) {
@@ -10383,6 +10415,17 @@ const App = (() => {
 
   const finishCheckoutIntent = async (intent) => {
     const { invoice, session, paid } = intent;
+    if(invoice.webOrderId){
+      const result=await appsScriptRequest('checkout_web_order',{invoice});
+      if(!result.ok){
+        if(result.alreadyPaid){
+          const intents=readLocalJson(CHECKOUT_INTENTS_KEY,{});delete intents[session.id];await persistDurableJson(CHECKOUT_INTENTS_KEY,intents);
+          discardLocalWalkInSession(session.id);$('#paymentDialog')?.close();
+          window.dispatchEvent(new CustomEvent('don-pieros-web-order-paid',{detail:{id:invoice.webOrderId}}));
+        }
+        throw new Error(result.error||'No se pudo confirmar el cobro del pedido.');
+      }
+    }
     if (intent.stage !== "closed") {
       const current = state.sessions.find(row => row.id === session.id);
       if (current && (sessionPaid(current) !== paid || sessionTotals(current).total !== sessionTotals(session).total)) {
@@ -10531,7 +10574,9 @@ const App = (() => {
       soldByUserId: state.currentUser?.id || session.assigned_waiter_id || null,
       createdAt,
       payerName: session.payer_name || "",
-      waiterName: state.currentUser?.full_name || session.assigned_waiter?.full_name || "",
+      waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
+      cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
+      ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,fulfillment:session.fulfillment,checkoutId:uid()}:{}),
       paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
       payments: aggregateAccountPayments(session, payment.payments),
       prepayments: sessionPayments(session),
@@ -10861,8 +10906,8 @@ const App = (() => {
     const optimisticSession = {
       ...session,
       payer_name: payerName,
-      assigned_waiter_id: state.currentUser?.id || session.assigned_waiter_id,
-      assigned_waiter: state.currentUser || session.assigned_waiter,
+      assigned_waiter_id: session.assigned_waiter_id || state.currentUser?.id,
+      assigned_waiter: session.assigned_waiter || state.currentUser,
       session_items: [...(session.session_items || []), ...optimisticItems]
     };
     state.sessions = state.sessions.map((entry) => entry.id === optimisticSessionId ? optimisticSession : entry);
@@ -10915,7 +10960,7 @@ const App = (() => {
         const remappedSession = {
           ...optimisticSession,
           ...savedSession,
-          assigned_waiter: state.currentUser || optimisticSession.assigned_waiter,
+          assigned_waiter: optimisticSession.assigned_waiter || state.currentUser,
           restaurant_tables: table,
           session_items: [...(savedSession.session_items || []), ...remappedItems]
         };
@@ -10955,10 +11000,10 @@ const App = (() => {
       updated_by_user_id: state.currentUser?.id || null
     }));
     const sessionUpdatePromise = originalSession && (payerName !== (originalSession.payer_name || "")
-      || (state.currentUser?.id || originalSession.assigned_waiter_id || null) !== (originalSession.assigned_waiter_id || null))
+      || (originalSession.assigned_waiter_id || state.currentUser?.id || null) !== (originalSession.assigned_waiter_id || null))
       ? retryPosMutation(() => state.sb.from("table_sessions").update({
           payer_name: payerName,
-          assigned_waiter_id: state.currentUser?.id || originalSession.assigned_waiter_id || null
+          assigned_waiter_id: originalSession.assigned_waiter_id || state.currentUser?.id || null
         }).eq("id", persistedSessionId).select("*").single(), 4)
       : Promise.resolve(savedSession);
     const itemsPromise = retryPosMutation(() => state.sb.from("session_items").insert(payloads).select("*"), 4);
@@ -10987,7 +11032,7 @@ const App = (() => {
           ...entry,
           ...(sessionSaved || {}),
           restaurant_tables: entry.restaurant_tables || table,
-          assigned_waiter: state.currentUser || entry.assigned_waiter,
+          assigned_waiter: entry.assigned_waiter || state.currentUser,
           session_items: [
             ...(entry.session_items || []).filter((item) => !temporaryIds.has(item.id)),
             ...savedItems.map((item) => ({ ...item, created_by_user: state.currentUser }))
@@ -11346,8 +11391,8 @@ const App = (() => {
       ? (optimisticSession = {
           ...entry,
           payer_name: payerName || entry.payer_name,
-          assigned_waiter_id: state.currentUser?.id || entry.assigned_waiter_id,
-          assigned_waiter: state.currentUser || entry.assigned_waiter,
+          assigned_waiter_id: entry.assigned_waiter_id || state.currentUser?.id,
+          assigned_waiter: entry.assigned_waiter || state.currentUser,
           session_items: itemId
             ? (entry.session_items || []).map((item) => item.id === itemId ? { ...item, ...optimisticItem } : item)
             : [...(entry.session_items || []), optimisticItem]
@@ -11380,7 +11425,7 @@ const App = (() => {
     const sessionSaved = await retryQuiet(
         () => state.sb.from("table_sessions").update({
           payer_name: payerName || session.payer_name || "",
-          assigned_waiter_id: state.currentUser?.id || session.assigned_waiter_id || null
+          assigned_waiter_id: session.assigned_waiter_id || state.currentUser?.id || null
         }).eq("id", sessionId).select("*").single(),
         4
     );
@@ -11403,7 +11448,7 @@ const App = (() => {
         ? (confirmedSession = {
             ...entry,
             ...(sessionSaved || {}),
-            assigned_waiter: state.currentUser || entry.assigned_waiter,
+            assigned_waiter: entry.assigned_waiter || state.currentUser,
             session_items: (entry.session_items || []).map((item) => item.id === temporaryId
               ? { ...saved, created_by_user: item.created_by_user || state.currentUser }
               : item)
@@ -12783,7 +12828,7 @@ const App = (() => {
     session = {
       ...session,
       restaurant_tables: table,
-      assigned_waiter: state.currentUser || session.assigned_waiter,
+      assigned_waiter: session.assigned_waiter || state.currentUser,
       session_items: session.session_items || []
     };
     state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
@@ -13657,6 +13702,7 @@ const App = (() => {
     };
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+    openWebOrderCheckout,
     getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
     notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   return { init };

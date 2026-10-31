@@ -7,9 +7,9 @@ const source = fs.readFileSync(path.join(__dirname, '../app.js'), 'utf8');
 const slice = (a, b) => source.slice(source.indexOf('  const ' + a + ' ='), source.indexOf('  const ' + b + ' =', source.indexOf('  const ' + a + ' =') + 1));
 const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(setImmediate); };
 
-function harness() {
+function harness(savedStorage) {
   const state = { soundEnabled: true, soundPrimed: false, announcedRequestIds: new Set(), alertAnnouncementQueue: [], requests: [] };
-  const events = new Map(), timers = new Map(), storage = new Map(), calls = [], voices = [];
+  const events = new Map(), timers = new Map(), storage = savedStorage||new Map(), calls = [], voices = [];
   let blocked = true, timerId = 0;
   class Audio {
     constructor() { this.volume = 1; this.handlers = new Map(); }
@@ -42,6 +42,16 @@ function harness() {
     async finishVoice() { voices.at(-1)?.onend?.(); await settle(); }
   };
 }
+
+test('recargar conserva los pedidos web y comandas de mesero ya reproducidos',async()=>{
+ const first=harness();first.unblock();first.state.soundPrimed=true;
+ const request={id:'waiter-comanda',table_id:'1',request_type:'other',status:'pending'};first.state.requests=[request];
+ first.api.announceWebOrders([{id:'DP-persisted',status:'nueva'}]);first.api.playAlarm();
+ await settle();await first.finishTone(true);await first.finishVoice();await first.finishTone();await first.finishVoice();
+ const refreshed=harness(first.storage);refreshed.unblock();refreshed.state.soundPrimed=true;refreshed.state.requests=[request];
+ refreshed.api.announceWebOrders([{id:'DP-persisted',status:'nueva'}]);refreshed.api.playAlarm();await settle();assert.equal(refreshed.calls.length,0);
+ refreshed.api.announceWebOrders([{id:'DP-new',status:'nueva'}]);await settle();assert.ok(refreshed.calls.length>0,'Los pedidos nuevos sí avisan');
+});
 
 test('Admin conserva solicitudes anteriores al gesto y anuncia tono y voz al terminar el deslizamiento', async () => {
   const h = harness(); h.api.armAlarmOnFirstGesture();

@@ -170,7 +170,7 @@
   function rememberResult(data){
     const previous=orders.find(order=>order.id===data.comanda.id)||{};
     const order={...previous,...data.comanda,table:operations().tables.find(t=>t.id===data.comanda.table_id)||previous.table,
-      waiter_name:previous.waiter_name||api().getUser().full_name,request_status:data.request?.status,
+      waiter_name:data.comanda.waiter_name||previous.waiter_name||api().getUser().full_name,request_status:data.request?.status,
       items:(data.comanda.items||[]).map(item=>({id:item.id,web_product_id:item.product_id,item_name:item.name,quantity:item.quantity,unit_price:item.unit_price,waiter_options:item.options,waiter_line_notes:item.notes}))};
     localWrites.set(order.id,{revision:++writeRevision,order});orders=[order,...orders.filter(row=>row.id!==order.id)];managerSignature='';
   }

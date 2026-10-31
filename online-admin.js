@@ -242,7 +242,7 @@
       if(!write.after)next.delete(id);
       else if(next.has(id))next.set(id,write.after);
     }
-    return [...next.values()];
+    return [...next.values()].filter(row=>row.status!=='cobrada');
   }
   function adjustedCount(rows,count,filter){
     const matches=row=>row&&row.status!=='eliminada'&&(filter==='all'||(filter==='active'?['nueva','atendiendo','lista'].includes(row.status):row.status===filter));
@@ -314,10 +314,9 @@
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
-      <div class="dp-order-actions"><label>Estado del pedido<select id="dp-new-status">${Object.entries(labels).map(([value,label])=>`<option value="${value}" ${value===order.status?'selected':''}>${label}</option>`).join('')}</select></label><button class="primary" id="dp-change-status">Guardar estado</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="ghost" id="dp-print-order">▤ Imprimir comanda</button>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está '+labels[order.status].toLowerCase()+'.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}</div><button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button><p id="dp-order-error" role="alert"></p>`;
-    $('#dp-change-status').disabled=!!orderWrites.get(id)?.pending;
+      <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
-    $('#dp-change-status').onclick=()=>void mutateOrder(order,{...order,status:$('#dp-new-status').value,version:Number(order.version)+1},'dp_update_order',{status:$('#dp-new-status').value});
+    if($('#dp-charge-order'))$('#dp-charge-order').onclick=()=>void checkoutOrder(id);
     $('#dp-delete-order').onclick=()=>void deleteOrder(id);
     $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
     $('#dp-print-width').setAttribute('data-dp-paper','');$('#dp-print-width').value=String(paperWidth);
@@ -327,6 +326,27 @@
     if(!dialog.open)dialog.showModal();
     window.DonPierosReception?.dismiss('order:'+id);
   }
+
+  async function checkoutOrder(id){
+    const button=$('#dp-charge-order');if(button)button.disabled=true;
+    try{
+      const result=await request('dp_get_order',{id}),order=result.order;
+      if(result.checkoutAvailable!==true)throw new Error('Actualiza Apps Script a la versión 3.6.0 para cobrar pedidos web.');
+      if(!order||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya fue cobrado o retirado. Actualiza la recepción.');
+      let fee=Number(order.deliveryFee||0);
+      if(order.deliveryFeePending){
+        const value=await window.DonPierosDialogs.prompt({title:'Confirmar domicilio',message:'Escribe el valor acordado del domicilio antes de cobrar el pedido.',label:'Valor en pesos colombianos',value:'0',accept:'Continuar al cobro'});
+        if(value===null)return;
+        if(!/^\s*\$?[\d.\s]+\s*$/.test(value))throw new Error('Escribe un valor de domicilio válido.');
+        fee=Number(value.replace(/[^\d]/g,''));if(!Number.isSafeInteger(fee)||fee<0||fee>100000000)throw new Error('Valor de domicilio inválido.');
+      }
+      $('#dp-order-dialog').close();api().openWebOrderCheckout(order,fee);
+    }catch(error){notify(String(error.message||error),true);}finally{if(button?.isConnected)button.disabled=false;}
+  }
+  window.addEventListener('don-pieros-web-order-paid',event=>{
+    const id=event.detail?.id;if(!id)return;
+    const before=findOrder(id);orderWrites.set(id,{before,after:null,pending:false});repaintOrders();void loadOrders(true);
+  });
 
   function kitchenSelection(value){
     return String(value??'').replace(/\s*\(\s*\+\s*\$[\d.,\s]+\)\s*$/,'')
@@ -340,16 +360,16 @@
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     const d=popup.document;d.open();d.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(order.id)}</title><style>
       @page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}
-      html{background:#fff}body{font:${width===58?'15':'17'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
+      html{background:#fff}body{font:${width===58?'12':'14'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
       .kitchen-ticket{border:1px solid #000;padding:2mm}
-      h1{font-size:${width===58?'18':'20'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:21px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
-      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:23px;font-weight:900;text-align:center;margin:8px 0}
-      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:18px}
-      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'20':'23'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
-      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'17':'19'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
+      h1{font-size:${width===58?'15':'17'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:18px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
+      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:20px;font-weight:900;text-align:center;margin:8px 0}
+      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:15px}
+      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'17':'20'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'14':'16'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
       ${window.DonPierosThermal.sizeStyle}
-      .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:17px}.notes p{white-space:pre-wrap;font-weight:700}
-      .total{font-size:15px;font-weight:900}.total-amount{display:block;font-size:24px}.total-amount small{font-size:13px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
+      .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:14px}.notes p{white-space:pre-wrap;font-weight:700}
+      .total{font-size:12px;font-weight:900}.total-amount{display:block;font-size:21px}.total-amount small{font-size:10px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
       </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}

@@ -31,6 +31,12 @@ update public.waiter_comandas c set accepted_at=c.created_at,items=coalesce((
 ),'[]'::jsonb) where c.accepted_at is null and c.items='[]'::jsonb
   and exists(select 1 from public.session_items i where i.waiter_comanda_id=c.id);
 alter table public.waiter_comandas enable row level security;
+-- Repair the attendant on still-open accounts created before this update.
+update public.table_sessions s set assigned_waiter_id=(
+  select c.created_by_user_id from public.waiter_comandas c join public.app_users u on u.id=c.created_by_user_id and u.role='waiter'
+  where c.session_id=s.id order by c.created_at,c.id limit 1
+) where s.status='open' and not exists(select 1 from public.app_users u where u.id=s.assigned_waiter_id and u.role='waiter')
+  and exists(select 1 from public.waiter_comandas c join public.app_users u on u.id=c.created_by_user_id and u.role='waiter' where c.session_id=s.id);
 alter table public.waiter_comanda_operations enable row level security;
 revoke all on public.waiter_comandas,public.waiter_comanda_operations from anon,authenticated;
 
@@ -57,7 +63,8 @@ end;$$;
 
 create or replace function public.dp_waiter_comanda_result(p_id uuid)
 returns jsonb language sql stable security definer set search_path=public,extensions as $$
-  select jsonb_build_object('comanda',to_jsonb(c),'session',to_jsonb(s)||jsonb_build_object('session_items',
+  select jsonb_build_object('comanda',to_jsonb(c)||jsonb_build_object('waiter_name',(select coalesce(nullif(full_name,''),username) from public.app_users where id=c.created_by_user_id)),
+    'session',to_jsonb(s)||jsonb_build_object('assigned_waiter',(select public.public_user(u) from public.app_users u where u.id=s.assigned_waiter_id),'session_items',
     coalesce((select jsonb_agg(to_jsonb(i) order by i.created_at,i.id) from public.session_items i where i.session_id=s.id),'[]'::jsonb)),
     'request',(select to_jsonb(r) from public.service_requests r where r.id=c.id))
   from public.waiter_comandas c join public.table_sessions s on s.id=c.session_id where c.id=p_id;
@@ -220,6 +227,9 @@ begin
   end if;
   if is_new then
     if actor.role<>'waiter' then raise exception 'Selecciona una comanda recibida para editarla.';end if;
+    if not exists(select 1 from public.app_users where id=account.assigned_waiter_id and role='waiter') then
+      update public.table_sessions set assigned_waiter_id=actor.id,updated_at=now() where id=account.id;
+    end if;
     if exists(select 1 from public.service_requests where id=p_comanda_id) then raise exception 'El identificador pertenece a otra solicitud.';end if;
     if coalesce(p_expected_version,0)<>0 or jsonb_array_length(p_items)=0 then raise exception 'Agrega al menos un producto.';end if;
     insert into public.waiter_comandas(id,table_id,session_id,created_by_user_id,notes) values(p_comanda_id,p_table_id,account.id,actor.id,coalesce(p_notes,'')) returning * into c;

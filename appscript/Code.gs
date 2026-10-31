@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.5.0-donpieros",
+  version: "3.6.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -40,7 +40,7 @@ var HEADERS = {
   sales: [
     "sale_id", "factura", "session_id", "table_id", "mesa", "fecha", "responsable",
     "mesero", "subtotal", "descuento", "impuestos", "servicio", "total",
-    "forma_pago", "referencia_pago", "origen", "sincronizado_en"
+    "forma_pago", "referencia_pago", "origen", "sincronizado_en", "cobrado_por", "cobrado_usuario_id", "pedido_web_id", "cobro_id", "entrega", "cobrado_rol"
   ],
   details: [
     "sale_id", "factura", "line_id", "menu_item_id", "producto", "cantidad",
@@ -118,7 +118,7 @@ function doGet() {
       service: "DON PIEROS PIZZA",
       version: APP.version,
       configured: isConfigured_(),
-      capabilities: { onlineOrders: true, orderDeletion: true, fastOrderReception: true, catalog: true, queue: true, receipts: false, liveLocation: false },
+      capabilities: { onlineOrders: true, webCheckout:true,orderDeletion: true, fastOrderReception: true, catalog: true, queue: true, receipts: false, liveLocation: false },
       spreadsheetId: APP.spreadsheetId
     });
   } catch (error) {
@@ -172,8 +172,9 @@ function apiRequest(payloadText) {
       requireSection_(user, "income");
       result = getIncomeReport_(payload.filters || {});
     }
-    else if (request.action === "record_sale") {
+    else if (request.action === "record_sale" || request.action === "checkout_web_order") {
       requireManager_(user);
+      if(request.action==='checkout_web_order'&&!(payload.invoice&&payload.invoice.webOrderId))throw new Error('Pedido web inválido.');
       result = recordSale_(payload.invoice, user, request.authToken);
     }
     else if (request.action === "edit_sale") {
@@ -241,7 +242,7 @@ function apiRequest(payloadText) {
     } catch (auditError) {
       // La respuesta original tiene prioridad.
     }
-    return { ok: false, retryable: error.retryable !== false, code: error.code || "", error: String(error.message || error) };
+    return { ok: false, retryable: error.retryable !== false, alreadyPaid:!!error.alreadyPaid,code: error.code || "", error: String(error.message || error) };
   }
 }
 
@@ -408,6 +409,7 @@ function ensureAllSheets_(spreadsheet) {
   ensureSheet_(spreadsheet, APP.sheets.audit, HEADERS.audit);
   ensureSheet_(spreadsheet, APP.sheets.shifts, HEADERS.shifts);
   ensureSheet_(spreadsheet, APP.sheets.sales, HEADERS.sales);
+  spreadsheet.getSheetByName(APP.sheets.sales).getRange(1,18,1,HEADERS.sales.length-17).setValues([HEADERS.sales.slice(17)]);
   ensureSheet_(spreadsheet, APP.sheets.details, HEADERS.details);
   spreadsheet.getSheetByName(APP.sheets.details).getRange(1,HEADERS.details.length).setValue('notas');
   ensureSheet_(spreadsheet, APP.sheets.payments, HEADERS.payments);
@@ -701,7 +703,7 @@ function getIncomeReport_(filters) {
     if (methodFilter !== "all" && methodFilter !== "mixed" && !payments.some(function (payment) { return payment.method === methodFilter; })) return;
     var items = detailsBySale[saleId] || [];
     var searchText = normalizeSearch_([
-      saleId, row[1], row[4], row[6], row[7], row[13], row[14],
+      saleId, row[1], row[4], row[6], row[7], row[13], row[14],row[17],row[22],
       payments.map(function (payment) { return payment.method + " " + payment.reference; }).join(" "),
       items.map(function (item) { return item.name; }).join(" ")
     ].join(" "));
@@ -715,6 +717,7 @@ function getIncomeReport_(filters) {
       date: String(row[5] instanceof Date ? row[5].toISOString() : row[5] || ""),
       payer: String(row[6] || ""),
       waiter: String(row[7] || ""),
+      cashier:String(row[17]||''),cashierId:String(row[18]||''),webOrderId:String(row[19]||''),fulfillment:String(row[21]||''),cashierRole:String(row[22]||''),
       subtotal: asNumber_(row[8]),
       discount: asNumber_(row[9]),
       tax: asNumber_(row[10]),
@@ -1050,6 +1053,7 @@ function applySaleJournal_(spreadsheet, journalRow, plan) {
   var sales = spreadsheet.getSheetByName(APP.sheets.sales);
   if (!existingSaleRow_(sales, plan.saleId, plan.sessionId)) appendRows_(sales, [plan.saleRow]);
   updateDailyIncome_(spreadsheet.getSheetByName(APP.sheets.daily), plan.invoice, plan.totalCost, plan.saleId);
+  if(plan.invoice.webOrderId)dpFinishWebSale_(plan.invoice);
   saleJournalSheet_(spreadsheet).getRange(journalRow, 3).setValue("committed");
   SpreadsheetApp.flush();
   PropertiesService.getScriptProperties().deleteProperty(POS_PENDING_SALE);
@@ -1069,6 +1073,32 @@ function recoverPendingSaleJournal_() {
   applySaleJournal_(spreadsheet, row, plan);
 }
 
+function dpWebSaleOrder_(invoice){
+  var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
+  var found=last>1?sheet.getRange(2,1,last-1,1).createTextFinder(String(invoice.webOrderId)).matchEntireCell(true).findNext():null;
+  if(found){var row=found.getRow(),cells=sheet.getRange(row,1,1,DP_TABLES.orders.headers.length).getValues()[0];return {sheet:sheet,row:row,cells:cells,order:dpObjects_('orders',[cells])[0]};}
+  throw new Error('El pedido web ya no existe.');
+}
+function dpValidateWebSale_(invoice){
+  var found=dpWebSaleOrder_(invoice),order=found.order;
+  if(order.status==='cobrada'||order.status==='eliminada'){
+    var error=new Error(order.status==='cobrada'?'Este pedido ya fue cobrado. Revisa Ventas.':'El pedido fue eliminado.');error.retryable=false;error.alreadyPaid=order.status==='cobrada';throw error;
+  }
+  if(invoice.id!=='walk-in-web-'+order.id||invoice.sessionId!==invoice.id||invoice.saleChannel!=='walk_in'||!invoice.checkoutId)throw new Error('Identidad de cobro inválida.');
+  var delivery=order.deliveryFeePending?dpMoney_(invoice.webDeliveryFee):Number(order.deliveryFee||0);
+  var expected=Number(order.subtotal)+Number(order.packagingFee||0)+delivery;
+  var subtotal=(invoice.items||[]).reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.unit_price);},0);
+  var paid=(invoice.payments||[]).reduce(function(sum,p){return sum+Number(p.amount);},0);
+  if(subtotal!==expected||Number(invoice.totals.total)-Number(invoice.tipAmount||0)!==expected||paid!==Number(invoice.totals.total))throw new Error('El importe del pedido cambió. Revisa el pedido antes de cobrar.');
+}
+function dpFinishWebSale_(invoice){
+  var found=dpWebSaleOrder_(invoice),row=found.cells,headers=DP_TABLES.orders.headers;
+  if(row[5]==='cobrada')return;
+  if(found.order.deliveryFeePending){row[11]=Number(invoice.webDeliveryFee);row[13]=Number(found.order.subtotal)+Number(found.order.packagingFee||0)+Number(invoice.webDeliveryFee);row[headers.indexOf('deliveryFeePending')]=false;}
+  row[5]='cobrada';row[4]=new Date().toISOString();row[20]=safeText_(invoice.cashierName);row[21]=Number(row[21]||0)+1;
+  found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);
+  var props=PropertiesService.getScriptProperties(),revision=Utilities.getUuid();props.setProperty('DP_ORDERS_REVISION',revision);props.setProperty('DP_HISTORY_REVISION',revision);props.setProperty('DP_MOVEMENT_REVISION',revision);props.setProperty('DP_INVENTORY_INITIALIZED','1');
+}
 function recordSale_(invoice, user, authToken) {
   if (!invoice || !invoice.sessionId || !invoice.totals) throw new Error("Factura incompleta.");
   return withScriptLock_(function () {
@@ -1080,6 +1110,7 @@ function recordSale_(invoice, user, authToken) {
       var canonical = existingSaleRow_(salesSheet, saleId, sessionId);
       if (!canonical) throw new Error("No se pudo verificar la venta existente. Se conserva el reintento.");
       var canonicalId = String(canonical[0]);
+      if(invoice.webOrderId&&String(canonical[20]||'')!==String(invoice.checkoutId||''))return {ok:false,retryable:false,alreadyPaid:true,error:'Este pedido ya fue cobrado. Revisa la factura en Ventas.'};
       var canonicalInvoice = { id: canonicalId, sessionId: String(canonical[2]), createdAt: canonical[5],
         totals: { total: asNumber_(canonical[12]), discount: asNumber_(canonical[9]), tax: asNumber_(canonical[10]), serviceFee: asNumber_(canonical[11]) },
         payments: readSheetRows_(spreadsheet.getSheetByName(APP.sheets.payments), HEADERS.payments.length)
@@ -1099,13 +1130,15 @@ function recordSale_(invoice, user, authToken) {
     }
 
     var now = new Date().toISOString();
+    if(invoice.webOrderId){dpValidateWebSale_(invoice);invoice.cashierName=user.full_name||user.username;invoice.cashierId=user.id;invoice.cashierRole=user.role;}
     var totals = invoice.totals || {};
     var saleRow = [[
       saleId, safeText_(invoice.number), sessionId, safeText_(invoice.tableId), safeText_(invoice.table),
       safeText_(invoice.createdAt || now), safeText_(invoice.payerName), safeText_(invoice.waiterName),
       asNumber_(totals.subtotal), asNumber_(totals.discount), asNumber_(totals.tax),
       asNumber_(totals.serviceFee), asNumber_(totals.total), safeText_(invoice.paymentMethod),
-      safeText_(invoice.reference), invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now
+      safeText_(invoice.reference), invoice.webOrderId?'Pedido en linea/AppScript':invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now,
+      safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role)
     ]];
 
     var inventoryTable = readInventoryTable_();
@@ -1744,7 +1777,7 @@ function dpDispatch_(request) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
-    if (action === 'dp_get_order') return dpGetOrder_(payload);
+    if (action === 'dp_get_order') return Object.assign(dpGetOrder_(payload),{checkoutAvailable:true});
     if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
     return dpUpdateOrder_(payload,user);
   }
@@ -1966,7 +1999,7 @@ function dpOrders_(payload) {
   var metadata=last>1?sheet.getRange(2,3,last-1,4).getValues():[];
   var orders=metadata.map(function(row,index){return{row:index+2,sequence:Number(row[0])||0,status:String(row[3])};}).sort(function(a,b){return b.sequence-a.sequence;});
   var filter=payload.status||'active';
-  var filtered=orders.filter(function(order){return order.status!=='eliminada' && (filter==='all' || (filter==='active'?['nueva','atendiendo','lista'].indexOf(order.status)>=0:order.status===filter));});
+  var filtered=orders.filter(function(order){return ['eliminada','cobrada'].indexOf(order.status)<0 && (filter==='all' || (filter==='active'?['nueva','atendiendo','lista'].indexOf(order.status)>=0:order.status===filter));});
   var offset=Math.max(0,Number(payload.offset)||0);
   var selected=filtered.slice(offset,offset+limit).sort(function(a,b){return a.row-b.row;}),cells=[];
   for(var i=0;i<selected.length;){var start=selected[i].row,end=start;i++;while(i<selected.length && selected[i].row===end+1){end=selected[i].row;i++;}cells=cells.concat(sheet.getRange(start,1,end-start+1,DP_TABLES.orders.headers.length).getValues());}
@@ -1976,6 +2009,7 @@ function dpOrders_(payload) {
 
 function dpUpdateOrder_(payload,user) {
   var result=dpWithLock_(function(){
+    recoverPendingSaleJournal_();
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
     if(DP_STATUSES.indexOf(payload.status)<0)throw new Error('Estado inválido.');
     var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
@@ -2014,6 +2048,7 @@ function dpGetOrder_(payload) {
 
 function dpDeleteOrder_(payload,user) {
   var result=dpWithLock_(function(){
+    recoverPendingSaleJournal_();
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
     var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
     for(var i=ids.length-1;i>=0;i--)if(ids[i][0]===payload.id){
