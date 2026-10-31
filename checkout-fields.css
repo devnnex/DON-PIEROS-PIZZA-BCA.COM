@@ -1,0 +1,14 @@
+#checkout-form .checkout-field-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;line-height:1.5}
+#checkout-form .checkout-field-status{position:static;display:inline-block;flex-shrink:0;padding:3px 8px;border-radius:99px;background:#f1f1f1;color:#666;font-size:11px;font-weight:750;white-space:nowrap;letter-spacing:0}
+#checkout-form .checkout-help{position:static;display:block;inset:auto;width:100%;color:#666;font-size:12px;font-weight:500;line-height:1.5;overflow-wrap:anywhere}
+#checkout-form .checkout-note-count{font-size:11px;color:#777;font-weight:500}
+#checkout-form .checkout-field>input,#checkout-form .checkout-field>textarea{transition:none}
+#checkout-form .checkout-field.is-complete>input,#checkout-form .checkout-field.is-complete>textarea{border-color:#20834b;box-shadow:0 0 0 2px #20834b12}
+#checkout-form .is-complete .checkout-field-status{color:#166534;background:#dcfce7}
+#checkout-form .checkout-choice>legend{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;width:100%}
+#checkout-form .checkout-choice.is-complete input:checked+span{border-color:#20834b;background:#f0fdf4}
+.cart-sheet .summary>.summary-packaging{color:#1e40af;background:#eff6ff;border-radius:10px;padding:10px 12px;gap:12px}
+.cart-sheet .summary>.summary-delivery-pending{color:#92400e;background:#fff4d6;border-radius:10px;padding:10px 12px;gap:12px}
+.cart-sheet .summary>:is(.summary-packaging,.summary-delivery-pending)>:last-child{font-weight:800}
+.store-details .store-whatsapp{flex-wrap:wrap;gap:5px}
+.store-whatsapp a{color:inherit;font-weight:750;text-underline-offset:3px;white-space:nowrap}

@@ -41,7 +41,7 @@ test('Apps Script avisa antes del recibo y solo transmite el identificador públ
 test('la primera petición crea la estructura en la hoja nueva sin productos, ventas ni pedidos',()=>{
  const h=harness();const health=JSON.parse(h.context.doGet().value);assert.equal(health.ok,true);assert.equal(health.configured,true);assert.equal(health.spreadsheetId,h.book.getId());
  for(const name of ['Inventario','Ventas','Detalle_Ventas','Ordenes_Web','Menu_Web','Adicionales_Web','Barrios_Web']){assert.ok(h.sheets.has(name));assert.equal(h.sheets.get(name).getLastRow(),1);}
- h.context.ensureSystemReady_();assert.equal(h.sheets.get('Pagos_Web').getLastRow(),2);
+ h.context.ensureSystemReady_();assert.equal(h.sheets.get('Pagos_Web').getLastRow(),4);
 });
 test('los precios vienen de Sheets, la orden se guarda una vez y la cola cuenta pedidos activos',()=>{
  const h=harness(),p=h.product(),order=h.order(p);const first=h.call('createOrder',{order});assert.equal(first.ok,true);assert.equal(first.total,25000);assert.equal(first.queuePosition,1);

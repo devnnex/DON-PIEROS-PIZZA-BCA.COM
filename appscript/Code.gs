@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.6.0-donpieros",
+  version: "3.6.1-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1762,9 +1762,18 @@ function dpEnsureSheets_(spreadsheet) {
         sheet.getRange(1,definition.headers.indexOf('packagingFee')+1).setValue('packagingFee');
       }
   });
-  // Payment configuration only. No demo products, clients, orders or sales.
-  var payments = spreadsheet.getSheetByName(DP_TABLES.payments.name);
-  if (payments.getLastRow() < 2) payments.appendRow(['efectivo','Efectivo','','Paga al recibir tu pedido',true,0,1]);
+  // Add missing payment methods without replacing configured account details
+  // or reactivating methods the business has disabled.
+  var payments = spreadsheet.getSheetByName(DP_TABLES.payments.name),existing=dpRows_('payments');
+  var paymentKey=function(value){return normalizeSearch_(value).replace(/[^a-z0-9]/g,'');};
+  [
+    ['efectivo','Efectivo','','Paga al recibir tu pedido',true,0,1],
+    ['nequi','Transferencia Nequi','','Coordina los datos de pago con Don Pieros Pizza por WhatsApp.',true,1,1],
+    ['breb','Bre-B','','Coordina la llave Bre-B con Don Pieros Pizza por WhatsApp.',true,2,1]
+  ].forEach(function(row){
+    var key=row[0];
+    if(!existing.some(function(item){var name=paymentKey(item.name);return paymentKey(item.id)===key||name===key||(key==='nequi'&&name.indexOf('nequi')>=0);}))payments.appendRow(row);
+  });
   dpSeedInitialMenu_(spreadsheet);
 }
 
@@ -1957,7 +1966,9 @@ function dpOrderResult_(order,duplicate) {
 function dpCreateOrder_(raw) {
   if(!raw || !/^[a-f0-9-]{36}$/i.test(String(raw.requestId||'')))dpRejectOrder_('Identificador de pedido inválido.');
   var customerName=dpText_(raw.customerName,80),phone=dpText_(raw.phone,25);
-  if(customerName.length<2 || !/^\+?[\d\s()-]{7,25}$/.test(phone) || phone.replace(/\D/g,'').length<7)dpRejectOrder_('Nombre o teléfono inválido.');
+  if(customerName.length<2)dpRejectOrder_('Escribe un nombre de al menos dos caracteres.');
+  if(!/^[\d\s]{10,25}$/.test(phone)||phone.replace(/\D/g,'').length!==10)dpRejectOrder_('El teléfono debe tener exactamente 10 dígitos. Puedes separarlos con espacios.');
+  phone=phone.replace(/\s/g,'');
   var result=dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
     // Read metadata only. Historical item JSON is not downloaded to assign a turn.
