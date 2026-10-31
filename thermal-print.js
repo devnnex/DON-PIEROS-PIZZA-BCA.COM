@@ -1,6 +1,12 @@
 (() => {
   'use strict';
   const activeUrls=new WeakMap();
+  function sizeOption(value){
+    const text=String(value??''),escape=text=>text.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const match=text.match(/^((?:Elige\s+el\s+)?Tama[ñn]o\s*:\s*)(Super\s+maxi|Maxi|Mediana|Mini|Pizzeta)\b(.*)$/i);
+    return {isSize:!!match,html:match?escape(match[1])+`<b class="size-name">${escape(match[2])}</b>`+escape(match[3]):escape(text)};
+  }
+  const sizeStyle='.size-option{margin-left:-4px!important}.size-option .size-name{font-size:calc(1em + 2px);font-weight:900!important}';
   async function prepare(target,width=80){
     const doc=target.document;width=width===58?58:80;
     const style=doc.createElement('style');style.dataset.thermalPaper='';
@@ -56,5 +62,5 @@
     target.addEventListener('unload',()=>{URL.revokeObjectURL(url);if(activeUrls.get(target)===url)activeUrls.delete(target);},{once:true});
     target.focus();return result;
   }
-  window.DonPierosThermal={prepare,createPdf,print};
+  window.DonPierosThermal={prepare,createPdf,print,sizeOption,sizeStyle};
 })();

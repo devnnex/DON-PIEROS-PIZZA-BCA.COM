@@ -94,6 +94,8 @@ const root=path.resolve(__dirname,'..');
   assert.equal(await printed.locator('body').evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),16);
   assert.equal(await printed.locator('article strong').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),19);
   assert.match(await printed.locator('body').evaluate(node=>getComputedStyle(node).fontFamily),/monospace/);
+  const sizeLine=await printed.locator('.size-option').first().evaluate(node=>({line:parseFloat(getComputedStyle(node).fontSize),word:parseFloat(getComputedStyle(node.querySelector('.size-name')).fontSize),left:parseFloat(getComputedStyle(node).marginLeft)}));
+  assert.equal(sizeLine.line,16);assert.equal(sizeLine.word,18);assert.equal(sizeLine.left,-4);
   const pdfData=await printed.evaluate(async()=>{const bytes=new Uint8Array(await(await fetch(document.querySelector('[data-thermal-pdf-viewer]').src)).arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);return btoa(binary);});
   const printedPdf=Buffer.from(pdfData,'base64');assert.match(printedPdf.toString('latin1'),/\/N \/Print/);
   fs.writeFileSync(path.join(root,'artifacts/comanda-mesero-negrita.pdf'),printedPdf);await printed.close();

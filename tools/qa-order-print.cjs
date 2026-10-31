@@ -51,6 +51,8 @@ const root=path.resolve(__dirname,'..');
    assert.match(text,/Mini/);assert.match(text,/Super maxi/);assert.match(text,/INDICACIONES PARA COCINA/);
    assert.match(text,/Alergia a maní/);assert.match(text,/Centro/);assert.match(text,/Domicilio/);
    assert.match(text,/Tamaño: Super maxi · 54 × 54 cm/);
+   const sizeLine=await frame.locator('.size-option').first().evaluate(node=>({line:parseFloat(getComputedStyle(node).fontSize),word:parseFloat(getComputedStyle(node.querySelector('.size-name')).fontSize),weight:Number(getComputedStyle(node.querySelector('.size-name')).fontWeight),left:parseFloat(getComputedStyle(node).marginLeft)}));
+   assert.equal(sizeLine.word,sizeLine.line+2);assert.ok(sizeLine.weight>=800);assert.equal(sizeLine.left,-4);
    assert.match(text,/TOTAL:\s*\$\s*200\.000 COP/);
    assert.doesNotMatch(text,/Devnex|3246394689|No es factura fiscal/,'La comanda no lleva el pie de las facturas');
    assert.doesNotMatch(text,/Valor de esta línea|POR VERIFICAR|Elige el tamaño|\(\+\$|Subtotal:/);
