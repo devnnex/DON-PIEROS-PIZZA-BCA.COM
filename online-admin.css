@@ -78,3 +78,7 @@
 @media(max-width:640px){.dp-reception-filters{flex-basis:100%;grid-template-columns:1fr}.dp-dashboard-orders>.dp-reception-filters{padding:12px}.dp-dashboard-orders .dp-order-card{padding:15px}.dp-order-card>div{align-items:flex-start}.dp-order-card small{line-height:1.5}.dp-order-card>div>small{text-align:right;max-width:55%}}
 .dp-order-actions .dp-charge-order{background:#218653;color:#fff;min-width:170px;flex:1;font-weight:800}.dp-order-actions .dp-charge-order:hover{background:#196d43}.dp-order-actions .dp-remove-order{margin-left:auto}.dp-order-actions{align-items:end}
 #paymentAddItem[hidden]{display:none!important}
+.checkout-progress{position:fixed;z-index:1200;right:18px;bottom:18px;max-width:min(440px,calc(100vw - 36px));padding:16px 20px;border:1px solid #8dc7aa;border-radius:14px;background:#effaf4;color:#155738;box-shadow:0 8px 28px #0002;font-weight:700;pointer-events:none}.checkout-progress[hidden]{display:none!important}
+body[data-page="admin"] :is(button,a,input,select,label){touch-action:manipulation}
+body[data-page="admin"] :is(.modal[open],.modal-card,.dp-dialog[open],.dp-dialog-card){animation:none}
+body[data-page="admin"] :is(button,a):active{transition-duration:0s}

@@ -330,8 +330,9 @@
   async function checkoutOrder(id){
     const button=$('#dp-charge-order');if(button)button.disabled=true;
     try{
-      const result=await request('dp_get_order',{id}),order=result.order;
-      if(result.checkoutAvailable!==true)throw new Error('Actualiza Apps Script a la versión 3.6.0 para cobrar pedidos web.');
+      // Reception already holds the complete order. The checkout endpoint
+      // validates it again atomically when charging, without delaying this UI.
+      const order=findOrder(id);
       if(!order||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya fue cobrado o retirado. Actualiza la recepción.');
       let fee=Number(order.deliveryFee||0);
       if(order.deliveryFeePending){

@@ -6042,6 +6042,10 @@ const App = (() => {
   };
 
   const createWalkInSale = async () => {
+    if (state.paymentProcessing || checkoutSubmissionBusy) {
+      toast("Hay un cobro en proceso; espera su confirmación.", "ok", "payment-busy");
+      return;
+    }
     const button = $("#newWalkInSale");
     if (button) button.disabled = true;
     try {
@@ -6069,14 +6073,15 @@ const App = (() => {
       state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
       state.optimisticSessionStates.set(session.id, { mode: "upsert", localOnly: true, session });
       persistWalkInDrafts();
-      renderAdminLive();
       openPaymentDialog(session.id);
+      window.setTimeout(renderAdminLive, 0);
     } finally {
       if (button) button.disabled = false;
     }
   };
 
   const openWebOrderCheckout = (order,deliveryFee=Number(order.deliveryFee||0)) => {
+    if(state.paymentProcessing||checkoutSubmissionBusy)throw new Error('Hay un cobro en proceso; espera su confirmación.');
     if(!isManager())throw new Error('Tu usuario no tiene permiso para cobrar.');
     if(!order?.id||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya no está disponible para cobrar.');
     const id='walk-in-web-'+order.id;
@@ -6095,7 +6100,7 @@ const App = (() => {
       })};
     if(deliveryFee)session.session_items.push({id:id+'-delivery',session_id:id,table_id:null,menu_item_id:null,item_name:'Domicilio',quantity:1,unit_price:deliveryFee,status:'served',notes:'',created_at:now});
     state.sessions=[session,...state.sessions.filter(row=>row.id!==id)];
-    state.optimisticSessionStates.set(id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();openPaymentDialog(id);
+    state.optimisticSessionStates.set(id,{mode:'upsert',localOnly:true,session});openPaymentDialog(id);persistWalkInDrafts();
   };
 
   // Los avisos públicos no llevan cuentas ni importes. La lectura requiere el token del empleado.
@@ -10136,6 +10141,10 @@ const App = (() => {
   };
 
   const openPaymentDialog = (sessionId) => {
+    if (state.paymentProcessing || checkoutSubmissionBusy) {
+      toast("El cobro anterior sigue en proceso. Puedes continuar usando las demás secciones.", "ok", "payment-busy");
+      return;
+    }
     const session = state.sessions.find((entry) => entry.id === sessionId);
     const dialog = $("#paymentDialog");
     const form = $("#paymentForm");
@@ -10366,6 +10375,23 @@ const App = (() => {
   };
 
   const CHECKOUT_INTENTS_KEY = "donpieros_checkout_intents_v1";
+  const checkoutButtonLabels = new Map();
+  const checkoutFeedback = (form, busy, message = "Preparando cobro…") => {
+    form.setAttribute?.("aria-busy", String(busy));
+    const progress = $("#checkoutProgress");
+    if (progress) { progress.hidden = !busy; progress.textContent = message; }
+    $$('button[type="submit"]', form).forEach(button => {
+      if (busy) {
+        if (!checkoutButtonLabels.has(button)) checkoutButtonLabels.set(button, button.innerHTML);
+        button.disabled = true;
+        button.textContent = "Procesando…";
+      } else if (checkoutButtonLabels.has(button)) {
+        button.innerHTML = checkoutButtonLabels.get(button);
+        checkoutButtonLabels.delete(button);
+        button.disabled = false;
+      }
+    });
+  };
   const saveCheckoutIntent = async (invoice, session, paid, stage) => {
     const intents = readLocalJson(CHECKOUT_INTENTS_KEY, {});
     intents[session.id] = { invoice, session, paid, stage, updatedAt: new Date().toISOString() };
@@ -10472,8 +10498,19 @@ const App = (() => {
 
   let checkoutSubmissionBusy = false;
   const processPayment = async (form, submitter) => {
-    if (state.paymentProcessing || checkoutRecoveryBusy || checkoutSubmissionBusy) return;
+    if (state.paymentProcessing || checkoutRecoveryBusy || checkoutSubmissionBusy) {
+      toast("Hay un cobro en proceso; espera su confirmación.", "ok", "payment-busy");
+      return;
+    }
     checkoutSubmissionBusy = true;
+    checkoutFeedback(form, true);
+    // Reserve the print window during the click, before storage/network awaits.
+    const receiptWindow = submitter?.value === "print" ? window.open("", "_blank", "width=420,height=720") : null;
+    if (receiptWindow?.document?.body) {
+      receiptWindow.document.title = "Preparando factura";
+      receiptWindow.document.body.textContent = "Confirmando el cobro. La factura aparecerá automáticamente…";
+    }
+    let handedToPayment = false;
     try { return await withCheckoutLock(async () => {
       // Another tab may have completed this account while this form was open.
       await Promise.all([INVENTORY_STORAGE_KEY, INVOICE_STORAGE_KEY, INVENTORY_MOVEMENTS_STORAGE_KEY,
@@ -10491,21 +10528,39 @@ const App = (() => {
       const intent = readLocalJson(CHECKOUT_INTENTS_KEY, {})[form.session_id.value];
       if (intent) {
         state.paymentProcessing = true;
+        $("#paymentDialog")?.close();
+        checkoutFeedback(form, true, "Confirmando el cobro pendiente… Puedes continuar usando el sistema.");
         try {
           if (await finishCheckoutIntent(intent)) {
             $("#paymentDialog")?.close();
             toast("Cobro recuperado. Factura " + intent.invoice.number + ". Puedes reimprimirla desde Ventas.", "ok", "checkout-recovered");
             void flushAppsScriptOutbox();
-          } else toast("El cobro sigue protegido y requiere revisión de la cuenta.", "error", "checkout-pending");
-        } catch (error) { toast(String(error?.message || error), "error", "checkout-resume-error"); }
+          } else {
+            toast("El cobro sigue protegido y requiere revisión de la cuenta.", "error", "checkout-pending");
+            $("#paymentDialog")?.showModal?.();
+          }
+        } catch (error) {
+          toast(String(error?.message || error), "error", "checkout-resume-error");
+          if (state.sessions.some(entry => entry.id === intent.session.id)) $("#paymentDialog")?.showModal?.();
+        }
         finally { state.paymentProcessing = false; }
         return;
       }
-      return performPayment(form, submitter);
-    }); } finally { checkoutSubmissionBusy = false; }
+      handedToPayment = true;
+      const completed = await performPayment(form, submitter, receiptWindow);
+      if (!completed) receiptWindow?.close();
+      return completed;
+    }); } catch (error) {
+      toast(String(error?.message || error), "error", "checkout-prepare-error");
+      return false;
+    } finally {
+      checkoutSubmissionBusy = false;
+      checkoutFeedback(form, false);
+      if (!handedToPayment) receiptWindow?.close();
+    }
   };
 
-  const performPayment = async (form, submitter) => {
+  const performPayment = async (form, submitter, preparedReceiptWindow) => {
     if (state.paymentProcessing) return;
     const session = state.sessions.find((entry) => entry.id === form.session_id.value);
     if (!session) {
@@ -10542,7 +10597,7 @@ const App = (() => {
       return;
     }
     const shouldPrint = submitter?.value === "print";
-    const receiptWindow = shouldPrint ? window.open("", "_blank", "width=420,height=720") : null;
+    const receiptWindow = preparedReceiptWindow !== undefined ? preparedReceiptWindow : shouldPrint ? window.open("", "_blank", "width=420,height=720") : null;
     const buttons = $$('button[type="submit"]', form);
     buttons.forEach((button) => { button.disabled = true; });
     state.paymentProcessing = true;
@@ -10603,9 +10658,14 @@ const App = (() => {
     };
 
     await saveCheckoutIntent(invoice, session, checkoutPaid, "prepared");
+    // The intent is durable before releasing the UI. Only confirmation may
+    // finalize a sale, print its invoice or open the cash drawer.
+    $("#paymentDialog")?.close();
+    checkoutFeedback(form, true, "Confirmando cobro de " + sessionLabel(session) + "… Puedes continuar usando el sistema.");
     if (!await finishCheckoutIntent({ invoice, session, paid: checkoutPaid, stage: "prepared" })) {
       receiptWindow?.close();
       toast("El cobro está protegido, pero falta confirmar el cierre de la cuenta. Reintenta para recuperar la misma operación.", "error", "checkout-close-pending");
+      $("#paymentDialog")?.showModal?.();
       return;
     }
     if (payment.payments.some(row => row.method === "cash" && Number(row.amount) > 0)) void openCashDrawer({ localOnly: true });
@@ -10624,9 +10684,11 @@ const App = (() => {
       try { printThermalReceipt(session, invoice, receiptWindow); }
       catch (error) { toast("Cobro guardado. No se pudo imprimir; reimprime desde Ventas.", "error", "checkout-print-error"); }
     }
+    return true;
     } catch (error) {
       receiptWindow?.close();
       toast(String(error?.message || error), "error", "checkout-save-error");
+      if (state.sessions.some(entry => entry.id === session.id)) $("#paymentDialog")?.showModal?.();
     } finally {
       state.paymentProcessing = false;
       buttons.forEach(button => { button.disabled = false; });

@@ -33,8 +33,19 @@ const setup=(method,closed=true,device='bridge')=>{
   renderAdminLive(){},renderInventory:()=>calls.push('render-inventory'),renderTips:()=>{},printThermalReceipt:()=>calls.push('print')});
  vm.runInContext(section('sessionPayments','abonoRowsHtml')+section('openLocalCashDrawer','getAppsScriptUrl')
   +section('CHECKOUT_INTENTS_KEY','renderConsumptionSelection')+';globalThis.process=processPayment;globalThis.openDrawer=openCashDrawer;',context);
- return {context,calls,form};
+ return {context,calls,form,buttons};
 };
+test('el clic responde antes de leer el almacenamiento y reserva una sola ventana de impresión',async()=>{
+ const app=setup('cash');let release;const gate=new Promise(resolve=>{release=resolve;});
+ app.context.hydrateDurableKey=()=>gate;
+ const pending=app.context.process(app.form,{value:'print'});
+ assert.ok(app.buttons.every(button=>button.disabled&&button.textContent==='Procesando…'));
+ assert.equal(app.calls.includes('drawer'),false);assert.equal(app.calls.includes('print'),false);
+ await app.context.process(app.form,{value:'print'}); // Repeated clicks cannot create another checkout.
+ release();await pending;
+ assert.equal(app.calls.filter(call=>typeof call==='object').length,1);
+ assert.ok(app.buttons.every(button=>!button.disabled));
+});
 for(const method of ['cash','transfer','breb','card','mixed'])for(const action of ['save','print']){
  test('BCA '+method+'/'+action+': cobra saldo, conserva abono y abre solo con efectivo',async()=>{
   const app=setup(method);await app.context.process(app.form,{value:action});
