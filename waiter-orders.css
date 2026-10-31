@@ -55,3 +55,4 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 .dw-sent-order small,.dw-received-card small{font-size:13px}
 @media(max-width:760px){#dw-kitchen-body .dw-review-lines strong{font-size:19px}}
 .dw-custom-field select{box-sizing:border-box;width:100%;min-width:0;padding:13px;border:1px solid #e6d3a6;border-radius:13px;background:#fffcf2;color:#2b2115;font:inherit;font-size:16px}
+#dw-packaging-summary{color:#247248;font-weight:650}
