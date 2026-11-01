@@ -45,7 +45,13 @@
     if(!label){label=node.ownerDocument.createElement('small');label.className='order-time-label';node.append(label);}
     node.dataset.orderDeadline=String(deadline(notes,fallback));node.dataset.orderEstimate=info.time;updateNode(node);
   }
-  function updateCountdowns(doc){doc.querySelectorAll('[data-order-deadline]').forEach(node=>updateNode(node));syncClock(doc);}
+  function updateArrival(node,now=Date.now()){node.classList.toggle('order-arrival-new',now<Number(node.dataset.orderArrivalUntil));}
+  function decorateArrival(node,createdAt,enabled=true){
+    if(!node)return;const start=Date.parse(createdAt||'');
+    if(!enabled||!Number.isFinite(start)){delete node.dataset.orderArrivalUntil;node.classList.remove('order-arrival-new');return;}
+    node.dataset.orderArrivalUntil=String(start+120000);updateArrival(node);
+  }
+  function updateCountdowns(doc){doc.querySelectorAll('[data-order-deadline]').forEach(node=>updateNode(node));doc.querySelectorAll('[data-order-arrival-until]').forEach(node=>updateArrival(node));syncClock(doc);}
   function sizeFirst(doc,selector,items=[]){
     doc.querySelectorAll(selector).forEach((block,index)=>{
       const name=block.querySelector('h3,div>strong,strong');if(!name)return;
@@ -66,5 +72,5 @@
     if(!sizes.length&&fallback)sizes.push('Tamaño: '+fallback);
     return {sizes,others};
   }
-  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,updateCountdowns,unlockClock,sizeFirst,prepareComanda};
+  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda};
 });

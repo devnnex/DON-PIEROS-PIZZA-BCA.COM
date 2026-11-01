@@ -9,7 +9,8 @@
   const api=()=>window.DonPierosAdmin;
   const orderDetails=()=>window.DonPierosOrderDetails;
   const timeEdits=new Map();
-  function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order)orderDetails().decorate(node,['cancelada','despachada','cobrada'].includes(order.status)?'':order.notes,order.createdAt);});}
+  function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active);}});}
+  const newestFirst=(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0)||(Number(b.sequence)||0)-(Number(a.sequence)||0);
   const deletions=()=>window.DonPierosDeletions;
   const friendly=(value)=>window.DonPierosLanguage.message(value);
   const labels={nueva:'Nueva',atendiendo:'En preparación',lista:'Lista',despachada:'Despachada',cancelada:'Cancelada'};
@@ -283,7 +284,7 @@
     }catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
   function renderOrders(){
-    const rows=searchRows('list',orders),searching=!!searchState.list.query||searchState.list.status!=='active';
+    const rows=searchRows('list',orders).sort(newestFirst),searching=!!searchState.list.query||searchState.list.status!=='active';
     const visibleTotal=adjustedCount(orders,total,searchState.list.status);
     $('#dp-orders-list').innerHTML=rows.map(orderCard).join('')||'<div class="dp-empty">No encontramos pedidos con esta búsqueda y estado.</div>';
     decorateTimes($('#dp-orders-list'));
@@ -298,7 +299,7 @@
     root.querySelector('.dp-count').textContent=count;
     const board=window.DonPierosReceptionBoard;
     const source=searchRows('dashboard',rows).filter(order=>!board||board.matches('online',order)),searching=!!searchState.dashboard.query||searchState.dashboard.status!=='active';
-    if(board)source.sort(board.compare);
+    source.sort(board?board.compare:newestFirst);
     const visible=source;
     $('#dp-dashboard-result').textContent=searching?`${source.length} pedido${source.length===1?'':'s'} encontrado${source.length===1?'':'s'}${searchJobs.has(searchState.dashboard.status)?' · Buscando en los demás pedidos…':''}`:'';
     $('#dp-dashboard-order-list').innerHTML=visible.map(orderCard).join('')||'<p class="dp-muted">No hay pedidos que coincidan con esta búsqueda y estado.</p>';

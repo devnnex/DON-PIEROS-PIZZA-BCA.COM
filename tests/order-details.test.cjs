@@ -1,5 +1,19 @@
 const test=require('node:test'),assert=require('node:assert/strict'),details=require('../order-details.js');
 const {harness}=require('./helpers/don-pieros-gas.cjs');
+test('el aviso verde dura dos minutos desde la llegada, incluso al redibujar o recargar',t=>{
+ let now=Date.parse('2026-10-31T20:00:00Z');const start=now,classes=new Set();
+ t.mock.method(Date,'now',()=>now);
+ const node={dataset:{},classList:{toggle(name,on){if(on)classes.add(name);else classes.delete(name);},remove(name){classes.delete(name);}}};
+ const doc={querySelectorAll:selector=>selector==='[data-order-arrival-until]'?[node]:[]};
+ details.decorateArrival(node,new Date(start).toISOString());assert.equal(classes.has('order-arrival-new'),true);
+ now=start+119999;details.updateCountdowns(doc);assert.equal(classes.has('order-arrival-new'),true);
+ now=start+120000;details.updateCountdowns(doc);assert.equal(classes.has('order-arrival-new'),false);
+ details.decorateArrival(node,new Date(start).toISOString());assert.equal(classes.has('order-arrival-new'),false,'Redibujar no reinicia los dos minutos.');
+ details.decorateArrival(node,new Date(now).toISOString());assert.equal(classes.has('order-arrival-new'),true);
+ details.decorateArrival(node,new Date(now).toISOString(),false);assert.equal(classes.has('order-arrival-new'),false,'Los pedidos retirados de recepcion no parpadean.');
+ assert.equal(node.dataset.orderArrivalUntil,undefined);
+ details.decorateArrival(node,'fecha invalida');assert.equal(classes.has('order-arrival-new'),false);
+});
 test('el reloj suena solo el primer minuto de vencimiento y no reinicia al redibujar la tarjeta',()=>{
  const vm=require('node:vm'),fs=require('node:fs');let now=100000,tones=0,next=0;const timers=new Map();
  const node={dataset:{orderDeadline:String(now+1000),orderEstimate:'25 min'},classList:{toggle(){}},querySelector(){return null;}};

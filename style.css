@@ -5550,3 +5550,7 @@ button,a,[role="button"]{touch-action:manipulation}
 #consumptionDialog .is-editing-consumption .dp-packing-controls { margin: 0 .65rem .65rem; padding: .65rem; }
 #consumptionDialog .is-editing-consumption .modal-actions { position: sticky; bottom: 0; background: var(--panel, #fff); padding-top: .65rem; }
 @media(max-width:520px){#consumptionDialog .is-editing-consumption .consumption-optional-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }#consumptionDialog .is-editing-consumption .consumption-optional-grid .wide { grid-column: 1 / -1; }}
+
+.dp-order-card.order-arrival-new:not(.order-time-expired){border:2px solid #168344!important;animation:order-arrival-blink 1.4s ease-in-out infinite!important}
+@keyframes order-arrival-blink{0%,100%{background-color:#f0fff4;box-shadow:0 0 0 0 #16834430}50%{background-color:#bbf7d0;box-shadow:0 0 0 4px #16834430}}
+@media(prefers-reduced-motion:reduce){.dp-order-card.order-arrival-new:not(.order-time-expired){animation:none!important;background:#bbf7d0!important}}

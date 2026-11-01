@@ -13,9 +13,29 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
    const rpc=new URL(route.request().url()).pathname.split('/').pop();
    return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP',tips_enabled:false},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_list_waiter_comandas'?{orders:[]}:rpc==='dp_setup_status'?false:[]});
   });
-  const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',error=>errors.push(error.message));
+  const page=await context.newPage();page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(60000);page.on('pageerror',error=>errors.push(error.message));
   async function load(){await page.goto('http://127.0.0.1:4173/admin.html#dashboard');await page.locator('#newWalkInSale').waitFor();await page.locator('#salesShiftDialog[open]').waitFor({timeout:1500}).then(()=>page.locator('#salesShiftDialog [data-close-dialog]').first().click()).catch(()=>{});}
+  // An old order must not flash when reception opens. A live arrival goes first.
+  h.sheets.get('Ordenes_Web').rows.find(row=>row[0]===receipt.orderId)[3]=new Date(Date.now()-180000).toISOString();
   await load();
+  await page.locator(`#dp-dashboard-order-list [data-dp-order="${receipt.orderId}"]`).waitFor();
+  assert.equal(await page.locator('#receptionSort').inputValue(),'newest');
+  assert.equal(await page.locator('#dp-dashboard-order-list .order-arrival-new').count(),0);
+  const arrival=h.call('createOrder',{order:h.order(product,{customerName:'Nuevo pedido QA'})});assert.equal(arrival.ok,true,arrival.error);
+  const arrivalCard=page.locator(`#dp-dashboard-order-list [data-dp-order="${arrival.orderId}"]`);
+  await arrivalCard.waitFor({timeout:30000});
+  assert.equal(await page.locator('#dp-dashboard-order-list [data-dp-order]').first().getAttribute('data-dp-order'),arrival.orderId);
+  assert.equal(await arrivalCard.evaluate(node=>node.classList.contains('order-arrival-new')),true);
+  assert.equal(await arrivalCard.evaluate(node=>getComputedStyle(node).animationName),'order-arrival-blink');
+  const arrivalUntil=await arrivalCard.getAttribute('data-order-arrival-until');
+  await page.screenshot({path:'artifacts/pedidos-nuevos-verde.png'});
+  await page.evaluate(until=>{window.qaRealNow=Date.now;Date.now=()=>Number(until);DonPierosOrderDetails.updateCountdowns(document);},arrivalUntil);
+  assert.equal(await page.locator('#dp-dashboard-order-list .order-arrival-new').count(),0,'El parpadeo termina sin cambios remotos.');
+  await page.evaluate(()=>{Date.now=qaRealNow;DonPierosOrderDetails.updateCountdowns(document);DonPierosReception.reset();});
+  await page.selectOption('#receptionSort','oldest');
+  assert.equal(await page.locator('#dp-dashboard-order-list [data-dp-order]').first().getAttribute('data-dp-order'),receipt.orderId);
+  await page.locator('#receptionReset').click();await load();
+  assert.equal(await arrivalCard.getAttribute('data-order-arrival-until'),arrivalUntil,'Recargar conserva el limite de llegada.');
   await page.locator('#newWalkInSale').click();await page.locator('#paymentAddItem').click();
   await page.locator('#dw-catalog-dialog [data-dw-close]').click();await page.locator('#paymentDialog[open]').waitFor();
   await page.locator('#paymentForm [data-cancel-payment]').first().click();

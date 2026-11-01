@@ -1,5 +1,7 @@
 # Don Pieros Pizza · activación
 
+Archivos web v44: los pedidos web y las comandas de mesa aparecen del más reciente al más antiguo por fecha de llegada. Editar o aceptar una comanda conserva su posición. Los pedidos web activos parpadean en verde durante los primeros dos minutos desde su creación; recargar o editarlos conserva ese límite. El filtro de orden permite ver primero los antiguos y «Limpiar filtros» vuelve a los recientes. Solo requiere publicar los archivos web; no cambia Apps Script ni SQL.
+
 Archivos web v43: «Editar» en una venta individual pendiente incluye tiempo estimado y observaciones generales de la comanda. «Guardar producto y comanda» conserva ambos y vuelve al detalle; cancelar descarta esos cambios. El detalle agrupa cliente, tiempo y observaciones en un bloque propio. Solo requiere publicar los archivos web; no cambia Apps Script ni SQL.
 
 Archivos web v42: el nombre del tamaño elegido se imprime 2 píxeles por encima de la letra mayor de cada producto, tanto en comandas web como de meseros y ventas individuales. Las casillas de ventas individuales tienen un diseño renovado con cliente, total, fecha y estado. Esta revisión solo requiere publicar los archivos web; no cambia Apps Script ni SQL.

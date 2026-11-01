@@ -136,7 +136,7 @@
           if(write.revision>readRevision||incoming&&(incoming.version<write.order.version||String(incoming.updated_at)<String(write.order.updated_at)))next.set(id,write.order);
           else localWrites.delete(id);
         }
-        orders=[...next.values()].sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));loadError='';
+        orders=[...next.values()].sort((a,b)=>(Date.parse(b.created_at)||0)-(Date.parse(a.created_at)||0)||String(a.id).localeCompare(String(b.id)));loadError='';
         if(readRevision===writeRevision&&draft?.version&&!draft.pending&&!busy&&!data.orders.some(order=>order.id===draft.id))leaveClosedDraft();
         syncDraftSession();renderAccount();renderReception();if(waiter())renderHome();
       }catch(error){loadError=errorText(error);renderAccount();}
