@@ -11,6 +11,23 @@ function setup(){
  const order=added.order,payload={id:order.id,version:order.version,operationId:crypto.randomUUID(),lineIndex:1,item:{productId:product.id,quantity:3,unitPrice:30000,selectionIds:{size:[maxi.id]},notes:'Sin cebolla'}};
  return {h,order,payload,mini,maxi};
 }
+
+test('cambiar la entrega al reeditar recalcula cajas y conserva las otras líneas y el domicilio',()=>{
+ const {h,order,payload}=setup();
+ const edit=(version,fulfillment)=>h.call('dp_edit_order_product',{...payload,version,operationId:crypto.randomUUID(),item:{...payload.item,fulfillment}});
+ const local=edit(order.version,'dinein');assert.equal(local.ok,true,local.error);
+ assert.equal(local.order.items[1].packagingUnitFee,0);assert.equal(local.order.total,115000);
+ assert.deepEqual(local.order.items[0],order.items[0]);assert.equal(local.order.fulfillment,'pickup');
+ const takeaway=edit(local.order.version,'pickup');assert.equal(takeaway.ok,true,takeaway.error);
+ assert.equal(takeaway.order.total,127000);assert.equal(takeaway.order.packagingFee,12000);
+ assert.equal(edit(takeaway.order.version,'wrong').ok,false);
+ const first=h.call('dp_edit_order_product',{id:order.id,version:takeaway.order.version,operationId:crypto.randomUUID(),lineIndex:0,
+  item:{productId:order.items[0].productId,quantity:1,unitPrice:25000,selectionIds:{},fulfillment:'dinein'}});
+ const allLocal=edit(first.order.version,'dinein');assert.equal(allLocal.order.fulfillment,'dinein');assert.equal(allLocal.order.packagingFee,0);
+ const row=h.sheets.get('Ordenes_Web').rows.find(row=>row[0]===order.id);row[8]='delivery';row[9]='Calle de prueba 123';row[22]=true;
+ const delivery=edit(allLocal.order.version,'pickup');assert.equal(delivery.ok,true,delivery.error);
+ assert.equal(delivery.order.fulfillment,'delivery');assert.equal(delivery.order.deliveryFeePending,true);assert.equal(delivery.order.address,'Calle de prueba 123');
+});
 test('edita el producto agregado con cantidad, tamaño, notas y total; conserva las demas lineas y reintenta sin duplicar',()=>{
  const {h,order,payload,maxi}=setup(),inventory=JSON.stringify(h.sheets.get('Inventario').rows),result=h.call('dp_edit_order_product',payload);
  assert.equal(result.ok,true,result.error);const updated=result.order;

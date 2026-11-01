@@ -2652,6 +2652,7 @@ const App = (() => {
           action,
           authToken: state.authToken,
           origin: location.origin,
+          ...(action==='dp_create_staff_order'?{clientSignals:true}:{}),
           payload
         }),
         redirect: "follow",
@@ -2665,7 +2666,7 @@ const App = (() => {
       }
       const batchRequest = action === "sync_sales_batch";
       const acceptResult = async (action, payload, result, operationId) => {
-        if(action==='checkout_web_order')return;
+        if(action==='checkout_web_order'||action==='dp_create_staff_order')return;
         if (result?.ok && ["upsert_inventory", "sync_inventory", "adjust_inventory", "set_inventory_stock", "delete_inventory", "clear_inventory", "update_inventory_movement_cost", "record_sale", "edit_sale", "delete_sale", "clear_inventory_movements", "clear_income"].includes(action)) {
           window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
         }
@@ -5553,7 +5554,8 @@ const App = (() => {
       body: request => requestOrigin(request).kind === "waiter"
         ? `Pedido tomado por ${requestOrigin(request).name}\n${requestBody(request) || "Revisa el pedido de la mesa."}`
         : requestBody(request) || "El cliente está esperando atención.",
-      accept: id => acceptRequest(id)
+      accept: id => acceptRequest(id),
+      open: id => window.DonPierosWaiter?.openRequest(id)
     });
     const board=window.DonPierosReceptionBoard;
     const alerts = groupedActiveRequests().filter(request=>!board||board.matches('requests',request));
@@ -6116,7 +6118,7 @@ const App = (() => {
         const box=Number(line.packagingUnitFee||0),selected=window.DonPierosPackaging.size(line.packagingSize);
         return {id:id+'-'+index,session_id:id,table_id:null,menu_item_id:matched?.id||null,item_name:line.name,
           quantity:Number(line.quantity),unit_price:Number(line.unitPrice)+box,status:'served',
-          notes:box?window.DonPierosPackaging.note([...(line.selections||[]),line.notes].filter(Boolean).join('\n'),selected):[...(line.selections||[]),line.notes].filter(Boolean).join('\n'),created_at:now};
+          notes:box?window.DonPierosPackaging.note(window.DonPierosOrderLabels.compact([...(line.selections||[]),line.notes].filter(Boolean)).join('\n'),selected):window.DonPierosOrderLabels.compact([...(line.selections||[]),line.notes].filter(Boolean)).join('\n'),created_at:now};
       })};
     if(deliveryFee)session.session_items.push({id:id+'-delivery',session_id:id,table_id:null,menu_item_id:null,item_name:'Domicilio',quantity:1,unit_price:deliveryFee,status:'served',notes:'',created_at:now});
     state.sessions=[session,...state.sessions.filter(row=>row.id!==id)];
@@ -10266,6 +10268,9 @@ const App = (() => {
     if(state.paymentProcessing||checkoutSubmissionBusy)return false;
     const form=$("#paymentForm"),session=state.sessions.find(row=>row.id===form.session_id.value);
     if(!isLocalWalkInSession(session)||session.web_order_id||!sessionHasConsumption(session)){toast('Agrega productos antes de guardar la venta.','error');return false;}
+    if(form.individual_customer.value.trim().length<2){
+      const input=form.individual_customer,field=$('#individualCustomerField');field.classList.remove('dw-required-flash');void field.offsetWidth;field.classList.add('is-invalid','dw-required-flash');input.setAttribute('aria-invalid','true');input.scrollIntoView({block:'center',behavior:'smooth'});input.focus({preventScroll:true});toast('Escribe el nombre del cliente (mínimo 2 caracteres).','error');return false;
+    }
     session.payer_name=form.individual_customer.value.trim()||session.payer_name||'Cliente individual';session.updated_at=new Date().toISOString();
     state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
     if(!persistWalkInDrafts())return false;
@@ -10280,7 +10285,7 @@ const App = (() => {
     const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${line.packing.notes.split(/\r?\n/).filter(Boolean).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean)).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
     void window.DonPierosThermal.print(popup,width).catch(error=>toast(String(error.message||error),'error'));
   };
@@ -10297,12 +10302,12 @@ const App = (() => {
     return { method, payments: [{ method: firstMethod, amount: firstAmount }, { method: secondMethod, amount: secondAmount }] };
   };
 
-  const applyInvoiceToInventory = (invoice) => {
+  const applyInvoiceToInventory = (invoice, options = {}) => {
     if (state.invoiceHistory.some((entry) => entry.sessionId === invoice.sessionId)) return false;
     state.invoiceHistory.push(invoice);
     persistInvoiceHistory();
     state.incomeReport = null;
-    enqueueAppsScriptJob("record_sale", { invoice }, `sale:${invoice.sessionId}`);
+    if(!options.alreadyRecorded)enqueueAppsScriptJob("record_sale", { invoice }, `sale:${invoice.sessionId}`);
     return true;
   };
 
@@ -10451,6 +10456,14 @@ const App = (() => {
   };
 
   const CHECKOUT_INTENTS_KEY = "donpieros_checkout_intents_v1";
+  let webCheckoutRetryTimer = 0, webCheckoutRetryAttempt = 0;
+  const scheduleWebCheckoutRecovery = () => {
+    const pending = Object.values(readLocalJson(CHECKOUT_INTENTS_KEY, {})).some(intent => intent.invoice?.webOrderId);
+    if (!pending) { clearTimeout(webCheckoutRetryTimer); webCheckoutRetryTimer = 0; webCheckoutRetryAttempt = 0; return; }
+    if (webCheckoutRetryTimer || !navigator.onLine || !state.currentUser || !isManager()) return;
+    const delay = Math.min(30000, 1500 * 2 ** Math.min(webCheckoutRetryAttempt++, 5));
+    webCheckoutRetryTimer = window.setTimeout(() => { webCheckoutRetryTimer = 0; void recoverPendingCheckouts(); }, delay);
+  };
   const checkoutButtonLabels = new Map();
   const checkoutFeedback = (form, busy, message = "Preparando cobro…") => {
     form.setAttribute?.("aria-busy", String(busy));
@@ -10473,6 +10486,7 @@ const App = (() => {
     intents[session.id] = { invoice, session, paid, stage, updatedAt: new Date().toISOString() };
     await persistDurableJson(CHECKOUT_INTENTS_KEY, intents);
     if (!await flushDurableWrites([CHECKOUT_INTENTS_KEY])) throw new Error("No pudimos conservar el cobro en este equipo. Libera espacio y vuelve a intentarlo.");
+    if(invoice.webOrderId)window.dispatchEvent(new CustomEvent('don-pieros-web-checkout-pending',{detail:{id:invoice.webOrderId}}));
   };
 
   const commitCheckout = async (intent) => {
@@ -10490,7 +10504,7 @@ const App = (() => {
         const existing = state.invoiceHistory.find(row => String(row.sessionId) === String(session.id));
         if (!existing) {
           applyPaidInventoryLocally(invoice, paidInventoryPlan(session));
-          applyInvoiceToInventory(invoice);
+          applyInvoiceToInventory(invoice,{alreadyRecorded:!!invoice.webOrderId&&invoice.webCheckoutConfirmed===true});
         }
         invoice.checkoutAccepted = true;
         persistInvoiceHistory();
@@ -10504,6 +10518,9 @@ const App = (() => {
       });
       if (!saved) throw new Error("El cobro permanece protegido; no se pudo completar su guardado local.");
       if(invoice.webOrderId)window.dispatchEvent(new CustomEvent('don-pieros-web-order-paid',{detail:{id:invoice.webOrderId}}));
+      if(invoice.webOrderId&&invoice.webCheckoutConfirmed){
+        if(Array.isArray(intent.remoteResult?.items))applyRemoteInventoryItems(intent.remoteResult.items,null,'sale:'+session.id);
+      }
       return true;
     } finally {
       if (!saved) {
@@ -10522,11 +10539,20 @@ const App = (() => {
       if(!result.ok){
         if(result.alreadyPaid){
           const intents=readLocalJson(CHECKOUT_INTENTS_KEY,{});delete intents[session.id];await persistDurableJson(CHECKOUT_INTENTS_KEY,intents);
-          discardLocalWalkInSession(session.id);$('#paymentDialog')?.close();
+          discardLocalWalkInSession(session.id);if($('#paymentForm')?.session_id?.value===session.id)$('#paymentDialog')?.close();
           window.dispatchEvent(new CustomEvent('don-pieros-web-order-paid',{detail:{id:invoice.webOrderId}}));
+        }
+        if(!result.alreadyPaid&&result.retryable===false){
+          const intents=readLocalJson(CHECKOUT_INTENTS_KEY,{});delete intents[session.id];await persistDurableJson(CHECKOUT_INTENTS_KEY,intents);
+          discardLocalWalkInSession(session.id);window.dispatchEvent(new CustomEvent('don-pieros-web-checkout-rejected',{detail:{id:invoice.webOrderId}}));
         }
         throw new Error(result.error||'No se pudo confirmar el cobro del pedido.');
       }
+      invoice.webCheckoutConfirmed=true;
+      intent.remoteResult=result;
+      // Protect the confirmed report before clearing the recoverable intent.
+      // Publishing to peers runs separately and never repeats the Google sale.
+      if(typeof queueConfirmedReportChange==='function')await queueConfirmedReportChange('record_sale',{invoice},result,'checkout:'+invoice.id);
     }
     if (intent.stage !== "closed") {
       const current = state.sessions.find(row => row.id === session.id);
@@ -10541,22 +10567,28 @@ const App = (() => {
     return commitCheckout(intent);
   };
 
-  const withCheckoutLock = (work) => navigator.locks?.request
+  const withCheckoutLock = (work, {quiet=false} = {}) => navigator.locks?.request
     ? navigator.locks.request("donpieros-financial-checkout", { ifAvailable: true }, lock => {
       if (lock) return work();
-      toast("Hay un cobro en proceso en otra pestaña. Espera su resultado.", "error", "checkout-other-tab");
+      if(!quiet)toast("Hay un cobro en proceso en otra pestaña. Espera su resultado.", "error", "checkout-other-tab");
       return false;
     }) : work();
 
   let checkoutRecoveryBusy = false;
   const recoverPendingCheckouts = async () => {
-    if (checkoutRecoveryBusy || state.paymentProcessing || checkoutSubmissionBusy || !state.currentUser || !isManager()) return false;
+    if (checkoutRecoveryBusy || state.paymentProcessing || checkoutSubmissionBusy || !state.currentUser || !isManager()) {
+      scheduleWebCheckoutRecovery();return false;
+    }
     checkoutRecoveryBusy = true;
     try {
       return await withCheckoutLock(async () => {
         await hydrateDurableKey(CHECKOUT_INTENTS_KEY);
         const intents = Object.values(readLocalJson(CHECKOUT_INTENTS_KEY, {}));
         for (const intent of intents) {
+          if(intent.invoice.webOrderId){
+            try { await finishCheckoutIntent(intent); } catch (_) { /* The same durable receipt retries automatically. */ }
+            continue;
+          }
           if (!await finishCheckoutIntent(intent)) {
             toast("Un cobro guardado necesita revisión; se conserva para reintentar sin duplicarlo.", "error", "checkout-recovery-pending");
             return false;
@@ -10565,11 +10597,11 @@ const App = (() => {
         }
         if (intents.length) { renderAdminLive(); void flushAppsScriptOutbox(); }
         return true;
-      });
+      }, {quiet:true});
     } catch (error) {
       toast(String(error?.message || error), "error", "checkout-recovery-error");
       return false;
-    } finally { checkoutRecoveryBusy = false; }
+    } finally { checkoutRecoveryBusy = false; scheduleWebCheckoutRecovery(); }
   };
 
   let checkoutSubmissionBusy = false;
@@ -10612,14 +10644,15 @@ const App = (() => {
             toast("Cobro recuperado. Factura " + intent.invoice.number + ". Puedes reimprimirla desde Ventas.", "ok", "checkout-recovered");
             void flushAppsScriptOutbox();
           } else {
-            toast("El cobro sigue protegido y requiere revisión de la cuenta.", "error", "checkout-pending");
-            $("#paymentDialog")?.showModal?.();
+            if(!intent.invoice.webOrderId){toast("El cobro sigue protegido y requiere revisión de la cuenta.", "error", "checkout-pending");$("#paymentDialog")?.showModal?.();}
           }
         } catch (error) {
-          toast(String(error?.message || error), "error", "checkout-resume-error");
-          if (state.sessions.some(entry => entry.id === intent.session.id)) $("#paymentDialog")?.showModal?.();
+          if(!intent.invoice.webOrderId){
+            toast(String(error?.message || error), "error", "checkout-resume-error");
+            if (state.sessions.some(entry => entry.id === intent.session.id)) $("#paymentDialog")?.showModal?.();
+          }
         }
-        finally { state.paymentProcessing = false; }
+        finally { state.paymentProcessing = false; scheduleWebCheckoutRecovery(); }
         return;
       }
       handedToPayment = true;
@@ -10689,6 +10722,7 @@ const App = (() => {
       state.paymentProcessing = false;
       return;
     }
+    let checkoutIntentSaved=false;
     try {
     const createdAt = new Date().toISOString();
     const totals = sessionTotals(session);
@@ -10734,12 +10768,14 @@ const App = (() => {
     };
 
     await saveCheckoutIntent(invoice, session, checkoutPaid, "prepared");
+    checkoutIntentSaved=true;
     // The intent is durable before releasing the UI. Only confirmation may
     // finalize a sale, print its invoice or open the cash drawer.
     $("#paymentDialog")?.close();
     checkoutFeedback(form, true, "Confirmando cobro de " + sessionLabel(session) + "… Puedes continuar usando el sistema.");
     if (!await finishCheckoutIntent({ invoice, session, paid: checkoutPaid, stage: "prepared" })) {
       receiptWindow?.close();
+      if(invoice.webOrderId){scheduleWebCheckoutRecovery();return;}
       toast("El cobro está protegido, pero falta confirmar el cierre de la cuenta. Reintenta para recuperar la misma operación.", "error", "checkout-close-pending");
       $("#paymentDialog")?.showModal?.();
       return;
@@ -10763,6 +10799,7 @@ const App = (() => {
     return true;
     } catch (error) {
       receiptWindow?.close();
+      if(session.web_order_id&&checkoutIntentSaved){scheduleWebCheckoutRecovery();return;}
       toast(String(error?.message || error), "error", "checkout-save-error");
       if (state.sessions.some(entry => entry.id === session.id)) $("#paymentDialog")?.showModal?.();
     } finally {
@@ -12425,6 +12462,7 @@ const App = (() => {
         if(isLocalWalkInSession(session)&&!session.web_order_id){session.order_notes=window.DonPierosOrderDetails.withTime(session.order_notes,event.target.value);state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
       }
       if(event.target.name==='individual_customer'){
+        if(event.target.value.trim().length>=2){$('#individualCustomerField')?.classList.remove('is-invalid','dw-required-flash');event.target.removeAttribute('aria-invalid');}
         const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
         if(isLocalWalkInSession(session)&&!session.web_order_id){session.payer_name=event.target.value.trim()||'Cliente individual';state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
       }
@@ -13940,16 +13978,19 @@ const App = (() => {
     };
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+    getPendingWebCheckouts: () => Object.values(readLocalJson(CHECKOUT_INTENTS_KEY,{})).filter(intent=>intent.invoice?.webOrderId).map(intent=>({id:intent.invoice.webOrderId,number:intent.invoice.number})),
+    retryPendingWebCheckouts:()=>recoverPendingCheckouts(),
     createStaffOrder: async order => {
       const result=await appsScriptRequest('dp_create_staff_order',{order},45000);
       if(!result.ok)throw Object.assign(Error(result.error||'No pudimos enviar la comanda.'),{retryable:result.retryable,code:result.code});
+      window.dispatchEvent(new CustomEvent('donpieros-staff-order-saved',{detail:{id:result.orderId}}));
       return result;
     },
     openIndividualSale: openPaymentDialog,
     addIndividualProduct: (sessionId,line) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
       if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)throw Error('Esta venta ya no está disponible para agregar productos.');
-      const notes=[...(line.options?.labels||[]),line.notes].filter(Boolean).join('\n');
+      const notes=window.DonPierosOrderLabels.compact([...(line.options?.labels||[]),line.notes].filter(Boolean)).join('\n');
       if(!line.name||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99||!Number.isSafeInteger(line.unit_price)||line.unit_price<0||notes.length>500)throw Error('Revisa los datos del producto.');
       const now=new Date().toISOString(),matched=state.items.find(item=>item.id===line.product_id);
       session.session_items.push({id:line.id,session_id:sessionId,table_id:null,menu_item_id:matched?.id||null,web_product_id:line.product_id,item_name:line.name,quantity:line.quantity,unit_price:line.unit_price,notes,waiter_options:line.options,status:'served',created_at:now,updated_at:now});

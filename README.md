@@ -2,7 +2,7 @@
 
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.
 
-**Actualización v52:** entrega obligatoria con aviso en rojo en la carta de comandas; barra de envío oculta al estar vacía; venta individual con botón azul. Pizza combinada primero, con foto mitad champiñones y mitad hawaiana. WhatsApp, recepción y comandas desglosan productos, cajas y total, sin cajas para consumo local. El domicilio sin tarifa permanece **Por confirmar**. Publica Apps Script **3.15.0** y los archivos web v52; no requiere SQL adicional.
+**Actualización v53:** nombre del cliente obligatorio con foco y aviso rojo al enviar la venta individual. Los dos sabores se muestran juntos y la entrega puede corregirse al editar, recalculando cajas. Los avisos aparecen desde cualquier sección: «Ver comanda» abre Inicio y el detalle; negro para web, verde para mesas y azul para individuales. El cobro web retira el pedido tras proteger el intento y confirma/reintenta en segundo plano sin errores de conexión ni botones manuales; no vuelve a registrar ventas confirmadas. Publica Apps Script **3.16.0** y los archivos web v53; no requiere SQL adicional. Se conservan las cajas y el domicilio **Por confirmar**.
 
 **Actualización v51:** los meseros pueden tomar ventas individuales y enviar sus comandas a la recepción compartida para imprimir y cobrar desde caja. Publica Apps Script **3.14.0** conservando `/exec`. El acceso privado de mantenimiento se habilita mediante `supabase/install/08_ACCESO_MANTENIMIENTO.sql` y el generador local de credenciales; no vence y permite eliminar la propia cuenta. Consulta los pasos en [LEEME-IMPLEMENTACION.md](LEEME-IMPLEMENTACION.md).
 

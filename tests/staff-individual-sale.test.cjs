@@ -31,9 +31,10 @@ test('requiere sesión/origen y valida opciones, importes, disponibilidad y prod
  for(const bad of [{quantity:0},{quantity:1.5},{unitPrice:-1},{unitPrice:'78000'},{selectionIds:{}},{notes:'x'.repeat(501)},{name:'x'.repeat(161)}]){
   const r=h.call('dp_create_staff_order',{order:{...raw,items:[{...raw.items[0],...bad}]}},'waiter');assert.equal(r.ok,false,JSON.stringify(bad));
  }
- const custom={requestId:crypto.randomUUID(),customerName:'',notes:'',items:[{productId:crypto.randomUUID(),name:'Postre del día',custom:true,quantity:1,unitPrice:8000,notes:'Sin helado',takeaway:false}]};
+ const custom={requestId:crypto.randomUUID(),customerName:'Laura',notes:'',items:[{productId:crypto.randomUUID(),name:'Postre del día',custom:true,quantity:1,unitPrice:8000,notes:'Sin helado',takeaway:false}]};
+ for(const customerName of ['', ' ', 'A'])assert.equal(h.call('dp_create_staff_order',{order:{...custom,customerName}},'waiter').ok,false);
  const receipt=h.call('dp_create_staff_order',{order:custom},'waiter');assert.equal(receipt.ok,true,receipt.error);assert.equal(receipt.total,8000);
- assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order.customerName,'Cliente individual');
+ assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order.customerName,'Laura');
  const renamed=h.call('dp_create_staff_order',{order:{...raw,requestId:crypto.randomUUID(),items:[{...raw.items[0],name:'Combinada de Laura'}]}},'waiter');
  assert.equal(renamed.ok,true,renamed.error);const saved=h.call('dp_get_order',{id:renamed.orderId}).order.items[0];
  assert.equal(saved.name,'Combinada de Laura');assert.equal(saved.catalogName,product.name);assert.equal(saved.packagingUnitFee,4000);

@@ -94,7 +94,14 @@ async function addProduct(page){const select=page.locator('#dw-fulfillment');if(
   assert.equal((await db.query('select count(*)::int n from service_requests')).rows[0].n,1);
   assert.equal((await db.query('select count(*)::int n from session_items')).rows[0].n,0,'Enviar queda pendiente, sin consumo.');
   await admin.locator(`[data-dw-open-comanda="${initial.id}"]`).waitFor({timeout:10000});
-  await admin.locator(`[data-dw-open-comanda="${initial.id}"]`).click();
+  const request=(await db.query('select id from service_requests')).rows[0];
+  await admin.evaluate(()=>location.hash='inventory');await admin.locator('#inventory.section-active').waitFor();
+  const tableNotice=admin.locator(`[data-notice-key="request:${request.id}"]`);await tableNotice.waitFor();
+  assert.equal(await tableNotice.locator('button').innerText(),'Ver comanda');
+  assert.equal(await tableNotice.evaluate(node=>getComputedStyle(node).borderLeftColor),'rgb(33, 134, 83)');
+  await tableNotice.locator('button').click();await admin.locator('#dw-kitchen-dialog[open]').waitFor();
+  assert.equal(await admin.locator('#dashboard.section-active').count(),1);
+  assert.equal((await db.query('select accepted_at from waiter_comandas where id=$1',[initial.id])).rows[0].accepted_at,null,'Abrir desde el aviso no acepta la comanda.');
   assert.match(await admin.locator('#dw-kitchen-body').innerText(),/Super maxi.*54 × 54 cm/s);
   assert.match(await admin.locator('#dw-kitchen-body').innerText(),/Separar las salsas/);
   assert.ok(await admin.locator('#dw-kitchen-body .dw-review-lines p').first().evaluate(node=>Number(getComputedStyle(node).fontWeight))>=800,'Opciones y notas de la comanda en negrita');
@@ -454,6 +461,8 @@ async function addProduct(page){const select=page.locator('#dw-fulfillment');if(
   assert.equal(Number(combinedOrder.items[0].unit_price),34000);assert.deepEqual(combinedOrder.items[0].options.selectionIds[comboFlavors.id],halves.map(half=>half.id));
   await admin.locator('#accountDetailDialog [data-close-dialog]').first().click();await admin.locator(`[data-dw-open-comanda="${combinedOrder.id}"]`).waitFor();await admin.locator(`[data-dw-open-comanda="${combinedOrder.id}"]`).click();
   const [comboPrint]=await Promise.all([adminContext.waitForEvent('page'),admin.locator('[data-dw-print-order]').click()]);await comboPrint.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+  assert.match(await comboPrint.locator('article').innerText(),/Sabores \(mitad y mitad\): La Pamplonita \/ Hawaiana/);
+  assert.doesNotMatch(await comboPrint.locator('article').innerText(),/Elige 2 sabores/);
   assert.match(await comboPrint.locator('article').innerText(),/La Pamplonita[\s\S]*Hawaiana/);assert.match(await comboPrint.locator('.size-name').innerText(),/Pizzeta/);
   assert.match((await comboPrint.locator('.packing-line').innerText()).replace(/\s/g,''),/CajaPizzeta:1×\$2.000=\$2.000/);assert.match((await comboPrint.locator('footer').innerText()).replace(/\s/g,''),/Productos:\$32.000.*Cajasparallevar:\$2.000.*Total:\$34.000/);await comboPrint.close();
   await admin.locator('[data-dw-accept-order]').click();await admin.locator('#dw-kitchen-dialog').waitFor({state:'hidden'});

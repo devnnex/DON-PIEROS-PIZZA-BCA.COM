@@ -68,3 +68,13 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 @keyframes dw-required-border{0%,100%{border-color:#d9232a;box-shadow:0 0 0 3px #d9232a33}50%{border-color:#ffb4b8;box-shadow:0 0 0 6px #d9232a08}}
 @keyframes dw-required-label{0%,100%{background:#d9232a;color:#fff}50%{background:#ffe5e7;color:#b11a24}}
 @media(prefers-reduced-motion:reduce){.dw-required-flash select,.dw-required-flash #dw-fulfillment-status{animation:none}}
+.dw-customer-field #dw-customer-status{justify-self:start;color:#a6292d;background:#fff0ed;border-radius:8px;padding:3px 7px;font-weight:800}
+.dw-customer-field.is-complete #dw-customer-status{color:#167c44;background:#d9f5e4}
+.dw-customer-field.is-invalid input{border:2px solid #d9232a;box-shadow:0 0 0 3px #d9232a22}
+.dw-customer-field.dw-required-flash input{animation:dw-required-border .45s ease-in-out 3}
+.dw-customer-field.dw-required-flash #dw-customer-status{animation:dw-required-label .45s ease-in-out 3}
+@media(prefers-reduced-motion:reduce){.dw-customer-field.dw-required-flash input,.dw-customer-field.dw-required-flash #dw-customer-status{animation:none}}
+#individualCustomerField.is-invalid input{border:2px solid #d9232a;box-shadow:0 0 0 3px #d9232a22}
+#individualCustomerField.dw-required-flash input{animation:dw-required-border .45s ease-in-out 3}
+#individualCustomerField.dw-required-flash small{animation:dw-required-label .45s ease-in-out 3}
+@media(prefers-reduced-motion:reduce){#individualCustomerField.dw-required-flash input,#individualCustomerField.dw-required-flash small{animation:none}}

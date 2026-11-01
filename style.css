@@ -5551,7 +5551,10 @@ button,a,[role="button"]{touch-action:manipulation}
 #consumptionDialog .is-editing-consumption .modal-actions { position: sticky; bottom: 0; background: var(--panel, #fff); padding-top: .65rem; }
 @media(max-width:520px){#consumptionDialog .is-editing-consumption .consumption-optional-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }#consumptionDialog .is-editing-consumption .consumption-optional-grid .wide { grid-column: 1 / -1; }}
 
-.dp-order-card.order-arrival-new:not(.order-time-expired){border:2px solid #168344!important;animation:order-arrival-blink 1.4s ease-in-out infinite!important}
+.dp-order-card.order-origin-online{--order-arrival-border:#17191f;--order-arrival-bg:#f3f4f6;--order-arrival-glow:#17191f20}
+.dp-order-card.order-origin-individual{--order-arrival-border:#3478da;--order-arrival-bg:#dbeafe;--order-arrival-glow:#3478da30}
+.dp-order-card.order-origin-individual.dp-state-nueva{border-left-color:#3478da}
+.dp-order-card.dp-state-nueva.order-arrival-new:not(.order-time-expired){border:2px solid var(--order-arrival-border,#168344)!important;animation:order-arrival-blink 1.4s ease-in-out infinite!important}
 #tableSessionActions #printCompleteTableComanda{grid-column:1/-1;background:#1765ce;border-color:#1765ce;color:#fff;min-height:44px;line-height:1.25}
-@keyframes order-arrival-blink{0%,100%{background-color:#f0fff4;box-shadow:0 0 0 0 #16834430}50%{background-color:#bbf7d0;box-shadow:0 0 0 4px #16834430}}
-@media(prefers-reduced-motion:reduce){.dp-order-card.order-arrival-new:not(.order-time-expired){animation:none!important;background:#bbf7d0!important}}
+@keyframes order-arrival-blink{0%,100%{background-color:#fff;box-shadow:0 0 0 0 var(--order-arrival-glow,#16834430)}50%{background-color:var(--order-arrival-bg,#bbf7d0);box-shadow:0 0 0 4px var(--order-arrival-glow,#16834430)}}
+@media(prefers-reduced-motion:reduce){.dp-order-card.dp-state-nueva.order-arrival-new:not(.order-time-expired){animation:none!important;background:var(--order-arrival-bg,#bbf7d0)!important}}

@@ -1,6 +1,6 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 test('cada pedido abre uno de los dos contactos con mensaje completo y conserva destinatario al reintentar',()=>{
- const source=fs.readFileSync('pedidos.js','utf8'),context=vm.createContext({window:{},localStorage:{getItem:()=>''},money:value=>'$'+value});
+ const source=fs.readFileSync('pedidos.js','utf8'),context=vm.createContext({window:{DonPierosOrderLabels:require('../order-labels.js')},localStorage:{getItem:()=>''},money:value=>'$'+value});
  vm.runInContext(fs.readFileSync('config.js','utf8'),context);
  const a=source.indexOf('  function orderWhatsAppUrl('),b=source.indexOf('  function notifyOrderCreated(',a);
  vm.runInContext('const WHATSAPP_NUMBERS=window.DON_PIEROS_CONFIG.whatsappNumbers;'+source.slice(a,b),context);
@@ -15,7 +15,7 @@ test('WhatsApp usa cajas y precios confirmados por el servidor para recoger, dom
  const {harness}=require('./helpers/don-pieros-gas.cjs'),h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog');
  const product=catalog.products.find(p=>p.name==='Pizza combinada'),[sizes,flavors]=product.modifiers;
  const choices=catalog.toppings.filter(t=>t.kind===flavors.source).slice(0,2).map(t=>t.id);
- const source=fs.readFileSync('pedidos.js','utf8'),context=vm.createContext({window:{},money:value=>'$'+value});
+ const source=fs.readFileSync('pedidos.js','utf8'),context=vm.createContext({window:{DonPierosOrderLabels:require('../order-labels.js')},money:value=>'$'+value});
  vm.runInContext(fs.readFileSync('config.js','utf8'),context);
  vm.runInContext('const WHATSAPP_NUMBERS=window.DON_PIEROS_CONFIG.whatsappNumbers;'+source.slice(source.indexOf('  function orderWhatsAppUrl('),source.indexOf('  function notifyOrderCreated(')),context);
  for(const size of catalog.toppings.filter(t=>t.kind===sizes.source))for(const fulfillment of ['pickup','delivery','dinein']){

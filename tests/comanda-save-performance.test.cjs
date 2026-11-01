@@ -1,6 +1,16 @@
 const test=require('node:test'),assert=require('node:assert/strict'),crypto=require('node:crypto');
 const {harness}=require('./helpers/don-pieros-gas.cjs');
 
+test('el envío del mesero solo consulta productos elegidos y evita el aviso de red bloqueante',()=>{
+ const h=harness(),product=h.product();let broadcasts=0;
+ h.context.UrlFetchApp={fetch:()=>{broadcasts++;return {};}};
+ h.reads.length=0;
+ const raw={requestId:crypto.randomUUID(),customerName:'Laura',items:[{productId:product.id,name:product.name,quantity:1,unitPrice:25000,selectionIds:{},notes:'',takeaway:false}]};
+ const result=h.call('dp_create_staff_order',{order:raw},'waiter',{clientSignals:true});assert.equal(result.ok,true,result.error);
+ assert.equal(broadcasts,0);assert.equal(h.reads.filter(read=>read.sheet==='Menu_Web').length,1);
+ assert.ok(!h.reads.some(read=>['Pagos_Web','Barrios_Web','Adicionales_Web','Inventario'].includes(read.sheet)));
+});
+
 function setup(){
  const h=harness(),p=h.product(),receipt=h.call('createOrder',{order:h.order(p)});
  const order=h.call('dp_get_order',{id:receipt.orderId}).order;

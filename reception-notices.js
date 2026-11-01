@@ -22,8 +22,7 @@
       link.classList.remove('dp-arrival-flash'); void link.offsetWidth; link.classList.add('dp-arrival-flash');
       setTimeout(() => link.classList.remove('dp-arrival-flash'), 6000);
     }
-    // Keep the open comanda or an edit form intact while signalling the arrival.
-    if (!document.querySelector('dialog[open]')) api()?.revealReception?.(kind);
+    // An arrival must preserve the section and any work currently in progress.
   }
   function show({key, kind, title, detail, action}) {
     if (!key || announced.has(key)) return;
@@ -31,17 +30,22 @@
     const card = document.createElement('article');
     card.className = 'dp-reception-notice'; card.dataset.noticeKey = key;
     if(kind==='waiter')card.classList.add('is-waiter');
-    if(kind==='order')card.classList.add('is-money');
+    if(kind==='order')card.classList.add('is-online');
+    if(kind==='individual')card.classList.add('is-individual');
     const heading = document.createElement('strong'), text = document.createElement('p');
     heading.textContent = title; text.textContent = detail;
     const label = document.createElement('span'); label.className = 'dp-notice-label';
-    label.textContent = kind === 'order' ? 'NUEVA ORDEN' : kind==='waiter'?'COMANDA DEL MESERO':'SOLICITUD DE MESA';
+    label.textContent = kind === 'order' ? 'PEDIDO EN LÍNEA' : kind==='individual'?'VENTA INDIVIDUAL':kind==='waiter'?'COMANDA DEL MESERO':'SOLICITUD DE MESA';
     const button = document.createElement('button'); button.type = 'button';
-    button.textContent = kind === 'order'||kind==='waiter' ? 'Aceptar · Ver comanda' : 'Aceptar solicitud';
+    const comanda=['order','waiter','individual'].includes(kind);
+    button.textContent = comanda ? 'Ver comanda' : 'Aceptar solicitud';
     const error = document.createElement('small'); error.className = 'dp-notice-error';
     button.onclick = async () => {
       button.disabled = true; error.textContent = '';
-      try { await action(); } catch (_) { error.textContent = 'No pudimos completar la acción. Intenta de nuevo.'; }
+      try {
+        api()?.revealReception?.(kind==='individual'?'order':kind);
+        await action();
+      } catch (_) { error.textContent = 'No pudimos completar la acción. Intenta de nuevo.'; }
       finally { if (button.isConnected) button.disabled = false; }
     };
     card.append(label, heading, text, button, error);
@@ -50,18 +54,22 @@
     cancelAnimationFrame(revealFrame);
     revealFrame=requestAnimationFrame(() => {revealFrame=0;reveal(kind);});
     requestAnimationFrame(() => {
-      const attribute = kind === 'order' ? 'data-dp-order' : 'data-alert-card';
+      const attribute = kind === 'order'||kind==='individual' ? 'data-dp-order' : 'data-alert-card';
       const id = key.slice(key.indexOf(':') + 1);
       for (const target of document.querySelectorAll(`[${attribute}]`)) if (target.getAttribute(attribute) === id) {
         target.classList.add('dp-content-flash'); setTimeout(() => target.classList.remove('dp-content-flash'), 6000);
       }
     });
   }
-  function syncRequests(requests, {label, body, accept}) {
+  function syncRequests(requests, {label, body, accept, open}) {
     const pending = new Set(requests.map(request => 'request:' + request.id));
     for (const key of notices.keys()) if (key.startsWith('request:') && !pending.has(key)) dismiss(key);
     for (const request of requests) show({key:'request:' + request.id, kind:request.request_source==='waiter'?'waiter':'request', title:label(request),
-      detail:body(request), action:() => accept(request.id)});
+      detail:body(request), action:async () => {
+        if(request.request_source==='waiter'&&open){
+          if(!await open(request.id))throw Error('La comanda no está disponible.');
+        }else await accept(request.id);
+      }});
   }
   window.DonPierosReception = {show, dismiss, syncRequests, reveal, reset() {
     cancelAnimationFrame(revealFrame);for (const key of notices.keys()) dismiss(key); announced.clear();

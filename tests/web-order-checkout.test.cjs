@@ -7,6 +7,26 @@ function setup(extra={}){
   totals:{subtotal:receipt.total,total:receipt.total},payments:[{method:'cash',amount:receipt.total}],items:[{id:'line',item_name:product.name,quantity:2,unit_price:receipt.total/2}]};
  return {h,invoice,receipt};
 }
+
+test('cobro web sin inventario evita leer movimientos e inventario y conserva el recibo financiero recuperable',()=>{
+ const {h,invoice}=setup();let inventoryWrites=0;
+ const write=h.context.writeInventoryRows_;h.context.writeInventoryRows_=(...args)=>{inventoryWrites++;return write(...args);};
+ h.reads.length=0;const result=h.call('checkout_web_order',{invoice});assert.equal(result.ok,true,result.error);
+ assert.equal(inventoryWrites,0);assert.equal('items' in result,false,'No devuelve un inventario vacío como si fuera una instantánea.');
+ assert.ok(!h.reads.some(read=>['Inventario','Movimientos_Inventario'].includes(read.sheet)));
+ const retry=h.call('checkout_web_order',{invoice});assert.equal(retry.duplicate,true);assert.equal(inventoryWrites,0);
+ assert.equal(h.sheets.get('Ventas').rows.length,2);assert.equal(h.sheets.get('Pagos').rows.length,2);
+});
+
+test('la ruta web con artículos de inventario sigue descontando una sola vez',()=>{
+ const {h,invoice}=setup(),id=crypto.randomUUID();
+ assert.equal(h.call('upsert_inventory',{item:{productId:id,name:'Bebida QA',stock:12,salePrice:1000,costPrice:500}}).ok,true);
+ invoice.items[0].menu_item_id=id;h.reads.length=0;
+ const result=h.call('checkout_web_order',{invoice});assert.equal(result.ok,true,result.error);
+ assert.equal(result.items.find(item=>item.productId===id).stock,10);
+ assert.equal(h.call('checkout_web_order',{invoice}).items.find(item=>item.productId===id).stock,10);
+ assert.ok(!h.reads.some(read=>read.sheet==='Movimientos_Inventario'),'Una venta individual no concilia consumos de mesas.');
+});
 test('cobrar pedido crea una venta individual y lo retira de recepción, reintento sin duplicar',()=>{
  const {h,invoice,receipt}=setup(),result=h.call('checkout_web_order',{invoice});assert.equal(result.ok,true,result.error);
  assert.equal(h.call('dp_get_orders',{status:'all'}).orders.length,0);

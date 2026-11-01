@@ -54,7 +54,7 @@
   function orderWhatsAppUrl(order, orderId, confirmedTotal, queuePosition, ordersAhead) {
     const productLines = order.items.flatMap(item => {
       const lines = [`${item.quantity}x ${item.name} — *${money(item.unitPrice * item.quantity)}*`];
-      (item.selections || []).forEach(selection => lines.push(`   ➕ ${selection}`));
+      window.DonPierosOrderLabels.compact(item.selections || []).forEach(selection => lines.push(`   ➕ ${selection}`));
       if(item.packagingUnitFee)lines.push(`   Caja ${item.packagingSize}: ${item.quantity} × ${money(item.packagingUnitFee)} = ${money(item.quantity*item.packagingUnitFee)}`);
       lines.push('');
       return lines;
@@ -530,7 +530,7 @@
     renderCart();
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45000);
     try {
-      const response = await fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},signal:controller.signal,body:JSON.stringify({action:'createOrder',order}) });
+      const response = await fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},signal:controller.signal,body:JSON.stringify({action:'createOrder',order,clientSignals:true}) });
       const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
       notifyOrderCreated(result.orderId);
       await waitForReception(result.orderId);

@@ -8,6 +8,14 @@
 .dp-reception-notice:is(.is-waiter,.is-money) .dp-notice-label{color:#196a41}
 .dp-reception-notice:is(.is-waiter,.is-money) button{background:#218653;color:#fff}
 .dp-reception-notice:is(.is-waiter,.is-money) button:hover{background:#196d43}
+.dp-reception-notice.is-online{border:2px solid #17191f;border-left-width:5px;background:#fff;box-shadow:0 12px 38px #17191f20}
+.dp-reception-notice.is-online .dp-notice-label{color:#17191f}
+.dp-reception-notice.is-online button{background:#17191f;color:#fff}
+.dp-reception-notice.is-online button:hover{background:#343740}
+.dp-reception-notice.is-individual{border:2px solid #2563eb;border-left-width:5px;background:#eff6ff;box-shadow:0 12px 38px #2563eb20}
+.dp-reception-notice.is-individual .dp-notice-label{color:#1d4ed8}
+.dp-reception-notice.is-individual button{background:#2563eb;color:#fff}
+.dp-reception-notice.is-individual button:hover{background:#1d4ed8}
 .alert-card.alert-waiter-order{border-color:#a4d5b7;border-left:4px solid #218653;background:#f1fbf5}
 .alert-waiter-order .alert-origin.is-waiter{color:#196a41;background:#dcf2e5}
 .alert-card.alert-waiter-order .primary{background:#218653;color:#fff;border-color:#218653}

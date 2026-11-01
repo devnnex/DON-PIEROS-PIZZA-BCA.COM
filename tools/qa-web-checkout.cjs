@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
  const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog'),product=catalog.products.find(p=>p.name==='Pizza Don Pieros'),group=product.modifiers[0],size=catalog.toppings.find(t=>t.kind===group.source&&t.name.startsWith('Mediana'));
  h.context.Utilities.formatDate=(date,zone,format)=>{const value=new Intl.DateTimeFormat('en-CA',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).format(date);return format==='yyyyMMdd'?value.replaceAll('-',''):value;};
  const create=name=>h.call('createOrder',{order:h.order(product,{customerName:name,items:[{productId:product.id,quantity:1,unitPrice:product.price+size.price,selectionIds:{[group.id]:[size.id]}}]})});
- const receipt=create('Cliente web'),errors=[],calls=[];let loseResponse=false,rejectCheckout=false;
+ const receipt=create('Cliente web'),errors=[],calls=[];let loseResponse=false,rejectCheckout=false,failBeforeWrite=0;
  const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  try{
   const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
@@ -12,7 +12,8 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
   await context.route('https://script.google.com/**',async route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();calls.push(body);
    if(body.action==='checkout_web_order')await new Promise(resolve=>setTimeout(resolve,1800));
-   const result=body.action==='checkout_web_order'&&rejectCheckout?{ok:false,error:'Revisa el importe del pedido.'}:body.action==='bootstrap'?{ok:true}:h.call(body.action,body.payload||body,body.authToken||'');
+   if(body.action==='checkout_web_order'&&failBeforeWrite>0){failBeforeWrite--;return route.abort('failed');}
+   const result=body.action==='checkout_web_order'&&rejectCheckout?{ok:false,retryable:false,code:'CHECKOUT_CONFLICT',error:'Revisa el importe del pedido.'}:body.action==='bootstrap'?{ok:true}:h.call(body.action,body.payload||body,body.authToken||'');
    if(body.action==='checkout_web_order'&&loseResponse){loseResponse=false;return route.abort('failed');}return route.fulfill({json:result});});
   await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{const rpc=new URL(route.request().url()).pathname.split('/').pop();return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP'},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_setup_status'?false:[]});});
   const page=await context.newPage();page.on('pageerror',error=>errors.push(error.message));
@@ -29,6 +30,10 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   assert.equal(await checkoutPopup.title(),'Preparando factura','La ventana de impresión responde durante el clic');
   await page.locator('#paymentDialog').waitFor({state:'hidden',timeout:900});
   assert.equal(h.sheets.get('Ventas').rows.length,1,'El modal se libera antes de que responda el servidor');
+  assert.equal(await page.locator(`[data-dp-order="${receipt.orderId}"]`).count(),0,'La recepción retira el pedido mientras espera al servidor.');
+  assert.equal(await page.locator('#dp-checkout-pending').isVisible(),true);
+  assert.equal(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('donpieros_checkout_intents_v1')||'{}')).length),1);
+  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('don_pieros_invoices_v1')||'[]').length),0,'No anuncia una factura antes de la confirmación real.');
   assert.equal(await page.locator('#checkoutProgress').isVisible(),true);
   await page.evaluate(()=>location.hash='accounts');await page.locator('#accounts.section-active').waitFor({timeout:600});
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('don_pieros_invoices_v1')||'[]').length===1);
@@ -46,18 +51,38 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   await page.reload();await page.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());assert.equal(h.call('dp_get_orders').orders.length,0);
   const second=create('Respuesta perdida');await page.evaluate(()=>location.hash='dashboard');await page.locator(`[data-dp-order="${second.orderId}"]`).first().waitFor();
   await open(second.orderId);loseResponse=true;await page.locator('#paymentForm button[value=save]').click();
-  await page.locator('#paymentDialog').waitFor({state:'hidden'});await page.locator('#paymentDialog[open]').waitFor();
+  await page.locator('#paymentDialog').waitFor({state:'hidden'});
+  assert.equal(await page.locator(`[data-dp-order="${second.orderId}"]`).count(),0,'Una respuesta perdida mantiene el pedido protegido del doble cobro.');
+  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('don_pieros_invoices_v1')||'[]').length===2);
+  assert.equal(await page.locator('#paymentDialog[open]').count(),0,'El reintento automático no vuelve a abrir el cobro.');
+  assert.equal(await page.locator('#dp-checkout-pending button').count(),0,'La recuperación no exige botones ni intervención.');
+  assert.equal(await page.locator('.system-modal.error').count(),0,'Un corte temporal no muestra un error.');
   assert.equal(h.sheets.get('Ventas').rows.length,3);await page.reload();await page.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
   await page.waitForFunction(()=>Object.keys(JSON.parse(localStorage.getItem('donpieros_checkout_intents_v1')||'{}')).length===0);
   assert.equal(h.sheets.get('Ventas').rows.length,3,'Recuperar el cobro no crea otra venta');assert.equal(h.call('dp_get_orders').orders.length,0);
   const third=create('Cobro rechazado');await page.evaluate(()=>location.hash='dashboard');await page.locator(`[data-dp-order="${third.orderId}"]`).first().waitFor();
   await open(third.orderId);rejectCheckout=true;await page.locator('#paymentForm button[value=save]').click();
-  await page.locator('#paymentDialog').waitFor({state:'hidden',timeout:900});await page.locator('#paymentDialog[open]').waitFor();
+  await page.locator('#paymentDialog').waitFor({state:'hidden',timeout:900});
+  await page.locator(`[data-dp-order="${third.orderId}"]`).first().waitFor();
+  assert.equal(await page.evaluate(()=>Object.keys(JSON.parse(localStorage.getItem('donpieros_checkout_intents_v1')||'{}')).length),0);
   assert.equal(h.sheets.get('Ventas').rows.length,3,'El rechazo no registra una venta');assert.equal(await page.locator('#checkoutProgress').isVisible(),false);
-  rejectCheckout=false;await page.locator('#paymentForm button[value=save]').click();
+  rejectCheckout=false;await open(third.orderId);await page.locator('#paymentForm button[value=save]').click();
   await page.waitForFunction(()=>JSON.parse(localStorage.getItem('don_pieros_invoices_v1')||'[]').length===3);
   assert.equal(h.sheets.get('Ventas').rows.length,4,'Reintentar conserva una sola venta');
-  assert.ok(calls.some(call=>call.action==='checkout_web_order'));assert.deepEqual(errors,[]);
+  const fourth=create('Corte antes de registrar');await page.evaluate(()=>location.hash='dashboard');await page.locator(`[data-dp-order="${fourth.orderId}"]`).first().waitFor();
+  await open(fourth.orderId);failBeforeWrite=2;await page.locator('#paymentForm button[value=save]').click();
+  await page.locator('#paymentDialog').waitFor({state:'hidden',timeout:900});
+  await page.waitForFunction(()=>document.querySelector('#checkoutProgress')?.hidden);
+  assert.equal(h.sheets.get('Ventas').rows.length,4,'Una petición sin respuesta no inventa un pago.');
+  assert.equal(await page.locator(`[data-dp-order="${fourth.orderId}"]`).count(),0);
+  await page.reload();await page.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
+  await page.waitForFunction(()=>JSON.parse(localStorage.getItem('don_pieros_invoices_v1')||'[]').length===4);
+  assert.equal(h.sheets.get('Ventas').rows.length,5);assert.equal(await page.locator('#paymentDialog[open]').count(),0);
+  const recoveredCalls=calls.filter(call=>call.action==='checkout_web_order'&&call.payload.invoice.webOrderId===fourth.orderId);
+  assert.ok(recoveredCalls.length>=3);assert.equal(new Set(recoveredCalls.map(call=>call.payload.invoice.checkoutId)).size,1,'Recarga y reintentos conservan la identidad del cobro.');
+  assert.ok(calls.some(call=>call.action==='checkout_web_order'));
+  assert.equal(calls.filter(call=>call.action==='record_sale'&&call.payload?.invoice?.webOrderId||call.action==='sync_sales_batch'&&call.payload?.operations?.some(op=>op.payload?.invoice?.webOrderId)).length,0,'No repite el registro Google de ventas web ya confirmadas.');
+  assert.deepEqual(errors,[]);
   console.log('OK: cobrar pedido, cancelar sin retirar, transferencia, Ventas, personal en factura, recarga y respuesta perdida sin duplicar.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});

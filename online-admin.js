@@ -8,6 +8,8 @@
   const date=v=>window.DonPierosDates.dateTime(v);
   const api=()=>window.DonPierosAdmin;
   const orderDetails=()=>window.DonPierosOrderDetails;
+  const pendingCheckouts=()=>api()?.getPendingWebCheckouts?.()||[];
+  const checkoutPending=id=>pendingCheckouts().some(entry=>entry.id===id);
   const sourceLabel=order=>order.source==='staff_walk_in'?'Venta individual · '+(order.waiterName||'Mesero'):'Pedido en línea';
   const timeEdits=new Map();
   function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active);}});}
@@ -193,6 +195,7 @@
 
   async function loadOrders(force=false,urgent=false){
     if(!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
+    if(!urgent&&[...orderWrites.values()].some(write=>write.pending))return;
     if(busy){if(!urgent){if(force)ordersReloadRequested=true;return;}ordersController?.abort();}
     const controller=new AbortController(),token=api().getToken(),readEpoch=orderEpoch;ordersController=controller;
     ordersReloadRequested=false;
@@ -230,7 +233,7 @@
       for(const order of overlayOrders(dashboardOrders))if(!deletions()?.hidden('web-order',order.id)&&receivedOrderSignals.has(order.id))confirmReception(order.id);
       if(arrived.length&&api().getUser()?.role!=='waiter'){
         api().announceWebOrders(arrived);
-        for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:'order',title:order.customerName,
+        for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,
           detail:`${order.id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
           action:()=>openOrder(order.id)});
       }
@@ -241,18 +244,18 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status-actions"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(sourceLabel(order))}<br>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
+  function orderCard(order){return `<article class="dp-order-card order-origin-${order.source==='staff_walk_in'?'individual':'online'} dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status-actions"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(sourceLabel(order))}<br>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
   function overlayOrders(rows){
     const next=new Map(rows.map(row=>[row.id,row]));
     for(const [id,write] of orderWrites){
       if(!write.after)next.delete(id);
       else if(next.has(id))next.set(id,write.after);
     }
-    return [...next.values()].filter(row=>row.status!=='cobrada');
+    return [...next.values()].filter(row=>row.status!=='cobrada'&&!checkoutPending(row.id));
   }
   function adjustedCount(rows,count,filter){
     const matches=row=>row&&row.status!=='eliminada'&&(filter==='all'||(filter==='active'?['nueva','atendiendo','lista'].includes(row.status):row.status===filter));
-    for(const row of rows){const write=orderWrites.get(row.id);if(deletions()?.hidden('web-order',row.id))count-=Number(!!matches(row));else if(write)count+=Number(!!matches(write.after))-Number(!!matches(row));}
+    for(const row of rows){const write=orderWrites.get(row.id);if(deletions()?.hidden('web-order',row.id)||checkoutPending(row.id))count-=Number(!!matches(row));else if(write)count+=Number(!!matches(write.after))-Number(!!matches(row));}
     return Math.max(0,Number(count)||0);
   }
   function repaintOrders(){renderOrders();renderDashboard(dashboardOrders,activeCount);}
@@ -285,7 +288,7 @@
       notify('Pedido retirado. Se está sincronizando.');
     }catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
-  function productAddButton(order){return ['boss','admin'].includes(api().getUser()?.role)&&['nueva','atendiendo','lista'].includes(order.status)?`<button type="button" class="dp-add-product" data-dp-add-product="${esc(order.id)}" ${orderWrites.get(order.id)?.pending?'disabled':''}>＋ Agregar producto</button>`:'';}
+  function productAddButton(order){return !checkoutPending(order.id)&&['boss','admin'].includes(api().getUser()?.role)&&['nueva','atendiendo','lista'].includes(order.status)?`<button type="button" class="dp-add-product" data-dp-add-product="${esc(order.id)}" ${orderWrites.get(order.id)?.pending?'disabled':''}>＋ Agregar producto</button>`:'';}
   function addOrderProduct(id,lineIndex=null){
     const order=findOrder(id),token=api().getToken();
     if(!order||!productAddButton(order)||orderWrites.get(id)?.pending)return;
@@ -296,7 +299,7 @@
       onAdd:async line=>{
         if(token!==api().getToken())throw Error('La sesión cambió. Abre el pedido nuevamente.');
         const packing=window.DonPierosPackaging.read(line.notes);
-        const item={productId:line.product_id,quantity:line.quantity,unitPrice:line.unit_price-packing.fee,selectionIds:line.options.selectionIds,notes:packing.notes};
+        const item={productId:line.product_id,quantity:line.quantity,unitPrice:line.unit_price-packing.fee,selectionIds:line.options.selectionIds,notes:packing.notes,fulfillment:line.options.fulfillment,packagingSize:window.DonPierosPackaging.sizes[packing.size]||''};
         if(lineIndex!==null)item.name=line.name;
         if(line.options.manualUnitPrice!=null)item.manualUnitPrice=line.options.manualUnitPrice;
         const signature=JSON.stringify(item);
@@ -307,7 +310,7 @@
           if(token!==api().getToken())throw Error('La sesión cambió. Abre el pedido nuevamente.');
           if(!result.order)throw Error('No pudimos confirmar el producto. Actualiza la comanda.');
           orderEpoch++;orderWrites.set(id,{before:order,after:result.order,pending:false});
-          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated',id);notify(lineIndex===null?'Producto agregado al pedido.':'Producto actualizado.');void loadOrders(true);
+          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated',id);notify(lineIndex===null?'Producto agregado al pedido.':'Producto actualizado.');
         }catch(error){if(token===api().getToken()){orderWrites.delete(id);repaintOrders();void loadOrders(true);}throw error;}
       }
     });
@@ -325,6 +328,9 @@
   function renderDashboard(rows,count){
     count=adjustedCount(rows,activeCount,'active');$('#dp-nav-count').textContent=count||'';
     const root=$('#dp-dashboard-orders');
+    const pending=pendingCheckouts();let progress=$('#dp-checkout-pending');
+    if(!progress){progress=document.createElement('p');progress.id='dp-checkout-pending';progress.className='dp-muted';progress.setAttribute('role','status');root.before(progress);}
+    progress.hidden=!pending.length;progress.textContent=pending.length?'Confirmando cobros en segundo plano…':'';
     if(!$('#dp-dashboard-order-list'))root.innerHTML=`<div class="section-head"><h3>Pedidos recibidos <span class="dp-count"></span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${receptionFilters('dashboard')}<p id="dp-dashboard-result" class="dp-muted" role="status"></p><div id="dp-dashboard-order-list"></div>`;
     root.querySelector('.dp-count').textContent=count;
     const board=window.DonPierosReceptionBoard;
@@ -338,13 +344,14 @@
 
   function openOrder(id){
     if(!canOrders())return;
+    if(checkoutPending(id))return;
     const order=findOrder(id);if(!order)return;
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     $('#dp-order-detail').innerHTML=`
       <header class="dp-order-heading dp-state-${esc(order.status)}"><div><span class="eyebrow">Don Pieros Pizza · Comanda</span><h2>Pedido ${esc(order.sequence||String(order.id).split('-').at(-1))}</h2><p>${esc(order.id)}<br><time>${esc(date(order.createdAt))}</time></p></div><span class="dp-status-actions"><span class="dp-status dp-detail-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span></header>
       <div class="dp-order-layout">
         <section class="dp-order-products"><div class="dp-products-heading"><h3>Productos para preparar</h3><span>${units} ${units===1?'unidad':'unidades'}</span></div>
-          <div class="dp-detail-lines">${order.items.map(item=>`<article><span class="dp-item-quantity">${Number(item.quantity)||0} ×</span><div><strong>${esc(item.name)}</strong>${item.selections.length?`<ul>${item.selections.map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</div></article>`).join('')}</div>
+          <div class="dp-detail-lines">${order.items.map(item=>`<article><span class="dp-item-quantity">${Number(item.quantity)||0} ×</span><div><strong>${esc(item.name)}</strong>${item.selections.length?`<ul>${window.DonPierosOrderLabels.compact(item.selections).map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</div></article>`).join('')}</div>
           ${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}
         </section>
         <aside class="dp-order-summary"><section class="dp-order-customer"><small>DATOS DEL CLIENTE</small><h3>${esc(order.customerName)}</h3>${order.phone?`<a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a>`:''}<div class="dp-fulfillment-label">${fulfillmentLabel(order.fulfillment)}</div>${order.fulfillment==='delivery'?`<p><strong>Barrio:</strong> ${esc(order.neighborhood)}<br><strong>Dirección:</strong> ${esc(order.address)}</p>`:''}</section>
@@ -384,6 +391,7 @@
     $('#dp-delete-order').onclick=()=>void deleteOrder(id);
     $('#dp-print-order').onclick=()=>printOrder(order,paperWidth);
     const dialog=$('#dp-order-dialog');
+    dialog.dataset.orderId=id;
     $('#dp-order-detail h2').id='dp-order-title';
     dialog.querySelector('.dp-dialog-card').scrollTop=0;
     if(!dialog.open)dialog.showModal();
@@ -398,6 +406,7 @@
   });
 
   async function checkoutOrder(id){
+    if(checkoutPending(id))return;
     const button=$('#dp-charge-order');if(button)button.disabled=true;
     try{
       // Reception already holds the complete order. The checkout endpoint
@@ -430,6 +439,13 @@
     const id=event.detail?.id;if(!id)return;
     const before=findOrder(id);orderWrites.set(id,{before,after:null,pending:false});repaintOrders();void loadOrders(true);
   });
+  window.addEventListener('don-pieros-web-checkout-pending',event=>{
+    window.DonPierosReception?.dismiss('order:'+event.detail.id);
+    const dialog=$('#dp-order-dialog');if(dialog?.dataset.orderId===event.detail.id)dialog.close();repaintOrders();
+  });
+  window.addEventListener('don-pieros-web-checkout-rejected',()=>{repaintOrders();void loadOrders(true);});
+  window.addEventListener('donpieros-staff-order-saved',event=>{signal('order-created',event.detail.id);void loadOrders(true);});
+  window.addEventListener('storage',event=>{if(event.key==='donpieros_checkout_intents_v1')repaintOrders();});
 
   function kitchenSelection(value){
     return String(value??'').replace(/\s*\(\s*\+\s*\$[\d.,\s]+\)\s*$/,'')
@@ -458,7 +474,7 @@
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p>${esc(sourceLabel(order))}</p><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
-      ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>Caja ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${item.selections.map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}</section>`).join('')}
+      ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>Caja ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${window.DonPierosOrderLabels.compact(item.selections).map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}</section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio: Por confirmar</p>':''}
       <p>Productos: <strong>${money(order.subtotal)}</strong></p>${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}${order.fulfillment==='delivery'&&!order.deliveryFeePending?`<p>Domicilio: <strong>${money(order.deliveryFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS Y CAJAS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
@@ -642,7 +658,7 @@
         dashboardOrders=[...(active(order)?[order]:[]),...dashboardOrders.filter(row=>row.id!==id)].sort((a,b)=>b.sequence-a.sequence);
         if(order.status==='nueva'&&!seenOrderIds.has(id)&&api().getUser()?.role!=='waiter'){
           api().announceWebOrders([order]);
-          window.DonPierosReception?.show({key:'order:'+id,kind:'order',title:order.customerName,
+          window.DonPierosReception?.show({key:'order:'+id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,
             detail:`${id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,action:()=>openOrder(id)});
         }
         seenOrderIds.add(id);

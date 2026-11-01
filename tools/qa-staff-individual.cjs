@@ -39,7 +39,16 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   assert.equal(await waiter.locator('#dw-product-dialog').evaluate(dialog=>dialog.open),true);
   await waiter.selectOption('#dw-fulfillment','pickup');await waiter.locator('[data-dw-quantity="1"]').click();await waiter.locator('#dw-line-notes').fill('Sin cebolla');await waiter.locator('#dw-add-product').click();
   assert.equal(await waiter.locator('#dw-selection').isVisible(),true);await waiter.screenshot({path:'artifacts/mesero-entrega-obligatoria.png',fullPage:false});
-  await waiter.locator('[data-dw-review]').click();await waiter.locator('#dw-individual-customer').fill('Laura mostrador');await waiter.locator('#dw-estimated-time').fill('20 minutos');await waiter.locator('#dw-order-notes').fill('Entregar juntas');
+  await waiter.locator('[data-dw-review]').click();
+  for(const name of ['', '  ', 'A']){
+   await waiter.locator('#dw-individual-customer').fill(name);await waiter.locator('#dw-send-order').click();
+   assert.equal(writes,0);assert.equal(await waiter.evaluate(()=>document.activeElement.id),'dw-individual-customer');
+   assert.equal(await waiter.locator('#dw-individual-customer').getAttribute('aria-invalid'),'true');
+   assert.match(await waiter.locator('#dw-individual-customer').evaluate(input=>getComputedStyle(input).animationName),/dw-required-border/);
+  }
+  const reviewText=await waiter.locator('.dw-review-lines').innerText();assert.match(reviewText,/Sabores \(mitad y mitad\): .+ \/ .+/);assert.doesNotMatch(reviewText,/Elige 2 sabores/);
+  await waiter.locator('#dw-individual-customer').fill('Laura mostrador');assert.notEqual(await waiter.locator('#dw-individual-customer').getAttribute('aria-invalid'),'true');
+  await waiter.locator('#dw-estimated-time').fill('20 minutos');await waiter.locator('#dw-order-notes').fill('Entregar juntas');
   await waiter.reload();await waiter.locator('[data-dw-individual]').click();assert.match(await waiter.locator('[data-dw-review]').innerText(),/2 productos/);
   await waiter.locator('[data-dw-review]').click();assert.equal(await waiter.locator('#dw-individual-customer').inputValue(),'Laura mostrador');assert.equal(await waiter.locator('#dw-order-notes').inputValue(),'Entregar juntas');
   await waiter.locator('#dw-send-order').click();await waiter.locator('#dw-send-error').filter({hasText:/./}).waitFor();assert.equal(h.call('dp_get_orders').orders.length,1);assert.equal(writes,1);
@@ -51,6 +60,12 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await boss.selectOption('#receptionSource','individual');
   const card=boss.locator(`#dp-dashboard-orders [data-dp-order="${order.id}"]`);await card.waitFor();assert.match(await card.innerText(),/Venta individual.*Mesero/);
   await card.locator('[data-dp-view]').click();assert.match(await boss.locator('#dp-order-detail').innerText(),/Sin cebolla/);
+  assert.match(await boss.locator('#dp-order-detail').innerText(),/Sabores \(mitad y mitad\): .+ \/ .+/);assert.doesNotMatch(await boss.locator('#dp-order-detail').innerText(),/Elige 2 sabores/);
+  for(const [fulfillment,amount] of [['dinein',92000],['pickup',96000]]){
+   await boss.locator('[data-dp-edit-product="0"]').click();assert.equal(await boss.locator('#dw-fulfillment').isEnabled(),true);
+   await boss.selectOption('#dw-fulfillment',fulfillment);await boss.locator('#dw-add-product').click();await boss.locator('#dp-order-dialog[open]').waitFor();
+   assert.equal(h.call('dp_get_order',{id:order.id}).order.total,amount);
+  }
   const [printed]=await Promise.all([bossContext.waitForEvent('page'),boss.locator('#dp-print-order').click()]);await printed.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
   assert.match(await printed.locator('body').innerText(),/Venta individual.*Mesero/);assert.match(await printed.locator('body').innerText(),/Sin cebolla/);await printed.close();
   await boss.screenshot({path:'artifacts/venta-individual-mesero-caja.png',fullPage:false});

@@ -76,7 +76,7 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
    await page.addScriptTag({path:path.join(root,'thermal-print.js')});
    await page.evaluate(()=>{DonPierosThermal.print=async()=>({});});
    for(const file of ['online-admin.css','reception-notices.css','waiter-orders.css','system-dialogs.css'])await page.addStyleTag({path:path.join(root,file)});
-   for(const file of ['packaging.js','order-details.js','system-dialogs.js','pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
+   for(const file of ['packaging.js','order-labels.js','order-details.js','system-dialogs.js','pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
   };
   await initialize();
   await page.waitForSelector('[data-dp-order="DP-test-1"]');
