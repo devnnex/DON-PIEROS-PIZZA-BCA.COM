@@ -33,6 +33,11 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await addIndividual('Ana',20000);await addIndividual('Luis',15000);
   assert.equal(await page.locator('[data-open-individual]').count(),2);assert.equal(h.sheets.get('Ventas').rows.length,1,'Guardar pendiente no registra ventas.');
   await load();assert.equal(await page.locator('[data-open-individual]').count(),2,'Los dos pendientes sobreviven recarga.');
+  for(const width of [390,768,1440]){
+   await page.setViewportSize({width,height:1000});
+   assert.equal(await page.locator('#individualSalesGrid').evaluate(node=>node.scrollWidth>node.clientWidth),false,'Las casillas individuales caben en móvil y escritorio.');
+  }
+  await page.locator('#individualSalesPanel').screenshot({path:'artifacts/ventas-individuales-estilo.png'});
   const originalDeadlines=await page.locator('[data-open-individual]').evaluateAll(nodes=>nodes.map(node=>node.dataset.orderDeadline));
   await page.evaluate(()=>{window.qaRealNow=Date.now;Date.now=()=>qaRealNow()+26*60000;DonPierosOrderDetails.updateCountdowns(document);});
   assert.equal(await page.locator('[data-open-individual].order-time-expired').count(),2,'Los dos pendientes parpadean al vencer sin esperar una consulta remota.');
@@ -45,6 +50,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   assert.equal(await page.locator('#paymentForm [name=individual_observations]').inputValue(),'Observación general: entregar a Ana');
   const [manualPrint]=await Promise.all([context.waitForEvent('page'),page.locator('#printIndividualSale').click()]);
   await manualPrint.waitForSelector('article .size-option');
+  assert.equal(await manualPrint.locator('article .size-name').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),17);
   assert.equal(await manualPrint.locator('article').first().evaluate(node=>!!(node.querySelector('.size-option').compareDocumentPosition(node.querySelector('strong'))&Node.DOCUMENT_POSITION_FOLLOWING)),true);
   await manualPrint.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');assert.match(await manualPrint.locator('body').innerText(),/Ana[\s\S]*40.000[\s\S]*PENDIENTE DE COBRO/);await manualPrint.close();
   await page.locator('#paymentForm [data-cancel-payment]').first().click();assert.equal(await page.locator('[data-open-individual]').count(),1,'Cerrar conserva el pendiente filtrado.');
@@ -76,6 +82,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order.total,78000);
   const [webPrint]=await Promise.all([context.waitForEvent('page'),page.locator('#dp-print-order').click()]);
   await webPrint.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+  assert.equal(await webPrint.locator('.kitchen-item .size-name').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),22);
   const printed=await webPrint.locator('.kitchen-item').innerText();assert.match(printed,/Precio unitario:.*35.000/);assert.match(printed,/Caja Super maxi:.*4.000/);assert.match(printed,/Total de la línea:.*78.000/);
   assert.equal(await webPrint.locator('.kitchen-item').evaluate(node=>!!(node.querySelector('.size-option').compareDocumentPosition(node.querySelector('h3'))&Node.DOCUMENT_POSITION_FOLLOWING)),true,'La comanda web imprime el tamaño sobre el nombre.');
   assert.match(await webPrint.locator('.estimated-print').innerText(),/30 min/);assert.match(await webPrint.locator('.notes').innerText(),/Sin piña; salsa aparte/);assert.doesNotMatch(await webPrint.locator('body').innerText(),/Tiempo asignado:/);await webPrint.close();

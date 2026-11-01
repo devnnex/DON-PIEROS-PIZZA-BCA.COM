@@ -12,6 +12,13 @@
     const style=doc.createElement('style');style.dataset.thermalPaper='';
     style.textContent=`html,body{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}html{margin:0!important;padding:0!important}body{box-sizing:border-box!important;width:${width}mm!important;margin:0!important;padding:2mm!important;box-shadow:none!important}*{box-sizing:border-box}@page{margin:0;@top-left{content:none}@top-center{content:none}@top-right{content:none}@bottom-left{content:none}@bottom-center{content:none}@bottom-right{content:none}}`;
     doc.head.append(style);await (doc.fonts?.ready||Promise.resolve());
+    doc.querySelectorAll('.size-name').forEach(size=>{
+      const block=size.closest('.kitchen-item,article')||size.parentElement;
+      const otherSizes=[...block.querySelectorAll('*')].filter(node=>!node.closest('.size-name'))
+        .map(node=>parseFloat(target.getComputedStyle(node).fontSize)||0);
+      const largest=Math.max(parseFloat(target.getComputedStyle(block).fontSize)||0,...otherSizes);
+      size.style.setProperty('font-size',`${largest+2}px`,'important');
+    });
     await Promise.all([...doc.images].map(img=>img.decode?.().catch(()=>{})));
     await new Promise(resolve=>target.requestAnimationFrame(()=>resolve()));
     // body height is content height. scrollHeight of html includes the viewport

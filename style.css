@@ -5499,6 +5499,29 @@ button,a,[role="button"]{touch-action:manipulation}
 .reception-toolbar{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:16px 0}.reception-toolbar h2{margin:4px 0}.reception-toolbar label{display:grid;gap:6px;flex:1;min-width:150px}.reception-toolbar input,.reception-toolbar select{width:100%}.reception-filter-hidden{display:none!important}#individualSalesPanel{margin-top:22px;padding-top:18px;border-top:1px solid #e7dfc9}#individualSalesGrid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}.individual-sale-tile{height:auto!important;min-height:160px;gap:7px;padding:16px!important}.individual-sale-tile span{font-size:14px;overflow-wrap:anywhere}.individual-sale-tile em{position:static!important;font-size:11px!important;background:#fff3c4!important;color:#735000!important}#individualSaleActions[hidden],#individualCustomerField[hidden]{display:none!important}.individual-sale-actions{display:flex;gap:8px;flex-wrap:wrap}.payment-sale-lines button{min-height:32px;padding:5px 9px}.reception-toolbar input{min-width:180px}
 
 /* Editing starts with the selected product and fields, even on short screens. */
+#individualSalesPanel{padding:20px;border:1px solid #e0e7f0;border-radius:20px;background:#f7f9fc}
+#individualSalesPanel>.section-head{gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+#individualSalesPanel h3{margin:0 0 5px;color:#20324a}
+#individualSalesPanel .section-head small{color:#65758a;font-size:12px}
+#individualSalesCount{display:inline-grid;place-items:center;min-width:26px;padding:3px 8px;margin-left:5px;border-radius:8px;background:#e4edff;color:#185ac2;font-size:13px}
+#individualSalesGrid{grid-template-columns:repeat(auto-fill,minmax(225px,1fr));gap:14px}
+#individualSalesGrid .individual-sale-tile{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto;align-content:start;gap:10px;min-height:205px;padding:17px!important;background:#fff;border:1px solid #d9e2ef;border-left:4px solid #3478da;border-radius:16px;text-align:left;box-shadow:0 4px 12px #19365b08}
+#individualSalesGrid .individual-sale-tile:hover{border-color:#3478da;box-shadow:0 8px 20px #245eaf18}
+#individualSalesGrid .individual-sale-tile:focus-visible{outline:3px solid #80aff3;outline-offset:3px}
+#individualSalesGrid .individual-sale-heading{display:flex;align-items:center;gap:9px;width:100%;color:#425570}
+#individualSalesGrid .individual-sale-heading strong{align-self:center;font-size:13px;letter-spacing:.02em}
+#individualSalesGrid .individual-sale-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#eef4ff;color:#2466c7;font-size:20px}
+#individualSalesGrid .individual-sale-arrow{margin-left:auto;color:#7a8da8;font-size:18px}
+#individualSalesGrid .individual-sale-customer{color:#172c48;font-size:16px;font-weight:800;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
+#individualSalesGrid .individual-sale-total{color:#1559b8;font-size:24px;line-height:1.15;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+#individualSalesGrid .individual-sale-date{text-align:left;color:#758298;font-size:11px;white-space:normal;line-height:1.4}
+#individualSalesGrid .individual-sale-footer{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap;padding-top:11px;margin-top:2px;border-top:1px solid #edf0f5}
+#individualSalesGrid .individual-sale-footer em{width:auto;height:auto;min-height:23px;padding:4px 8px;border-radius:6px;background:#fff3d4!important;color:#8a5b04!important;font-size:10px!important;line-height:1.3;white-space:normal;text-align:left}
+#individualSalesGrid .individual-sale-footer>span{color:#356aad;font-size:11px;font-weight:700}
+#individualSalesGrid .order-time-label{white-space:normal;overflow-wrap:anywhere;text-align:left;line-height:1.4;min-width:0}
+#individualSalesGrid>.muted{grid-column:1/-1;margin:0;padding:24px;text-align:center;border:1px dashed #d4deec;border-radius:12px;background:#fff}
+@media(max-width:640px){#individualSalesPanel{padding:14px}#individualSalesGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#individualSalesGrid .individual-sale-tile{padding:12px!important;min-height:205px}#individualSalesGrid .individual-sale-total{font-size:21px}#individualSalesGrid .individual-sale-customer{font-size:14px}}
+@media(max-width:380px){#individualSalesGrid{grid-template-columns:minmax(0,1fr)}}
 #consumptionForm:not(.is-editing-consumption) .dp-packing-controls { display: none; }
 #consumptionMenuButton[hidden]{display:none!important}
 #individualObservationField[hidden]{display:none!important}.order-time-form .order-observations-field{flex-basis:100%}.order-time-form textarea{padding:11px;width:100%;border:1px solid #ded4c1;border-radius:10px;font:inherit}
