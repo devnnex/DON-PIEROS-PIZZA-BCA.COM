@@ -59,6 +59,10 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await boss.goto('http://127.0.0.1:4173/admin.html#dashboard');await boss.locator('#salesShiftDialog[open]').waitFor();await boss.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
   await boss.selectOption('#receptionSource','individual');
   const card=boss.locator(`#dp-dashboard-orders [data-dp-order="${order.id}"]`);await card.waitFor();assert.match(await card.innerText(),/Venta individual.*Mesero/);
+  assert.equal(await card.locator('.dp-status').innerText(),'Nueva');
+  assert.equal(await card.evaluate(node=>getComputedStyle(node).borderLeftColor),'rgb(33, 134, 83)');
+  assert.equal(await card.evaluate(node=>getComputedStyle(node).animationName),'order-arrival-blink');
+  assert.equal(await card.evaluate(node=>Number(node.dataset.orderArrivalUntil)),Date.parse(order.createdAt)+90000);
   await card.locator('[data-dp-view]').click();assert.match(await boss.locator('#dp-order-detail').innerText(),/Sin cebolla/);
   assert.match(await boss.locator('#dp-order-detail').innerText(),/Sabores \(mitad y mitad\): .+ \/ .+/);assert.doesNotMatch(await boss.locator('#dp-order-detail').innerText(),/Elige 2 sabores/);
   for(const [fulfillment,amount] of [['dinein',92000],['pickup',96000]]){

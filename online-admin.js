@@ -12,7 +12,7 @@
   const checkoutPending=id=>pendingCheckouts().some(entry=>entry.id===id);
   const sourceLabel=order=>order.source==='staff_walk_in'?'Venta individual · '+(order.waiterName||'Mesero'):'Pedido en línea';
   const timeEdits=new Map();
-  function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active);}});}
+  function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active,order.source==='staff_walk_in'?90000:120000);}});}
   const newestFirst=(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0)||(Number(b.sequence)||0)-(Number(a.sequence)||0);
   const deletions=()=>window.DonPierosDeletions;
   const friendly=(value)=>window.DonPierosLanguage.message(value);

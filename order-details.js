@@ -46,10 +46,10 @@
     node.dataset.orderDeadline=String(deadline(notes,fallback));node.dataset.orderEstimate=info.time;updateNode(node);
   }
   function updateArrival(node,now=Date.now()){node.classList.toggle('order-arrival-new',now<Number(node.dataset.orderArrivalUntil));}
-  function decorateArrival(node,createdAt,enabled=true){
+  function decorateArrival(node,createdAt,enabled=true,duration=120000){
     if(!node)return;const start=Date.parse(createdAt||'');
     if(!enabled||!Number.isFinite(start)){delete node.dataset.orderArrivalUntil;node.classList.remove('order-arrival-new');return;}
-    node.dataset.orderArrivalUntil=String(start+120000);updateArrival(node);
+    node.dataset.orderArrivalUntil=String(start+duration);updateArrival(node);
   }
   function updateCountdowns(doc){doc.querySelectorAll('[data-order-deadline]').forEach(node=>updateNode(node));doc.querySelectorAll('[data-order-arrival-until]').forEach(node=>updateArrival(node));syncClock(doc);}
   function sizeFirst(doc,selector,items=[]){

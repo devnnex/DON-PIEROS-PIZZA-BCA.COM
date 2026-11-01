@@ -13,6 +13,10 @@ test('el aviso verde dura dos minutos desde la llegada, incluso al redibujar o r
  details.decorateArrival(node,new Date(now).toISOString(),false);assert.equal(classes.has('order-arrival-new'),false,'Los pedidos retirados de recepcion no parpadean.');
  assert.equal(node.dataset.orderArrivalUntil,undefined);
  details.decorateArrival(node,'fecha invalida');assert.equal(classes.has('order-arrival-new'),false);
+ now=start;details.decorateArrival(node,new Date(start).toISOString(),true,90000);
+ now=start+89999;details.updateCountdowns(doc);assert.equal(classes.has('order-arrival-new'),true);
+ now=start+90000;details.updateCountdowns(doc);assert.equal(classes.has('order-arrival-new'),false,'La venta individual deja de parpadear a los 90 segundos.');
+ details.decorateArrival(node,new Date(start).toISOString(),true,90000);assert.equal(classes.has('order-arrival-new'),false,'Redibujar conserva el vencimiento original.');
 });
 test('el reloj suena solo el primer minuto de vencimiento y no reinicia al redibujar la tarjeta',()=>{
  const vm=require('node:vm'),fs=require('node:fs');let now=100000,tones=0,next=0;const timers=new Map();

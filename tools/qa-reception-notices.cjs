@@ -94,7 +94,7 @@ const root=path.resolve(__dirname,'..');
   await staffNotice.locator('button').click();await page.locator('#dp-order-dialog[open]').waitFor();
   assert.equal(await page.locator('#dashboard.section-active').count(),1);assert.match(await page.locator('#dp-order-detail').innerText(),/Laura individual/);
   const staffCard=page.locator(`#dp-dashboard-order-list [data-dp-order="${staff.orderId}"]`);assert.equal(await staffCard.count(),1);
-  assert.equal(await staffCard.evaluate(node=>getComputedStyle(node).borderLeftColor),'rgb(52, 120, 218)');
+  assert.equal(await staffCard.evaluate(node=>getComputedStyle(node).borderLeftColor),'rgb(33, 134, 83)');
   await page.keyboard.press('Escape');
   // Table requests move up to the requests area and acceptance is the real action.
   requests=[{id:'20000000-0000-4000-8000-000000000001',table_id:table.id,session_id:null,request_type:'waiter',message:'Necesitamos servilletas',status:'pending',created_at:new Date().toISOString(),restaurant_tables:table}];
