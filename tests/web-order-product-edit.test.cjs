@@ -41,3 +41,19 @@ test('no edita pedidos cerrados y rechaza cobros preparados con el total anterio
  invoice.totals.total=result.order.total;invoice.payments[0].amount=result.order.total;invoice.items[0].unit_price=result.order.total;
  const paid=h.call('checkout_web_order',{invoice});assert.equal(paid.ok,true,paid.error);
 });
+
+test('corrige el nombre solo en esta comanda y conserva precio, cajas y nombre al reeditar',()=>{
+ const {h,order,payload}=setup(),catalogBefore=h.call('dp_admin_catalog'),name='Especial familiar corregida';
+ for(const value of ['', '   ', null, 42, 'x'.repeat(161), 'Nombre\ncon salto']){
+  assert.equal(h.call('dp_edit_order_product',{...payload,item:{...payload.item,name:value}}).ok,false);
+ }
+ const result=h.call('dp_edit_order_product',{...payload,item:{...payload.item,name:'  '+name+'  ',unitPrice:31000,manualUnitPrice:31000}});
+ assert.equal(result.ok,true,result.error);assert.equal(result.order.items[1].name,name);assert.equal(result.order.items[1].catalogName,'Pizza extra');
+ assert.equal(result.order.items[1].unitPrice,31000);assert.equal(result.order.items[1].packagingSize,'Maxi');assert.equal(result.order.total,130000);
+ assert.deepEqual(result.order.items[0],order.items[0]);assert.deepEqual(h.call('dp_admin_catalog'),catalogBefore);
+ assert.equal(h.call('dp_get_order',{id:order.id}).order.items[1].name,name);
+ const next=h.call('dp_edit_order_product',{...payload,version:result.order.version,operationId:crypto.randomUUID()});
+ assert.equal(next.ok,true,next.error);assert.equal(next.order.items[1].name,name,'Un cliente anterior que omite el nombre conserva la correccion.');
+ const boxes=h.call('dp_edit_order',{id:order.id,version:next.order.version,lines:next.order.items.map(item=>({productId:item.productId,unitPrice:item.unitPrice,packagingSize:item.packagingSize}))});
+ assert.equal(boxes.ok,true,boxes.error);assert.equal(boxes.order.items[1].name,name);assert.equal(boxes.order.items[1].packagingSize,'Maxi');
+});

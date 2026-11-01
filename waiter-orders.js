@@ -172,6 +172,7 @@
       const min=group.required?Math.max(1,Number(group.min)||1):0;
       return `<fieldset data-dw-group="${esc(group.id)}" data-min="${min}" data-max="${Number(group.max)||99}"><legend>${esc(group.name)} <small>${min?'Obligatorio':'Opcional'}</small></legend>${catalog.toppings.filter(option=>option.available&&option.kind===group.source).map(option=>`<label><input type="${Number(group.max)===1?'radio':'checkbox'}" name="${esc(group.id)}" value="${esc(option.id)}" ${(ids[group.id]||[]).includes(option.id)?'checked':''}><span>${esc(option.name)}</span><small>${group.usePrice&&Number(option.price)?'+'+money(option.price):'Incluido'}</small></label>`).join('')}</fieldset>`;
     }).join('')}</div><div class="dw-quantity"><span>Cantidad</span><button type="button" data-dw-quantity="-1" aria-label="Disminuir cantidad">−</button><output id="dw-product-quantity">${existing?.quantity||1}</output><button type="button" data-dw-quantity="1" aria-label="Aumentar cantidad">＋</button></div><label class="dw-notes-label">Notas del producto <small>Opcional</small><textarea id="dw-line-notes" maxlength="500" placeholder="Ej.: sin cebolla, salsa aparte…">${esc(existing?.notes||'')}</textarea></label><p id="dw-product-error" class="dw-error" role="alert"></p><button type="submit" class="dw-primary" id="dw-add-product">${existing?'Actualizar producto':'Agregar al pedido'} · <span id="dw-product-price"></span></button>`;
+    if(existing&&!custom)$('#dw-product-body .dw-product-options').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Nombre del producto<input id="dw-item-name" type="text" maxlength="160" required value="${esc(existing.product_id===id?existing.name||product.name:product.name)}"></label>`);
     const savedPacking=window.DonPierosPackaging.read(existing?.notes);
     if(!custom){
       const catalogPrice=productSelection().unitPrice;
@@ -210,8 +211,9 @@
   function updateProductOptions(){if(!activeProduct)return;const selection=productSelection(),quantity=Number($('#dw-product-quantity').value),price=selection.unitPrice*quantity;if($('#dw-unit-price'))$('#dw-unit-price').placeholder=money(selection.catalogUnitPrice);$('#dw-product-price').textContent=money(price);const summary=$('#dw-packaging-summary');if(summary)summary.textContent=selection.box.fee?`Valor Caja ${window.DonPierosPackaging.sizes[selection.box.size]}: $${selection.box.fee.toLocaleString('es-CO')}`:selection.takeaway?'Sin cobro de caja para este producto.':'Sin cobro de caja.';}
   function addProduct(event){
     event.preventDefault();if(busy||!individualPick&&!webPick&&(!draft||draft.pending))return;const selection=productSelection(true);
+    if($('#dw-item-name')&&!$('#dw-item-name').value.trim()){$('#dw-item-name').setCustomValidity('Escribe el nombre del producto.');$('#dw-item-name').reportValidity();return;}
     if(!selection.valid){$('#dw-product-error').textContent=activeProduct.custom?'Escribe el nombre y un precio válido en pesos.':'Elige las opciones obligatorias para continuar.';$('#dw-product-body .is-invalid')?.scrollIntoView({block:'center',behavior:'smooth'});return;}
-    const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:window.DonPierosPackaging.note($('#dw-line-notes').value.trim(),selection.box.size,selection.takeaway)};
+    const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:$('#dw-item-name')?$('#dw-item-name').value.trim():activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:window.DonPierosPackaging.note($('#dw-line-notes').value.trim(),selection.box.size,selection.takeaway)};
     if([...(line.options.labels||[]),line.notes].join(' · ').length>500){$('#dw-product-error').textContent='Acorta un poco las notas de este producto.';return;}
     if(webPick){void saveWebProduct(line);return;}
     if(individualPick){
@@ -551,6 +553,7 @@
   });
   $('#dw-product-form').onsubmit=addProduct;
   $('#dw-product-form').addEventListener('change',updateProductOptions);
+  $('#dw-product-form').addEventListener('input',event=>{if(event.target.id==='dw-item-name')event.target.setCustomValidity('');});
   document.addEventListener('dblclick',event=>{
     const price=event.target.closest('[data-dw-price]');if(price){editLinePrice(price);return;}
     const line=event.target.closest('[data-dw-line]');if(line&&!event.target.closest('button,input')){const item=draft?.items.find(item=>item.id===line.dataset.dwLine);if(item)showProduct(item.product_id,item.id);return;}

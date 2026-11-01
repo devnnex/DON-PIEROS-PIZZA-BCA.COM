@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.10.0-donpieros",
+  version: "3.11.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -2128,6 +2128,9 @@ function dpEditOrderProduct_(payload,user) {
     }
     if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza la comanda antes de editar.');
     var item=Object.assign({},old,dpPriceOrderItems_([payload.item],dpCatalog_(true),order.fulfillment,true)[0]);
+    item.catalogName=item.name;
+    if(payload.item.name!==undefined&&(typeof payload.item.name!=='string'||!payload.item.name.trim()||payload.item.name.trim().length>160||/[\u0000-\u001f]/.test(payload.item.name)))throw new Error('Escribe un nombre de producto de entre 1 y 160 caracteres.');
+    item.name=payload.item.name===undefined?old.name:payload.item.name.trim();
     item.notes=dpText_(payload.item.notes,500);item.editId=payload.operationId;item.editSignature=signature;
     var items=order.items.slice();items[payload.lineIndex]=item;
     var row=found.cells,headers=DP_TABLES.orders.headers;
@@ -2157,7 +2160,7 @@ function dpEditOrder_(payload,user) {
     var items=order.items.map(function(item,index){
       var edit=payload.lines[index]||{},price=Number(edit.unitPrice),size=String(edit.packagingSize||'');
       if(!edit||edit.productId!==item.productId||typeof edit.unitPrice!=='number'||!Number.isSafeInteger(price)||price<0||price>100000000||!Object.prototype.hasOwnProperty.call(sizes,size))throw new Error('Revisa el precio y la caja de cada producto.');
-      if(size&&!/pizza|pizzeta/.test(normalizeSearch_(item.name)))throw new Error('Este producto no lleva caja de pizza.');
+      if(size&&!/pizza|pizzeta/.test(normalizeSearch_(item.catalogName||item.name)))throw new Error('Este producto no lleva caja de pizza.');
       return Object.assign({},item,{unitPrice:price,packagingSize:size,packagingUnitFee:sizes[size]});
     });
     var unchanged=JSON.stringify(items)===JSON.stringify(order.items);
