@@ -2,7 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="utf-8">
-    <meta name="app-version" content="20261031-v42">
+    <meta name="app-version" content="20261031-v43">
     <script defer src="./pwa-updates.js?v=1"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#050505" id="pwaThemeColor">
@@ -18,7 +18,7 @@
     <link rel="icon" href="./images/admin-icon-192.png?v=admin-v1" id="appFavicon" type="image/png" sizes="192x192">
     <link rel="apple-touch-icon" href="./images/admin-icon-512.png?v=admin-v1" id="appleTouchIcon" sizes="512x512">
     <script>
-      window.__APP_ASSET_VERSION__ = "donpieros-20261031-v42";
+      window.__APP_ASSET_VERSION__ = "donpieros-20261031-v43";
       document.write(`<link rel="stylesheet" href="style.css?v=${window.__APP_ASSET_VERSION__}-mobile-menu-v4">`);
     </script>
     <link rel="stylesheet" href="menu-cards.css?v=20261019-visual-details-v1">
@@ -677,6 +677,11 @@
             <label>Quién paga<input name="payer_name" type="text" placeholder="Responsable de la cuenta"></label>
             <label>Precio manual<input name="unit_price" type="text" value="$0" inputmode="numeric" autocomplete="off" data-currency-input></label>
             <label class="wide">Nota<textarea name="notes" rows="2" placeholder="Observaciones opcionales"></textarea></label>
+            <fieldset class="individual-comanda-fields wide" id="individualComandaEditFields" hidden>
+              <legend>Editar comanda individual</legend>
+              <label>Tiempo estimado<input name="individual_edit_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos o 30 min"><small>Este tiempo se aplica a toda la comanda.</small></label>
+              <label>Observaciones de la comanda<textarea name="individual_edit_observations" rows="2" maxlength="500" placeholder="Indicaciones generales del pedido"></textarea></label>
+            </fieldset>
           </div>
         </details>
         <div class="consumption-selection" id="consumptionSelection" hidden>
@@ -763,9 +768,12 @@
           <label><input type="radio" name="tip_choice" value="with"><span><i data-lucide="hand-coins"></i><strong id="paymentWithTipLabel">Con propina</strong><small id="paymentWithTipAmount">Propina voluntaria</small></span></label>
         </fieldset>
 
-        <label id="individualCustomerField" hidden>Cliente / referencia de esta venta<input name="individual_customer" type="text" maxlength="120" placeholder="Nombre del cliente o número del pedido"></label>
-        <label id="individualTimeField" hidden>Tiempo estimado<input name="individual_estimated_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos"></label>
-        <label id="individualObservationField" hidden>Observaciones de la venta<textarea name="individual_observations" maxlength="500" rows="2" placeholder="Indicaciones para este pedido…"></textarea></label>
+        <fieldset class="individual-comanda-fields" id="individualComandaFields" hidden>
+          <legend>Datos de la comanda</legend>
+          <label id="individualCustomerField" hidden>Cliente / referencia<input name="individual_customer" type="text" maxlength="120" placeholder="Nombre del cliente o número del pedido"></label>
+          <label id="individualTimeField" hidden>Tiempo estimado<input name="individual_estimated_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos"><small>Puedes asignar o cambiar el tiempo antes del cobro.</small></label>
+          <label id="individualObservationField" hidden>Observaciones de la comanda<textarea name="individual_observations" maxlength="500" rows="2" placeholder="Indicaciones para este pedido…"></textarea></label>
+        </fieldset>
         <div class="payment-sale-lines" id="paymentSaleLines"></div>
         <button class="ghost payment-add-item" id="paymentAddItem" type="button" hidden><i data-lucide="plus"></i> Agregar otro producto</button>
         <div class="individual-sale-actions" id="individualSaleActions" hidden><button class="primary" id="holdIndividualSale" type="button">Enviar comanda · dejar pendiente</button><button class="ghost" id="printIndividualSale" type="button">Imprimir comanda</button><button class="ghost danger-text" id="discardIndividualSale" type="button">Descartar venta</button></div>
@@ -969,7 +977,7 @@
     <script defer src="https://unpkg.com/lucide@latest"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script defer src="vendor/jspdf.umd.min.js"></script>
-    <script defer src="sales-shift.js?v=donpieros-20261031-v42"></script>
+    <script defer src="sales-shift.js?v=donpieros-20261031-v43"></script>
     <script defer src="menu-cards.js?v=donpieros-20261027-v9"></script>
     <script>document.write(`<script defer src="app.js?v=${window.__APP_ASSET_VERSION__}"><\/script>`);</script>
   <script defer src="pending-deletions.js?v=1"></script>

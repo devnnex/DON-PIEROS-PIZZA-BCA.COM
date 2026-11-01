@@ -33,13 +33,33 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await addIndividual('Ana',20000);await addIndividual('Luis',15000);
   assert.equal(await page.locator('[data-open-individual]').count(),2);assert.equal(h.sheets.get('Ventas').rows.length,1,'Guardar pendiente no registra ventas.');
   await load();assert.equal(await page.locator('[data-open-individual]').count(),2,'Los dos pendientes sobreviven recarga.');
+  await page.locator('[data-open-individual]').filter({hasText:'Ana'}).click();
+  await page.locator('[data-edit-individual-line]').first().click();
+  assert.equal(await page.locator('#individualComandaEditFields').isVisible(),true,'Editar producto permite editar también el tiempo de la comanda.');
+  assert.equal(await page.locator('#consumptionForm [name=individual_edit_time]').inputValue(),'25 minutos');
+  await page.setViewportSize({width:390,height:950});
+  await page.locator('#individualComandaEditFields').scrollIntoViewIfNeeded();
+  assert.equal(await page.locator('#consumptionDialog').evaluate(node=>node.scrollWidth>node.clientWidth),false);
+  await page.locator('#consumptionDialog').screenshot({path:'artifacts/editar-comanda-individual.png'});
+  await page.locator('#consumptionForm [name=individual_edit_time]').fill('30 min');
+  await page.locator('#consumptionForm [name=individual_edit_observations]').fill('Salsa aparte; entrega a Ana');
+  await page.locator('#consumptionSubmitButton').click();await page.locator('#paymentDialog[open]').waitFor();
+  assert.equal(await page.locator('#paymentForm [name=individual_estimated_time]').inputValue(),'30 min');
+  assert.match(await page.locator('#paymentTotal').innerText(),/40.000/,'Editar la comanda conserva sus importes.');
+  const editedDeadline=await page.locator('[data-open-individual]').filter({hasText:'Ana'}).getAttribute('data-order-deadline');
+  await page.locator('[data-edit-individual-line]').first().click();
+  await page.locator('#consumptionForm [name=individual_edit_time]').fill('45 minutos');
+  await page.locator('#consumptionDialog [data-cancel-consumption]').first().click();await page.locator('#paymentDialog[open]').waitFor();
+  assert.equal(await page.locator('#paymentForm [name=individual_estimated_time]').inputValue(),'30 min','Cancelar no cambia el plazo guardado.');
+  await page.locator('#holdIndividualSale').click();await load();
+  assert.equal(await page.locator('[data-open-individual]').filter({hasText:'Ana'}).getAttribute('data-order-deadline'),editedDeadline,'El tiempo editado sobrevive recarga.');
   for(const width of [390,768,1440]){
    await page.setViewportSize({width,height:1000});
    assert.equal(await page.locator('#individualSalesGrid').evaluate(node=>node.scrollWidth>node.clientWidth),false,'Las casillas individuales caben en móvil y escritorio.');
   }
   await page.locator('#individualSalesPanel').screenshot({path:'artifacts/ventas-individuales-estilo.png'});
   const originalDeadlines=await page.locator('[data-open-individual]').evaluateAll(nodes=>nodes.map(node=>node.dataset.orderDeadline));
-  await page.evaluate(()=>{window.qaRealNow=Date.now;Date.now=()=>qaRealNow()+26*60000;DonPierosOrderDetails.updateCountdowns(document);});
+  await page.evaluate(()=>{window.qaRealNow=Date.now;Date.now=()=>qaRealNow()+31*60000;DonPierosOrderDetails.updateCountdowns(document);});
   assert.equal(await page.locator('[data-open-individual].order-time-expired').count(),2,'Los dos pendientes parpadean al vencer sin esperar una consulta remota.');
   await page.evaluate(()=>{Date.now=qaRealNow;DonPierosOrderDetails.updateCountdowns(document);});
   assert.deepEqual(await page.locator('[data-open-individual]').evaluateAll(nodes=>nodes.map(node=>node.dataset.orderDeadline)),originalDeadlines,'El contador conserva su vencimiento.');
@@ -47,7 +67,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await page.selectOption('#receptionSource','individual');await page.locator('#receptionSearch').fill('Ana');
   assert.equal(await page.locator('[data-open-individual]').count(),1);assert.equal(await page.locator('#dp-dashboard-orders').isVisible(),false);
   await page.locator('[data-open-individual]').click();
-  assert.equal(await page.locator('#paymentForm [name=individual_observations]').inputValue(),'Observación general: entregar a Ana');
+  assert.equal(await page.locator('#paymentForm [name=individual_observations]').inputValue(),'Salsa aparte; entrega a Ana');
   const [manualPrint]=await Promise.all([context.waitForEvent('page'),page.locator('#printIndividualSale').click()]);
   await manualPrint.waitForSelector('article .size-option');
   assert.equal(await manualPrint.locator('article .size-name').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),17);

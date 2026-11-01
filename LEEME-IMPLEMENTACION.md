@@ -1,5 +1,7 @@
 # Don Pieros Pizza · activación
 
+Archivos web v43: «Editar» en una venta individual pendiente incluye tiempo estimado y observaciones generales de la comanda. «Guardar producto y comanda» conserva ambos y vuelve al detalle; cancelar descarta esos cambios. El detalle agrupa cliente, tiempo y observaciones en un bloque propio. Solo requiere publicar los archivos web; no cambia Apps Script ni SQL.
+
 Archivos web v42: el nombre del tamaño elegido se imprime 2 píxeles por encima de la letra mayor de cada producto, tanto en comandas web como de meseros y ventas individuales. Las casillas de ventas individuales tienen un diseño renovado con cliente, total, fecha y estado. Esta revisión solo requiere publicar los archivos web; no cambia Apps Script ni SQL.
 
 Archivos web v41: cada pedido web, comanda de mesa y venta individual pendiente admite tiempo estimado en texto, por ejemplo «25 minutos» o «30 min». El contador comienza al asignar el plazo, conserva su hora al recargar y al cambiar observaciones, y la tarjeta parpadea al vencer con el texto «Tiempo cumplido». Cambiar el plazo inicia un nuevo contador. Las comandas impresas colocan el tamaño sobre el nombre de la pizza. Las observaciones por producto y por pedido se muestran en el consumo actual y los detalles pendientes.

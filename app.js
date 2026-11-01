@@ -10196,6 +10196,7 @@ const App = (() => {
     form.payment_method.value = "cash";
     if(form.individual_customer)form.individual_customer.value=session.payer_name==='Cliente individual'?'':session.payer_name||'';
     if($("#individualCustomerField"))$("#individualCustomerField").hidden=!manualSale;
+    if($("#individualComandaFields"))$("#individualComandaFields").hidden=!manualSale;
     if($("#individualSaleActions"))$("#individualSaleActions").hidden=!manualSale;
     if($("#individualTimeField"))$("#individualTimeField").hidden=!manualSale;
     if(form.individual_estimated_time)form.individual_estimated_time.value=window.DonPierosOrderDetails?.readTime(session.order_notes).time||'';
@@ -10224,7 +10225,7 @@ const App = (() => {
     }
     const tipChoice = $("#paymentTipChoice");
     if (tipChoice) tipChoice.hidden = !tipsEnabled();
-    if ($("#paymentDialogTitle")) $("#paymentDialogTitle").textContent = session.web_order_id?'Cobrar pedido en línea':quickSale ? "Cobrar venta individual" : "Cobrar mesa";
+    if ($("#paymentDialogTitle")) $("#paymentDialogTitle").textContent = session.web_order_id?'Cobrar pedido en línea':manualSale ? `Comanda · ${individualSaleTitle(session)}` : "Cobrar mesa";
     $("#mixedPaymentFields").hidden = true;
     $("#cashReceivedFields").hidden = false;
     updatePaymentTipChoice();
@@ -11194,6 +11195,7 @@ const App = (() => {
       try {
         const result = await addManualConsumption(form, { keepOpen, openPaymentAfter: false });
         if (result && keepOpen) { openConsumptionDialog(result.sessionId); setTableConsumptionPreviewVisible(true); }
+        else if(result&&form.dataset.individualComandaEdit==='1')openPaymentDialog(result.sessionId);
         return result;
       } finally { form.inert = false; delete form.dataset.localSubmitInProgress; }
     }
@@ -11299,6 +11301,8 @@ const App = (() => {
     if (!dialog || !form) return;
     form.reset();
     form.classList.remove("is-editing-consumption");
+    delete form.dataset.individualComandaEdit;
+    if($("#individualComandaEditFields"))$("#individualComandaEditFields").hidden=true;
     form.session_id.value = sessionId;
     form.session_item_id.value = "";
     form.pending_table_id.value = pendingTableId;
@@ -11346,7 +11350,7 @@ const App = (() => {
     state.consumptionDraftEditIndex = -1;
     renderConsumptionSelection();
     $("#consumptionDialog")?.close();
-    if (!quickCheckout || !isLocalWalkInSession(session)) return;
+    if ((!quickCheckout && form.dataset.individualComandaEdit!=='1') || !isLocalWalkInSession(session)) return;
     const hasItems = (session.session_items || []).some((item) => item.status !== "cancelled");
     if (hasItems) openPaymentDialog(session.id);
     else {
@@ -11368,6 +11372,12 @@ const App = (() => {
     }
     form.reset();
     form.classList.add("is-editing-consumption");
+    const individualEditor=$("#individualComandaEditFields");
+    if(individualEditor){
+      const manualSale=isLocalWalkInSession(session)&&!session.web_order_id;
+      individualEditor.hidden=!manualSale;form.dataset.individualComandaEdit=manualSale?'1':'';
+      if(manualSale){const info=window.DonPierosOrderDetails.readTime(session.order_notes);form.individual_edit_time.value=info.time;form.individual_edit_observations.value=info.notes;}
+    }
     // Put the editor in front, replacing the catalog instead of leaving it below.
     for (const id of ["dw-product-dialog", "dw-catalog-dialog", "dw-review-dialog", "accountDetailDialog"]) $("#" + id)?.close();
     form.session_id.value = session.id;
@@ -11388,6 +11398,10 @@ const App = (() => {
     if ($("#consumptionDialogTitle")) $("#consumptionDialogTitle").textContent = `Editar ${item.item_name || "consumo"}`;
     const submitLabel = $("#consumptionSubmitButton span");
     if (submitLabel) submitLabel.textContent = "Guardar cambios";
+    if(form.dataset.individualComandaEdit==='1'){
+      $("#consumptionEyebrow").textContent='Comanda individual';
+      submitLabel.textContent='Guardar producto y comanda';
+    }
     form.menu_item_id.value = item.menu_item_id || "";
     form.item_name.value = item.item_name || "";
     form.payer_name.value = session.payer_name || "";
@@ -11570,6 +11584,10 @@ const App = (() => {
         })
       : entry);
     optimisticSession = clearPaymentsWithoutConsumption(optimisticSession);
+    if(isLocalWalkInSession(session)&&!session.web_order_id&&itemId&&form.dataset.individualComandaEdit==='1'){
+      const details=window.DonPierosOrderDetails,info=details.readTime(session.order_notes);
+      optimisticSession.order_notes=details.withTime(details.withTime(form.individual_edit_observations.value.trim(),info.time,info.startedAt),form.individual_edit_time.value);
+    }
     state.sessions = state.sessions.map((entry) => entry.id === sessionId ? optimisticSession : entry);
     state.optimisticSessionStates.set(sessionId, {
       mode: "upsert",
