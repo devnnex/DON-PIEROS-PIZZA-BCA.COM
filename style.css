@@ -5498,6 +5498,23 @@ body[data-page="client"] .client-queue-badge { gap: .65rem; margin-inline: 1rem;
 button,a,[role="button"]{touch-action:manipulation}
 .reception-toolbar{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin:16px 0}.reception-toolbar h2{margin:4px 0}.reception-toolbar label{display:grid;gap:6px;flex:1;min-width:150px}.reception-toolbar input,.reception-toolbar select{width:100%}.reception-filter-hidden{display:none!important}#individualSalesPanel{margin-top:22px;padding-top:18px;border-top:1px solid #e7dfc9}#individualSalesGrid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}.individual-sale-tile{height:auto!important;min-height:160px;gap:7px;padding:16px!important}.individual-sale-tile span{font-size:14px;overflow-wrap:anywhere}.individual-sale-tile em{position:static!important;font-size:11px!important;background:#fff3c4!important;color:#735000!important}#individualSaleActions[hidden],#individualCustomerField[hidden]{display:none!important}.individual-sale-actions{display:flex;gap:8px;flex-wrap:wrap}.payment-sale-lines button{min-height:32px;padding:5px 9px}.reception-toolbar input{min-width:180px}
 
+/* Reception keeps its layout, with a warm surface and restrained brass details. */
+.reception-panel{position:relative;border-color:#dfdbd1;border-radius:16px;background:linear-gradient(115deg,#fffdf8 0%,#fff 58%,#fbfaf6 100%);box-shadow:0 8px 24px #24201709,inset 0 1px 0 #fff}
+.reception-panel::before{content:"";position:absolute;top:0;left:24px;right:24px;height:1px;background:linear-gradient(90deg,transparent,#c5aa70,transparent);pointer-events:none}
+.reception-toolbar>div{position:relative}
+.reception-toolbar>div::before{content:"";position:absolute;top:4px;bottom:4px;left:-10px;width:2px;border-radius:2px;background:linear-gradient(#cfba87,#a98b4f);pointer-events:none}
+.reception-toolbar .eyebrow{color:#8c703d}
+.reception-toolbar h2{color:#242521;text-shadow:0 1px 0 #fff}
+.reception-toolbar label{color:#665f52;font-weight:600}
+.reception-toolbar input,.reception-toolbar select{border-color:#dedbd3;border-radius:10px;background-color:#fff;color:#292c28;box-shadow:inset 0 1px 2px #30291a04,0 2px 5px #30291a03;transition:border-color .18s ease,box-shadow .18s ease,background-color .18s ease}
+.reception-toolbar input::placeholder{color:#92948d}
+.reception-toolbar input:hover,.reception-toolbar select:hover{border-color:#bcaf92;background-color:#fffefb}
+.reception-toolbar input:focus,.reception-toolbar select:focus{border-color:#a88a4b;background-color:#fff;box-shadow:0 0 0 3px #b99b5f1c,inset 0 1px 2px #30291a04}
+.reception-toolbar input[type="search"]{padding-left:2.4rem;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24' fill='none' stroke='%23998760' stroke-width='1.6' stroke-linecap='round'%3E%3Ccircle cx='10.5' cy='10.5' r='6.5'/%3E%3Cpath d='m16 16 4.5 4.5'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:12px center}
+.reception-toolbar #receptionReset{border-color:#383a32;border-radius:10px;background:linear-gradient(145deg,#35382f,#22251f);color:#fffdf6;box-shadow:0 3px 8px #20221816,inset 0 1px 0 #ffffff14;transition:background .18s ease,border-color .18s ease,box-shadow .18s ease}
+.reception-toolbar #receptionReset:hover{border-color:#a88a4b;background:linear-gradient(145deg,#444637,#2e3128);box-shadow:0 4px 12px #20221820}
+.reception-toolbar #receptionReset:focus-visible{outline:2px solid #a88a4b;outline-offset:3px}
+
 /* Editing starts with the selected product and fields, even on short screens. */
 #individualSalesPanel{padding:20px;border:1px solid #e0e7f0;border-radius:20px;background:#f7f9fc}
 #individualSalesPanel>.section-head{gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
