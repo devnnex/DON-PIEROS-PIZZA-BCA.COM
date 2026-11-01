@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict'),{chromium}=require('playwright-core'),{harness}=require('../tests/helpers/don-pieros-gas.cjs');
 (async()=>{
  const h=harness(),product=h.product(),receipt=h.call('createOrder',{order:h.order(product,{customerName:'Cliente web QA',items:[{productId:product.id,quantity:2,unitPrice:product.price,selectionIds:{}}]})}),errors=[];
+ let loseAdditionResponse=false;
  const size=h.save('toppings',{name:'Mini',kind:'Tamaño QA',price:0,available:true});
  const menuProduct=h.save('products',{name:'Pizza con tamaño',category:'Pizzas',price:25000,available:true,modifiers:[{id:'size-qa',name:'Elige el tamaño',source:'Tamaño QA',required:true,min:1,max:1,usePrice:true}]});
  const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
@@ -8,7 +9,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
   await context.addInitScript(()=>{localStorage.setItem('don_pieros_admin_token','boss');localStorage.setItem('waiter_alarm_enabled','0');});
   await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
-  await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();return route.fulfill({json:h.call(body.action,body.payload||body,body.authToken||'')});});
+  await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON(),result=h.call(body.action,body.payload||body,body.authToken||'');if(body.action==='dp_add_order_product'&&loseAdditionResponse){loseAdditionResponse=false;return route.abort('failed');}return route.fulfill({json:result});});
   await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{
    const rpc=new URL(route.request().url()).pathname.split('/').pop();
    return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP',tips_enabled:false},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_list_waiter_comandas'?{orders:[]}:rpc==='dp_setup_status'?false:[]});
@@ -135,6 +136,39 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await page.locator('#receptionReset').click();
   for(const width of [390,768,1440]){await page.setViewportSize({width,height:1000});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
   await page.screenshot({path:'artifacts/recepcion-pendientes-filtros.png',animations:'disabled'});
-  assert.deepEqual(errors,[]);console.log('OK: dos ventas individuales, recarga, filtro, impresión, cierre sin pérdida y cobro separado; precios/cajas web guardados, impresión con precios y estados filtrados.');
+  const card=page.locator(`#dp-dashboard-order-list [data-dp-order="${receipt.orderId}"]`);
+  assert.equal(await card.locator('.dp-status-actions .dp-add-product').count(),1,'El boton esta junto al estado.');
+  await card.locator('[data-dp-add-product]').click();await page.locator('#dw-catalog-dialog[open]').waitFor();
+  assert.equal(await page.locator('#dw-manager-products [data-dw-custom]').count(),0,'El pedido web usa productos de la carta.');
+  await page.locator('#dw-catalog-dialog [data-dw-close]').click();await page.locator('#dp-order-dialog[open]').waitFor();
+  assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order.items.length,1,'Cancelar no agrega productos.');
+  await page.locator('#dp-order-detail [data-dp-add-product]').click();
+  await page.locator(`#dw-manager-products [data-dw-product="${menuProduct.id}"]`).click();
+  await page.locator('#dw-add-product').click();assert.match(await page.locator('#dw-product-error').innerText(),/obligatorias/);
+  await page.locator(`#dw-product-body input[value="${size.id}"]`).check();
+  assert.equal(await page.locator('#dw-fulfillment').inputValue(),'pickup');assert.equal(await page.locator('#dw-fulfillment').isDisabled(),true);
+  await page.locator('[data-dw-quantity="1"]').click();await page.locator('#dw-unit-price').fill('27000');
+  await page.locator('#dw-line-notes').fill('Producto extra: salsa aparte');
+  await page.setViewportSize({width:390,height:1000});
+  assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.scrollWidth>node.clientWidth),false);
+  loseAdditionResponse=true;await page.locator('#dw-add-product').click();
+  await page.locator('#dw-product-error').filter({hasText:/\S/}).waitFor();
+  assert.equal(h.call('dp_get_order',{id:receipt.orderId}).order.items.length,2,'El servidor guardo la adicion cuya respuesta se perdio.');
+  await page.locator('#dw-add-product').click();await page.locator('#dp-order-dialog[open]').waitFor();
+  const added=h.call('dp_get_order',{id:receipt.orderId}).order;
+  assert.equal(added.items.length,2,'Reintentar no duplica el producto.');assert.equal(added.total,136000);assert.equal(added.packagingFee,12000);
+  assert.match(await page.locator('#dp-order-detail .dp-total').innerText(),/136.000/);
+  assert.match(await page.locator('#dp-order-detail .dp-line-notes').innerText(),/Producto extra: salsa aparte/);
+  assert.equal(await page.locator('#dp-order-dialog').evaluate(node=>node.scrollWidth>node.clientWidth),false);
+  await page.screenshot({path:'artifacts/pedido-web-producto-agregado.png'});
+  const [additionPrint]=await Promise.all([context.waitForEvent('page'),page.locator('#dp-print-order').click()]);
+  await additionPrint.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+  assert.match(await additionPrint.locator('body').innerText(),/Producto extra: salsa aparte/);await additionPrint.close();
+  await page.locator('#dp-order-dialog [data-dp-close]').click();await load();
+  await card.locator('[data-dp-view]').click();assert.match(await page.locator('#dp-order-detail .dp-total').innerText(),/136.000/,'La adicion sobrevive recarga.');
+  await page.locator('#dp-charge-order').click();await page.locator('#paymentDialog[open]').waitFor();assert.match(await page.locator('#paymentTotal').innerText(),/136.000/);
+  await page.locator('#paymentForm [data-cancel-payment]').first().click();
+  assert.deepEqual(errors,[]);console.log('OK: agregar de la carta a pedido web, opciones obligatorias, cantidad, cajas, precio, notas, cancelar, respuesta perdida sin duplicar, impresion, recarga y total al cobrar.');
+  console.log('OK: dos ventas individuales, recarga, filtro, impresión, cierre sin pérdida y cobro separado; precios/cajas web guardados, impresión con precios y estados filtrados.');
  }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exit(1);});

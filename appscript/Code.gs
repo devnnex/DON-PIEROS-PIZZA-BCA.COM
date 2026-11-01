@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.8.0-donpieros",
+  version: "3.9.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1782,7 +1782,7 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
   var user = validateSupabaseUser_(request.authToken);
-  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order','dp_order_time'].indexOf(action)>=0) {
+  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order','dp_order_time','dp_add_order_product'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
@@ -1790,6 +1790,7 @@ function dpDispatch_(request) {
     if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
     if (action === 'dp_edit_order') return dpEditOrder_(payload,user);
     if (action === 'dp_order_time') return dpOrderTime_(payload,user);
+    if (action === 'dp_add_order_product') return dpAddOrderProduct_(payload,user);
     return dpUpdateOrder_(payload,user);
   }
   requireSection_(user,'inventory');
@@ -1916,10 +1917,9 @@ function dpBox_(product,labels) {
   else if(/\bmini\b/.test(text))size='Mini';
   return {size:size,fee:size==='Maxi'||size==='Super maxi'?4000:size?2000:0};
 }
-function dpPriceOrder_(raw,catalog) {
-  if(!raw || !Array.isArray(raw.items) || !raw.items.length || raw.items.length>60)throw new Error('La orden debe contener entre 1 y 60 productos.');
-  var fulfillment=raw.fulfillment==='delivery'?'delivery':raw.fulfillment==='dinein'?'dinein':'pickup';
-  var items=raw.items.map(function(line){
+function dpPriceOrderItems_(lines,catalog,fulfillment,managerPrices) {
+  if(!Array.isArray(lines)||!lines.length||lines.length>60)throw new Error('La orden debe contener entre 1 y 60 productos.');
+  return lines.map(function(line){
     var product=catalog.products.filter(function(p){return p.id===line.productId;})[0];
     if(!product || !product.available)throw new Error('Un producto ya no está disponible. Actualiza la carta.');
     var quantity=Number(line.quantity);
@@ -1939,10 +1939,22 @@ function dpPriceOrder_(raw,catalog) {
       });
     });
     Object.keys(selectionIds).forEach(function(id){if(groupIds.indexOf(id)<0 && selectionIds[id].length)throw new Error('Las opciones del producto cambiaron. Actualiza la carta.');});
+    if(managerPrices){
+      if(typeof line.unitPrice!=='number'||!Number.isSafeInteger(line.unitPrice)||line.unitPrice<0||line.unitPrice>100000000)throw new Error('Precio por unidad inválido.');
+      if(line.manualUnitPrice!=null){
+        if(typeof line.manualUnitPrice!=='number'||!Number.isSafeInteger(line.manualUnitPrice)||line.manualUnitPrice<0||line.manualUnitPrice>100000000)throw new Error('Precio por unidad inválido.');
+        unitPrice=line.manualUnitPrice;
+      }
+    }
     if(Number(line.unitPrice)!==unitPrice)throw new Error('El precio de '+product.name+' cambió. Actualiza la carta antes de confirmar.');
-    var box=dpBox_(product,sizeLabels);
+    var box=dpBox_(product,managerPrices?labels:sizeLabels);
     return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels,packagingSize:box.size,packagingUnitFee:fulfillment==='dinein'?0:box.fee};
   });
+}
+function dpPriceOrder_(raw,catalog) {
+  if(!raw)throw new Error('Pedido inválido.');
+  var fulfillment=raw.fulfillment==='delivery'?'delivery':raw.fulfillment==='dinein'?'dinein':'pickup';
+  var items=dpPriceOrderItems_(raw.items,catalog,fulfillment,false);
   var neighborhood=null,deliveryFee=0,deliveryFeePending=false,neighborhoodName='';
   if(fulfillment==='delivery') {
     neighborhoodName=dpText_(raw.neighborhood,80);
@@ -2061,6 +2073,39 @@ function dpOrderTime_(payload,user) {
     try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}
     finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
     appendAudit_('WEB_ORDER_TIME',order.id,user.full_name,'OK',text);
+    return {ok:true,order:dpObjects_('orders',[row])[0]};
+  });
+  dpSignalOrder_('order-updated',payload.id);return result;
+}
+
+function dpAddOrderProduct_(payload,user) {
+  requireManager_(user);
+  if(!/^[a-f0-9-]{36}$/i.test(String(payload.operationId||''))||!payload.item)throw new Error('Identificador de producto inválido.');
+  var signature=hash_(JSON.stringify([user.id,payload.item]));
+  var result=dpWithLock_(function(){
+    recoverPendingSaleJournal_();
+    var found=dpWebSaleOrder_({webOrderId:dpText_(payload.id,100)}),order=found.order;
+    if(['nueva','atendiendo','lista'].indexOf(order.status)<0)throw new Error('Solo puedes agregar productos a pedidos pendientes de cobrar y entregar.');
+    var duplicate=order.items.filter(function(item){return item.additionId===payload.operationId;})[0];
+    if(duplicate){
+      if(duplicate.additionSignature!==signature)throw new Error('Esta operación ya se guardó con otro producto.');
+      return {ok:true,duplicate:true,order:order};
+    }
+    if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza la comanda antes de agregar productos.');
+    if(order.items.length>=60)throw new Error('El pedido ya contiene el máximo de 60 productos.');
+    var item=dpPriceOrderItems_([payload.item],dpCatalog_(true),order.fulfillment,true)[0];
+    item.notes=dpText_(payload.item.notes,500);item.additionId=payload.operationId;item.additionSignature=signature;
+    var items=order.items.concat([item]),row=found.cells,headers=DP_TABLES.orders.headers;
+    var subtotal=items.reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.unitPrice);},0);
+    var boxes=items.reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.packagingUnitFee||0);},0);
+    row[headers.indexOf('itemsJson')]=JSON.stringify(items);
+    row[headers.indexOf('subtotal')]=subtotal;row[headers.indexOf('packagingFee')]=boxes;
+    row[headers.indexOf('total')]=subtotal+boxes+Number(order.deliveryFee||0);
+    row[headers.indexOf('version')]=Number(order.version)+1;row[headers.indexOf('updatedAt')]=new Date().toISOString();
+    row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);
+    try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}
+    finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+    try{appendAudit_('WEB_ORDER_ADD_PRODUCT',order.id,user.full_name,'OK',item.quantity+' × '+item.name);}catch(_){}
     return {ok:true,order:dpObjects_('orders',[row])[0]};
   });
   dpSignalOrder_('order-updated',payload.id);return result;

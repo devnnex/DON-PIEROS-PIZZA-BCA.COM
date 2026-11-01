@@ -1,5 +1,7 @@
 # Don Pieros Pizza · activación
 
+**Activar v45:** publica los archivos web y actualiza la implementación existente de Apps Script con `appscript/Code.gs` **3.9.0-donpieros**, conservando la URL `/exec`. Jefe y administrador pueden usar «＋ Agregar producto», junto al estado del pedido web, para abrir la misma carta de las mesas y ventas individuales. Incluye cantidad, tamaños, adicionales, precio por unidad y notas. La entrega se conserva según el pedido; Apps Script calcula las cajas y el total. Los reintentos de una misma adición no duplican productos y un pedido cobrado, eliminado o entregado no admite adiciones. No requiere SQL adicional. El push actualiza el repositorio; Apps Script se publica desde su proyecto.
+
 Archivos web v44: los pedidos web y las comandas de mesa aparecen del más reciente al más antiguo por fecha de llegada. Editar o aceptar una comanda conserva su posición. Los pedidos web activos parpadean en verde durante los primeros dos minutos desde su creación; recargar o editarlos conserva ese límite. El filtro de orden permite ver primero los antiguos y «Limpiar filtros» vuelve a los recientes. Solo requiere publicar los archivos web; no cambia Apps Script ni SQL.
 
 Archivos web v43: «Editar» en una venta individual pendiente incluye tiempo estimado y observaciones generales de la comanda. «Guardar producto y comanda» conserva ambos y vuelve al detalle; cancelar descarta esos cambios. El detalle agrupa cliente, tiempo y observaciones en un bloque propio. Solo requiere publicar los archivos web; no cambia Apps Script ni SQL.

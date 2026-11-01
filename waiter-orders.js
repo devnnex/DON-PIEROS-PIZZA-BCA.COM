@@ -24,6 +24,7 @@
   let writeRevision=0,reloadWanted=false,serviceReady=false;const localWrites=new Map();
   let printWidth=80,directLineEdit=false;
   let individualPick=null;
+  let webPick=null;
   // Share the public menu cache with the storefront. Refresh in the background.
   const menuCache=()=>window.DonPierosPerformance;
   const validCatalog=data=>Array.isArray(data?.products)&&Array.isArray(data?.toppings);
@@ -159,8 +160,9 @@
     void loadCatalog();
   }
   function showProduct(id,lineId=''){
-    if(draft?.pending&&!individualPick)return api().notify('Primero confirma el envío pendiente.','error');
-    const existing=individualPick?null:draft.items.find(item=>item.id===lineId),custom=id==='custom'||!!existing?.options?.custom;
+    if(draft?.pending&&!individualPick&&!webPick)return api().notify('Primero confirma el envío pendiente.','error');
+    const existing=individualPick||webPick?null:draft.items.find(item=>item.id===lineId),custom=id==='custom'||!!existing?.options?.custom;
+    if(webPick&&custom)return;
     if(!catalog&&!custom){void loadCatalog().then(()=>{if(catalog)showProduct(id,lineId);else api().notify(catalogError,'error');});return;}
     const customExisting=existing?.options?.custom?existing:null;
     const product=custom?{id:customExisting?.product_id||crypto.randomUUID(),name:customExisting?.name||'',price:customExisting?.unit_price??0,category:'Otro producto',modifiers:[],custom:true}:catalog?.products.find(p=>p.id===id);if(!product)return;
@@ -182,6 +184,7 @@
     // Stored prices include the box; the editable price always shows the food.
     if(custom&&savedPacking.fee)$('#dw-custom-price').value=String(Math.max(0,Number(existing.unit_price)-savedPacking.fee));
     if(individualPick)$('#dw-product-dialog').dataset.individualPicker='1';
+    if(webPick){$('#dw-product-dialog').dataset.webPicker='1';$('#dw-fulfillment').value=webPick.fulfillment==='dinein'?'dinein':'pickup';$('#dw-fulfillment').disabled=true;}
     updateProductOptions();$('#dw-product-dialog').showModal();$('#dw-product-dialog').scrollTop=0;
   }
   function productSelection(validate=false){
@@ -206,10 +209,11 @@
   }
   function updateProductOptions(){if(!activeProduct)return;const selection=productSelection(),quantity=Number($('#dw-product-quantity').value),price=selection.unitPrice*quantity;if($('#dw-unit-price'))$('#dw-unit-price').placeholder=money(selection.catalogUnitPrice);$('#dw-product-price').textContent=money(price);const summary=$('#dw-packaging-summary');if(summary)summary.textContent=selection.box.fee?`Valor Caja ${window.DonPierosPackaging.sizes[selection.box.size]}: $${selection.box.fee.toLocaleString('es-CO')}`:selection.takeaway?'Sin cobro de caja para este producto.':'Sin cobro de caja.';}
   function addProduct(event){
-    event.preventDefault();if(busy||!individualPick&&(!draft||draft.pending))return;const selection=productSelection(true);
+    event.preventDefault();if(busy||!individualPick&&!webPick&&(!draft||draft.pending))return;const selection=productSelection(true);
     if(!selection.valid){$('#dw-product-error').textContent=activeProduct.custom?'Escribe el nombre y un precio válido en pesos.':'Elige las opciones obligatorias para continuar.';$('#dw-product-body .is-invalid')?.scrollIntoView({block:'center',behavior:'smooth'});return;}
     const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:window.DonPierosPackaging.note($('#dw-line-notes').value.trim(),selection.box.size,selection.takeaway)};
     if([...(line.options.labels||[]),line.notes].join(' · ').length>500){$('#dw-product-error').textContent='Acorta un poco las notas de este producto.';return;}
+    if(webPick){void saveWebProduct(line);return;}
     if(individualPick){
       try{api().addIndividualProduct(individualPick.sessionId,line);$('#dw-product-dialog').close();$('#dw-catalog-dialog').close();}
       catch(error){$('#dw-product-error').textContent=errorText(error);}
@@ -221,6 +225,14 @@
     persist();$('#dw-product-dialog').close();renderSelection();if($('#dw-review-dialog').open)renderReview();
     if(replacingLine||draft.managerMode&&$('#dw-catalog-dialog').open){replacingLine='';$('#dw-replace-banner')?.remove();$('#dw-catalog-dialog').close();review();}
     api().notify(editingLine?'Producto actualizado.':'Producto agregado al pedido.');
+  }
+  async function saveWebProduct(line){
+    const pick=webPick,controls=[...$('#dw-product-form').querySelectorAll('button,input,select,textarea')];
+    const disabled=controls.map(control=>control.disabled);busy=true;controls.forEach(control=>control.disabled=true);let saved=false;
+    try{await pick.onAdd(line);saved=true;}
+    catch(error){$('#dw-product-error').textContent=errorText(error);}
+    finally{busy=false;controls.forEach((control,index)=>control.disabled=disabled[index]);}
+    if(saved&&webPick===pick){$('#dw-product-dialog').close();$('#dw-catalog-dialog').close();}
   }
   function review(){if(!draft||!draft.items.length&&!draft.version&&!draft.pending)return;renderReview();if(!$('#dw-review-dialog').open)$('#dw-review-dialog').showModal();}
   function renderReview(){
@@ -416,9 +428,10 @@
   }
   async function beginCatalogChoice(replacement=''){
     replacingLine=replacement;$('#dw-review-dialog').close();category='';query='';
-    if(individualPick||draft.managerMode){
+    if(individualPick||webPick||draft.managerMode){
       $('#dw-manager-catalog').innerHTML=`<header class="dw-dialog-head"><div><span class="eyebrow">${esc(tableLabel(operations().tables.find(table=>table.id===selectedTable)))}</span><h2 id="dw-catalog-title">${replacement?'Cambiar producto':'Agregar producto'}</h2></div><button type="button" class="dw-close" data-dw-close aria-label="Cerrar">×</button></header><button type="button" class="dw-button" data-dw-account>Ver consumo de la mesa</button><label class="dw-search">Buscar producto<input type="search" id="dw-manager-search" placeholder="Pizza, bebida, lasaña…"></label><div id="dw-manager-categories" class="dw-categories"></div><div id="dw-manager-products" class="dw-product-grid"></div>`;
       if(individualPick){$('#dw-manager-catalog .eyebrow').textContent='Venta individual';$('#dw-manager-catalog [data-dw-account]').remove();$('#dw-catalog-dialog').dataset.individualPicker='1';}
+      if(webPick){$('#dw-manager-catalog .eyebrow').textContent=webPick.title;$('#dw-manager-catalog [data-dw-account]').remove();$('#dw-catalog-dialog').dataset.webPicker='1';}
       renderManagerProducts();$('#dw-catalog-dialog').showModal();$('#dw-catalog-dialog').scrollTop=0;if(!catalog)void loadCatalog();
     }else{
       tab='menu';renderTable();if(replacement)$('#dw-menu-view').insertAdjacentHTML('afterbegin','<p class="dw-edit-notice" id="dw-replace-banner">Elige el producto que reemplazará al anterior. <button type="button" class="dw-button" data-dw-cancel-replace>Cancelar</button></p>');
@@ -427,15 +440,20 @@
   }
   function renderManagerProducts(){
     if(!$('#dw-manager-products'))return;
-    if(!catalog){$('#dw-manager-products').innerHTML=customChoice()+'<p class="dw-error">'+esc(catalogError||'Preparando la carta…')+'</p>'+(catalogError?'<button type="button" class="dw-button" data-dw-reload>Cargar carta</button>':'');return;}
+    if(!catalog){$('#dw-manager-products').innerHTML=(webPick?'':customChoice())+'<p class="dw-error">'+esc(catalogError||'Preparando la carta…')+'</p>'+(catalogError?'<button type="button" class="dw-button" data-dw-reload>Cargar carta</button>':'');return;}
     const categories=[...new Set(catalog.products.filter(p=>p.available).map(p=>p.category))];
     $('#dw-manager-categories').innerHTML=['',...categories].map(name=>`<button type="button" class="${name===category?'active':''}" data-dw-manager-category="${esc(name)}">${esc(name||'Todo')}</button>`).join('');
-    $('#dw-manager-products').innerHTML=customChoice()+(catalog.products.filter(p=>p.available&&(!category||p.category===category)&&normalize(p.name+' '+p.description).includes(normalize(query))).map(p=>`<button class="dw-product" type="button" data-dw-product="${esc(p.id)}"><img src="${esc(window.DonPierosImages.resolve(p))}" alt="" loading="lazy"><div><strong>${esc(p.name)}</strong><span>${p.modifiers?.some(group=>group.usePrice)?'Desde ':''}${money(p.price)} <b>＋</b></span></div></button>`).join('')||'<p class="dw-empty">No encontramos ese producto en esta categoría.</p>');
+    $('#dw-manager-products').innerHTML=(webPick?'':customChoice())+(catalog.products.filter(p=>p.available&&(!category||p.category===category)&&normalize(p.name+' '+p.description).includes(normalize(query))).map(p=>`<button class="dw-product" type="button" data-dw-product="${esc(p.id)}"><img src="${esc(window.DonPierosImages.resolve(p))}" alt="" loading="lazy"><div><strong>${esc(p.name)}</strong><span>${p.modifiers?.some(group=>group.usePrice)?'Desde ':''}${money(p.price)} <b>＋</b></span></div></button>`).join('')||'<p class="dw-empty">No encontramos ese producto en esta categoría.</p>');
   }
   function chooseIndividualProduct(sessionId){
     if(waiter()||!allowed()||busy)return;
     if(document.querySelector('.dw-dialog[open]'))return api().notify('Termina la selección actual antes de agregar productos.','error');
     individualPick={sessionId};void beginCatalogChoice();void loadCatalog();
+  }
+  function chooseWebOrderProduct(options){
+    if(waiter()||!allowed()||busy)return false;
+    if(document.querySelector('.dw-dialog[open]')){api().notify('Termina la selección actual antes de agregar productos.','error');return false;}
+    webPick=options;void beginCatalogChoice();void loadCatalog();return true;
   }
   function sync(){
     if(!allowed()){root.hidden=true;reception.hidden=true;document.body.classList.remove('dw-waiter-mode');return;}
@@ -492,6 +510,7 @@
     dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
   }
   $('#dw-product-dialog').addEventListener('close',()=>{
+    if($('#dw-product-dialog').dataset.webPicker){delete $('#dw-product-dialog').dataset.webPicker;return;}
     if($('#dw-product-dialog').dataset.individualPicker){delete $('#dw-product-dialog').dataset.individualPicker;return;}
     if(busy||!draft||!directLineEdit&&!draft.legacy)return;
     try{localStorage.removeItem(draftKey());}catch(_){}directLineEdit=false;
@@ -500,6 +519,7 @@
   $('#dw-review-dialog').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
   $('#dw-review-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!draft.pending&&!busy&&!$('#dw-product-dialog').open&&!$('#dw-catalog-dialog').open){draft=null;selectedTable='';}});
   $('#dw-catalog-dialog').addEventListener('close',()=>{
+    if($('#dw-catalog-dialog').dataset.webPicker){delete $('#dw-catalog-dialog').dataset.webPicker;const pick=webPick;webPick=null;pick?.onClose();return;}
     if($('#dw-catalog-dialog').dataset.individualPicker){delete $('#dw-catalog-dialog').dataset.individualPicker;const sessionId=individualPick?.sessionId;individualPick=null;if(sessionId)api().openIndividualSale(sessionId);return;}
     if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){
       persist();replacingLine='';draft=null;selectedTable='';
@@ -532,5 +552,5 @@
   });
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});
-  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
+  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();
