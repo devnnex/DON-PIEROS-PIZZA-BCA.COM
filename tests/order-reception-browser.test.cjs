@@ -65,14 +65,18 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
      throw Error(name);
     }}),channel:()=>({on(type,filter,fn){fixture.handlers[filter.event]=fn;return this;},subscribe(){return this;},send:async()=>{},}),removeChannel:async()=>{}}
    };
-   window.open=()=>({document:{write:html=>fixture.printed.push(html),close(){}},focus(){},print(){}});
+   window.open=()=>{
+    const doc=document.implementation.createHTMLDocument('Comanda'),write=doc.write.bind(doc);
+    doc.write=html=>{fixture.printed.push(html);write(html);};
+    return {document:doc,focus(){},print(){}};
+   };
   };
   const initialize=async()=>{
    await page.evaluate(setup);
    await page.addScriptTag({path:path.join(root,'thermal-print.js')});
    await page.evaluate(()=>{DonPierosThermal.print=async()=>({});});
    for(const file of ['online-admin.css','reception-notices.css','waiter-orders.css','system-dialogs.css'])await page.addStyleTag({path:path.join(root,file)});
-   for(const file of ['system-dialogs.js','pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
+   for(const file of ['packaging.js','order-details.js','system-dialogs.js','pending-deletions.js','reception-notices.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
   };
   await initialize();
   await page.waitForSelector('[data-dp-order="DP-test-1"]');
@@ -131,6 +135,8 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   assert.equal(await page.evaluate(()=>fixture.accepted),0,'Imprimir no asigna el consumo.');
   await page.locator('[data-dw-accept-order]').click();await page.waitForFunction(()=>fixture.accepted===1);
   assert.equal(await page.locator('[data-dw-accept-order]').count(),0);
+  await page.locator('#dw-kitchen-dialog').waitFor({state:'hidden'});
+  await page.locator('[data-dw-open-comanda="comanda-1"]').first().click();
   await page.evaluate(()=>{fixture.waiterHold=new Promise(resolve=>fixture.releaseWaiter=resolve);});
   await page.locator('[data-dw-remove-order]').click();
   assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'La confirmación se abre encima de la comanda.');

@@ -332,7 +332,7 @@
       if(!data.closed)api().applyWaiterResult(data);
       try{localStorage.removeItem(draftKey());}catch(_){}
       busy=false;$('#dw-review-dialog').close();
-      if(managerMode){draft=null;selectedTable='';await loadOrders();if(!finishQuietly)showKitchen(orderId);}
+      if(managerMode){draft=null;selectedTable='';if(!data.closed&&!finishQuietly)showKitchen(orderId);void loadOrders();}
       else{newDraft();tab='account';renderTable();void loadOrders();}
       api().notify(data.closed?'El pedido ya estaba guardado y la cuenta se cerró.':wasEdit?'Comanda actualizada.':'Comanda enviada al equipo.');
     }catch(error){
@@ -585,7 +585,7 @@
     const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';sync();void loadCatalog();}
     sync();void loadOrders();
   }
-  const editComanda=async(id,removeId='')=>{await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}};
+  const editComanda=async(id,removeId='')=>{if(!orders.some(order=>order.id===id))await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}void loadOrders();};
   deletions()?.register('waiter-comanda',async(payload,update)=>{
     const currentToken=api().getToken();
     const {data,error}=await rpc('dp_save_waiter_comanda',payload);

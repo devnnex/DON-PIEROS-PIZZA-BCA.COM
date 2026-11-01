@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.11.0-donpieros",
+  version: "3.12.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -396,8 +396,11 @@ function updateConfigurationSheet_(candidate, origins) {
   }
 }
 
+// Apps Script globals live for this execution; reuse the already opened book.
+var dpExecutionSpreadsheet_ = null;
 function getSpreadsheet_() {
-  return SpreadsheetApp.openById(APP.spreadsheetId);
+  if (!dpExecutionSpreadsheet_) dpExecutionSpreadsheet_ = SpreadsheetApp.openById(APP.spreadsheetId);
+  return dpExecutionSpreadsheet_;
 }
 
 function ensureAllSheets_(spreadsheet) {
@@ -1074,9 +1077,8 @@ function recoverPendingSaleJournal_() {
 }
 
 function dpWebSaleOrder_(invoice){
-  var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
-  var found=last>1?sheet.getRange(2,1,last-1,1).createTextFinder(String(invoice.webOrderId)).matchEntireCell(true).findNext():null;
-  if(found){var row=found.getRow(),cells=sheet.getRange(row,1,1,DP_TABLES.orders.headers.length).getValues()[0];return {sheet:sheet,row:row,cells:cells,order:dpObjects_('orders',[cells])[0]};}
+  var found=dpFindTableRow_('orders',String(invoice.webOrderId));
+  if(found){found.order=dpObjects_('orders',[found.cells])[0];return found;}
   throw new Error('El pedido web ya no existe.');
 }
 function dpValidateWebSale_(invoice){
@@ -1787,12 +1789,12 @@ function dpDispatch_(request) {
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
     if (action === 'dp_get_order') return Object.assign(dpGetOrder_(payload),{checkoutAvailable:true});
-    if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
-    if (action === 'dp_edit_order') return dpEditOrder_(payload,user);
-    if (action === 'dp_order_time') return dpOrderTime_(payload,user);
-    if (action === 'dp_add_order_product') return dpAddOrderProduct_(payload,user);
-    if (action === 'dp_edit_order_product') return dpEditOrderProduct_(payload,user);
-    return dpUpdateOrder_(payload,user);
+    if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user,request.clientSignals===true);
+    if (action === 'dp_edit_order') return dpEditOrder_(payload,user,request.clientSignals===true);
+    if (action === 'dp_order_time') return dpOrderTime_(payload,user,request.clientSignals===true);
+    if (action === 'dp_add_order_product') return dpAddOrderProduct_(payload,user,request.clientSignals===true);
+    if (action === 'dp_edit_order_product') return dpEditOrderProduct_(payload,user,request.clientSignals===true);
+    return dpUpdateOrder_(payload,user,request.clientSignals===true);
   }
   requireSection_(user,'inventory');
   if (action === 'dp_admin_catalog') return dpCatalog_(true);
@@ -1825,6 +1827,28 @@ function dpRows_(key) {
   var definition = DP_TABLES[key], sheet = getSpreadsheet_().getSheetByName(definition.name);
   if (sheet.getLastRow() < 2) return [];
   return dpObjects_(key,sheet.getRange(2,1,sheet.getLastRow()-1,definition.headers.length).getValues());
+}
+function dpFindTableRow_(key,id) {
+  var definition=DP_TABLES[key],sheet=getSpreadsheet_().getSheetByName(definition.name),last=sheet.getLastRow();
+  var cache=CacheService.getScriptCache(),cacheKey=key==='orders'?'DP_ORDER_ROW:'+id:'DP_ROW:'+key+':'+id;
+  var row=Number(cache.get(cacheKey)),cells;
+  if(row>=2&&row<=last){
+    cells=sheet.getRange(row,1,1,definition.headers.length).getValues()[0];
+    if(String(cells[0])===id)return {sheet:sheet,row:row,cells:cells};
+  }
+  // Search in Sheets instead of transferring the entire identifier/history column.
+  var found=last>1?sheet.getRange(2,1,last-1,1).createTextFinder(id).matchEntireCell(true).findNext():null;
+  if(!found)return null;
+  row=found.getRow();cells=sheet.getRange(row,1,1,definition.headers.length).getValues()[0];
+  try{cache.put(cacheKey,String(row),21600);}catch(_){}
+  return {sheet:sheet,row:row,cells:cells};
+}
+function dpProductEditCatalog_(productId) {
+  var found=dpFindTableRow_('products',String(productId||''));
+  var products=found?dpObjects_('products',[found.cells]):[];
+  // Read current prices/options, including direct edits, without payments,
+  // neighborhoods, other products, or the public catalog cache.
+  return {products:products,toppings:products.length&&products[0].modifiers.length?dpRows_('toppings'):[]};
 }
 function dpObjects_(key,rows) {
   var definition=DP_TABLES[key];
@@ -2034,28 +2058,27 @@ function dpOrders_(payload) {
   return {ok:true,changed:true,revision:revision,total:filtered.length,orders:result,activeCount:orders.filter(function(o){return ['nueva','atendiendo','lista'].indexOf(o.status)>=0;}).length};
 }
 
-function dpUpdateOrder_(payload,user) {
+function dpUpdateOrder_(payload,user,clientSignals) {
   var result=dpWithLock_(function(){
     recoverPendingSaleJournal_();
-    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
     if(DP_STATUSES.indexOf(payload.status)<0)throw new Error('Estado inválido.');
-    var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
-    for(var i=0;i<ids.length;i++)if(ids[i][0]===payload.id){
-      var row=sheet.getRange(i+2,1,1,headers.length).getValues()[0];
+    var found=dpFindTableRow_('orders',String(payload.id)),headers=DP_TABLES.orders.headers;
+    if(found){
+      var row=found.cells;
       if(row[headers.indexOf('status')]==='eliminada')throw new Error('Este pedido fue eliminado.');
       if(row[headers.indexOf('status')]===payload.status)return {ok:true,duplicate:true};
       if(Number(row[headers.indexOf('version')])!==Number(payload.version))throw new Error('Otra persona atendió esta orden. Actualiza para ver su estado.');
       row[headers.indexOf('status')]=payload.status;row[headers.indexOf('updatedAt')]=new Date().toISOString();row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);row[headers.indexOf('version')]=Number(payload.version)+1;
-      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+      try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
       appendAudit_('WEB_ORDER_STATUS',payload.id,user.full_name,'OK',payload.status);return {ok:true,order:dpObjects_('orders',[row])[0]};
     }
     throw new Error('No se encontró el pedido.');
   });
-  dpSignalOrder_('order-updated',payload.id);
+  dpSignalOrder_('order-updated',payload.id,clientSignals);
   return result;
 }
 
-function dpOrderTime_(payload,user) {
+function dpOrderTime_(payload,user,clientSignals) {
   var text=String(payload.estimatedTime==null?'':payload.estimatedTime).trim();
   if(text.length>80||/[\r\n\u0000-\u001f]/.test(text))throw new Error('Escribe un tiempo estimado de hasta 80 caracteres.');
   if(payload.observations!=null&&(typeof payload.observations!=='string'||payload.observations.length>1000))throw new Error('Escribe observaciones de hasta 1000 caracteres.');
@@ -2077,10 +2100,10 @@ function dpOrderTime_(payload,user) {
     appendAudit_('WEB_ORDER_TIME',order.id,user.full_name,'OK',text);
     return {ok:true,order:dpObjects_('orders',[row])[0]};
   });
-  dpSignalOrder_('order-updated',payload.id);return result;
+  dpSignalOrder_('order-updated',payload.id,clientSignals);return result;
 }
 
-function dpAddOrderProduct_(payload,user) {
+function dpAddOrderProduct_(payload,user,clientSignals) {
   requireManager_(user);
   if(!/^[a-f0-9-]{36}$/i.test(String(payload.operationId||''))||!payload.item)throw new Error('Identificador de producto inválido.');
   var signature=hash_(JSON.stringify([user.id,payload.item]));
@@ -2095,7 +2118,7 @@ function dpAddOrderProduct_(payload,user) {
     }
     if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza la comanda antes de agregar productos.');
     if(order.items.length>=60)throw new Error('El pedido ya contiene el máximo de 60 productos.');
-    var item=dpPriceOrderItems_([payload.item],dpCatalog_(true),order.fulfillment,true)[0];
+    var item=dpPriceOrderItems_([payload.item],dpProductEditCatalog_(payload.item.productId),order.fulfillment,true)[0];
     item.notes=dpText_(payload.item.notes,500);item.additionId=payload.operationId;item.additionSignature=signature;
     var items=order.items.concat([item]),row=found.cells,headers=DP_TABLES.orders.headers;
     var subtotal=items.reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.unitPrice);},0);
@@ -2110,10 +2133,10 @@ function dpAddOrderProduct_(payload,user) {
     try{appendAudit_('WEB_ORDER_ADD_PRODUCT',order.id,user.full_name,'OK',item.quantity+' × '+item.name);}catch(_){}
     return {ok:true,order:dpObjects_('orders',[row])[0]};
   });
-  dpSignalOrder_('order-updated',payload.id);return result;
+  dpSignalOrder_('order-updated',payload.id,clientSignals);return result;
 }
 
-function dpEditOrderProduct_(payload,user) {
+function dpEditOrderProduct_(payload,user,clientSignals) {
   requireManager_(user);
   if(!/^[a-f0-9-]{36}$/i.test(String(payload.operationId||''))||!Number.isInteger(payload.lineIndex)||payload.lineIndex<0||!payload.item)throw new Error('Producto de pedido inválido.');
   var signature=hash_(JSON.stringify([user.id,payload.lineIndex,payload.item]));
@@ -2127,7 +2150,7 @@ function dpEditOrderProduct_(payload,user) {
       return {ok:true,duplicate:true,order:order};
     }
     if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza la comanda antes de editar.');
-    var item=Object.assign({},old,dpPriceOrderItems_([payload.item],dpCatalog_(true),order.fulfillment,true)[0]);
+    var item=Object.assign({},old,dpPriceOrderItems_([payload.item],dpProductEditCatalog_(payload.item.productId),order.fulfillment,true)[0]);
     item.catalogName=item.name;
     if(payload.item.name!==undefined&&(typeof payload.item.name!=='string'||!payload.item.name.trim()||payload.item.name.trim().length>160||/[\u0000-\u001f]/.test(payload.item.name)))throw new Error('Escribe un nombre de producto de entre 1 y 160 caracteres.');
     item.name=payload.item.name===undefined?old.name:payload.item.name.trim();
@@ -2146,10 +2169,10 @@ function dpEditOrderProduct_(payload,user) {
     try{appendAudit_('WEB_ORDER_EDIT_PRODUCT',order.id,user.full_name,'OK',item.quantity+' × '+item.name);}catch(_){}
     return {ok:true,order:dpObjects_('orders',[row])[0]};
   });
-  dpSignalOrder_('order-updated',payload.id);return result;
+  dpSignalOrder_('order-updated',payload.id,clientSignals);return result;
 }
 
-function dpEditOrder_(payload,user) {
+function dpEditOrder_(payload,user,clientSignals) {
   requireManager_(user);
   var result=dpWithLock_(function(){
     recoverPendingSaleJournal_();
@@ -2179,49 +2202,44 @@ function dpEditOrder_(payload,user) {
     appendAudit_('WEB_ORDER_PRICES',order.id,user.full_name,'OK','Precios y cajas actualizados');
     return {ok:true,order:dpObjects_('orders',[row])[0]};
   });
-  dpSignalOrder_('order-updated',payload.id);return result;
+  dpSignalOrder_('order-updated',payload.id,clientSignals);return result;
 }
 
 function dpGetOrder_(payload) {
   var id=dpText_(payload.id,100);
   if(!/^DP-[a-zA-Z0-9-]{1,80}$/.test(id))throw new Error('Pedido inválido.');
-  var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
-  var cache=CacheService.getScriptCache(),rowIndex=Number(cache.get('DP_ORDER_ROW:'+id));
-  if(rowIndex>=2&&rowIndex<=last){
-    var cachedRow=sheet.getRange(rowIndex,1,1,DP_TABLES.orders.headers.length).getValues();
-    if(cachedRow[0][0]===id){var cachedOrder=dpObjects_('orders',cachedRow)[0];return {ok:true,order:cachedOrder.status==='eliminada'?null:cachedOrder};}
-  }
-  var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
-  for(var i=ids.length-1;i>=0;i--)if(ids[i][0]===id){
-    try{cache.put('DP_ORDER_ROW:'+id,String(i+2),21600);}catch(_){}
-    var order=dpObjects_('orders',sheet.getRange(i+2,1,1,DP_TABLES.orders.headers.length).getValues())[0];
+  var found=dpFindTableRow_('orders',id);
+  if(found){
+    var order=dpObjects_('orders',[found.cells])[0];
     return {ok:true,order:order.status==='eliminada'?null:order};
   }
   return {ok:true,order:null};
 }
 
-function dpDeleteOrder_(payload,user) {
+function dpDeleteOrder_(payload,user,clientSignals) {
   var result=dpWithLock_(function(){
     recoverPendingSaleJournal_();
-    var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),headers=DP_TABLES.orders.headers,last=sheet.getLastRow();
-    var ids=last>1?sheet.getRange(2,1,last-1,1).getValues():[];
-    for(var i=ids.length-1;i>=0;i--)if(ids[i][0]===payload.id){
-      var row=sheet.getRange(i+2,1,1,headers.length).getValues()[0];
+    var found=dpFindTableRow_('orders',String(payload.id)),headers=DP_TABLES.orders.headers;
+    if(found){
+      var row=found.cells;
       if(row[5]==='eliminada')return {ok:true,alreadyDeleted:true};
       if(Number(row[headers.indexOf('version')])!==Number(payload.version))throw new Error('El pedido cambió. Revisa su estado antes de eliminar.');
       // Keep the request id so a delayed customer retry cannot recreate it.
       row[5]='eliminada';row[4]=new Date().toISOString();row[20]=dpCell_(user.full_name||user.username);row[21]=Number(payload.version)+1;
-      try{sheet.getRange(i+2,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+      try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
       try{appendAudit_('WEB_ORDER_DELETE',payload.id,user.full_name,'OK','Retirado de recepción');}catch(_){}
       return {ok:true};
     }
     return {ok:true,alreadyDeleted:true};
   });
-  dpSignalOrder_('order-updated',payload.id);
+  dpSignalOrder_('order-updated',payload.id,clientSignals);
   return result;
 }
 
-function dpSignalOrder_(event,id) {
+function dpSignalOrder_(event,id,clientSignals) {
+  // The current panel broadcasts after receiving the durable result. Older
+  // clients and public order creation retain the server-side notification.
+  if(clientSignals)return;
   try{
     var config=getConfig_();if(!config.supabaseUrl||!config.supabaseAnonKey)return;
     UrlFetchApp.fetch(config.supabaseUrl.replace(/\/$/,'')+'/realtime/v1/api/broadcast',{

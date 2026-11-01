@@ -10,7 +10,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   const context=await browser.newContext({viewport:{width:1440,height:1000},serviceWorkers:'block'});
   await context.addInitScript(()=>{localStorage.setItem('don_pieros_admin_token','boss');localStorage.setItem('waiter_alarm_enabled','0');});
   await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
-  await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON(),result=h.call(body.action,body.payload||body,body.authToken||'');if(body.action==='dp_add_order_product'&&loseAdditionResponse){loseAdditionResponse=false;return route.abort('failed');}if(body.action==='dp_edit_order_product'&&loseEditResponse){loseEditResponse=false;return route.abort('failed');}return route.fulfill({json:result});});
+  await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON(),result=h.call(body.action,body.payload||body,body.authToken||'',{clientSignals:body.clientSignals});if(body.action==='dp_add_order_product'&&loseAdditionResponse){loseAdditionResponse=false;return route.abort('failed');}if(body.action==='dp_edit_order_product'&&loseEditResponse){loseEditResponse=false;return route.abort('failed');}return route.fulfill({json:result});});
   await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{
    const rpc=new URL(route.request().url()).pathname.split('/').pop();
    return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP',tips_enabled:false},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_list_waiter_comandas'?{orders:[]}:rpc==='dp_setup_status'?false:[]});
@@ -184,7 +184,9 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await page.locator('[data-dw-quantity="1"]').click();await page.locator('#dw-unit-price').fill('31000');await page.locator('#dw-line-notes').fill('Nota corregida: salsa aparte');
   await page.screenshot({path:'artifacts/editar-producto-web.png'});
   loseEditResponse=true;await page.locator('#dw-add-product').click();await page.locator('#dw-product-error').filter({hasText:/\S/}).waitFor();
+  const editNotice=page.waitForRequest(request=>request.url().includes('/realtime/v1/api/broadcast')&&request.postDataJSON()?.messages?.[0]?.payload?.orderId===receipt.orderId);
   await page.locator('#dw-add-product').click();await page.locator('#dp-order-dialog[open]').waitFor();
+  const notice=await editNotice;assert.deepEqual(Object.keys(notice.postDataJSON().messages[0].payload).sort(),['at','orderId']);
   const corrected=h.call('dp_get_order',{id:receipt.orderId}).order;
   assert.equal(corrected.items[1].name,'Especial familiar corregida');
   assert.equal(corrected.items.length,2);assert.equal(corrected.items[1].quantity,3);assert.equal(corrected.items[1].packagingSize,'Maxi');assert.equal(corrected.total,183000);

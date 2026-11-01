@@ -92,7 +92,7 @@
     const cancel=()=>controller.abort();
     if(signal?.aborted)cancel();else signal?.addEventListener('abort',cancel,{once:true});
     try{
-      const response=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,payload,authToken:api()?.getToken()||'',origin:location.origin}),signal:controller.signal,cache:'no-store'});
+      const response=await fetch(url,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,payload,authToken:api()?.getToken()||'',origin:location.origin,clientSignals:true}),signal:controller.signal,cache:'no-store'});
       if(!response.ok)throw new Error('No pudimos completar la solicitud. Intenta de nuevo en unos segundos.');
       const result=await response.json();if(!result.ok)throw new Error(result.error||'No se pudo completar la operación.');return result;
     }catch(error){if(error.name==='AbortError'&&!signal?.aborted)throw new Error('La respuesta está tardando. Actualiza para comprobar si se guardó.');throw error;}finally{clearTimeout(timer);signal?.removeEventListener('abort',cancel);}
@@ -265,7 +265,7 @@
       if(token!==api().getToken())return;
       write.pending=false;if(result.order)write.after=result.order;orderEpoch++;
       revision='';dashboardRevision='';searchEpoch++;searchCache.clear();
-      repaintOrders();signal('order-updated');void loadOrders(true);
+      repaintOrders();signal('order-updated',order.id);void loadOrders(true);
       notify(after?'Estado del pedido actualizado.':'Pedido eliminado.');
     }catch(error){
       if(token!==api().getToken())return;
@@ -306,7 +306,7 @@
           if(token!==api().getToken())throw Error('La sesión cambió. Abre el pedido nuevamente.');
           if(!result.order)throw Error('No pudimos confirmar el producto. Actualiza la comanda.');
           orderEpoch++;orderWrites.set(id,{before:order,after:result.order,pending:false});
-          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated');notify(lineIndex===null?'Producto agregado al pedido.':'Producto actualizado.');void loadOrders(true);
+          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated',id);notify(lineIndex===null?'Producto agregado al pedido.':'Producto actualizado.');void loadOrders(true);
         }catch(error){if(token===api().getToken()){orderWrites.delete(id);repaintOrders();void loadOrders(true);}throw error;}
       }
     });
@@ -422,7 +422,7 @@
       if(token!==api().getToken())return;
       if(!result.order)throw Error('No pudimos confirmar los cambios. Actualiza la comanda.');
       orderEpoch++;orderWrites.set(order.id,{before:order,after:result.order,pending:false});
-      searchEpoch++;searchCache.clear();repaintOrders();openOrder(order.id);signal('order-updated');notify('Precios y cajas guardados.');void loadOrders(true);
+      searchEpoch++;searchCache.clear();repaintOrders();openOrder(order.id);signal('order-updated',order.id);notify('Precios y cajas guardados.');void loadOrders(true);
     }catch(error){
       if(token!==api().getToken())return;
       orderWrites.delete(order.id);buttons.forEach(button=>button.disabled=false);
@@ -600,7 +600,19 @@
     try{deletions().enqueue('catalog-'+kind,id,{kind,id,version:item.version,image_path:item.image_path});catalogEpoch++;renderCatalog();notify('Registro retirado. Se está sincronizando.');}
     catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
-  function signal(event){if(event==='catalog-changed')window.dispatchEvent(new Event('donpieros-catalog-change'));if(channel)void channel.send({type:'broadcast',event,payload:{at:Date.now()}});}
+  function signal(event,orderId){
+    if(event==='catalog-changed')window.dispatchEvent(new Event('donpieros-catalog-change'));
+    const payload={at:Date.now(),...(orderId?{orderId}:{})};
+    if(channel)void channel.send({type:'broadcast',event,payload}).catch(()=>{});
+    // Send outside the Apps Script save, without holding up the editor. HTTP
+    // also wakes peers when this browser's socket has not joined yet.
+    if(orderId){
+      const config=window.DON_PIEROS_CONFIG;
+      void fetch(config.supabaseUrl+'/realtime/v1/api/broadcast',{method:'POST',keepalive:true,
+        headers:{apikey:config.supabaseAnonKey,'Content-Type':'application/json'},
+        body:JSON.stringify({messages:[{topic:'don-pieros-orders-live',event,payload}]})}).catch(()=>{});
+    }
+  }
   function confirmReception(orderId){
     const payload={orderId,at:Date.now()};
     try{localStorage.setItem('don_pieros_order_received_v1',JSON.stringify(payload));}catch(_){}

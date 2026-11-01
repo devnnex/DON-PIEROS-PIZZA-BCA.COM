@@ -21,7 +21,7 @@ const root=path.resolve(__dirname,'..');
   await db.query("insert into restaurant_tables(table_number,table_name,qr_code) values(2,'Mesa 2','qa-mesa-2')");
   const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog'),first=catalog.products[0],group=first.modifiers[0];
   const maxi=catalog.toppings.find(t=>t.kind===group.source&&t.name.startsWith('Super maxi'));
-  const errors=[];let writes=0,loseResponse=false,rejectAcceptance=false,queue=Promise.resolve();
+  const errors=[];let writes=0,loseResponse=false,rejectAcceptance=false,listGate=null,queue=Promise.resolve();
   const serial=operation=>{const result=queue.then(operation);queue=result.catch(()=>{});return result;};
   async function contextFor(user){
    const context=await browser.newContext({viewport:{width:user.user.role==='waiter'?390:1440,height:950},serviceWorkers:'block'});
@@ -34,6 +34,7 @@ const root=path.resolve(__dirname,'..');
    });
    await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',async route=>{
     const request=route.request(),url=new URL(request.url()),rpc=url.pathname.split('/').pop(),args=request.postData()?JSON.parse(request.postData()):{};
+    if(rpc==='dp_list_waiter_comandas'&&listGate)await listGate;
     try{
      const data=await serial(async()=>{
       await db.query("select set_config('request.headers',$1,false)",[JSON.stringify({'x-app-token':user.token})]);
@@ -114,8 +115,11 @@ const root=path.resolve(__dirname,'..');
   fs.writeFileSync(path.join(root,'artifacts/comanda-mesero-negrita.pdf'),printedPdf);await printed.close();
   // Administration can correct the received comanda before accepting it.
   await admin.locator('#dw-kitchen-body [data-dw-edit-order]').click();await admin.locator('[data-dw-edit-line]').click();
-  await admin.locator('#dw-line-notes').fill('Ajuste de administración');await admin.locator('#dw-add-product').click();await admin.locator('#dw-send-order').click();
-  await admin.locator('#dw-kitchen-dialog[open]').waitFor();
+  await admin.locator('#dw-line-notes').fill('Ajuste de administración');await admin.locator('#dw-add-product').click();
+  let releaseList;listGate=new Promise(resolve=>{releaseList=resolve;});
+  await admin.locator('#dw-send-order').click();
+  try{await admin.locator('#dw-kitchen-dialog[open]').waitFor({timeout:1500});}
+  finally{listGate=null;releaseList();}
   assert.equal((await db.query('select count(*)::int n from session_items')).rows[0].n,0);
   rejectAcceptance=true;await admin.locator('[data-dw-accept-order]').click();
   await admin.locator('#dw-kitchen-error').filter({hasText:'No pudimos guardar'}).waitFor();
