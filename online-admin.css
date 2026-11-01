@@ -99,4 +99,5 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 .dp-status-actions{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dp-order-card .dp-add-product,#dp-order-dialog .dp-add-product{min-height:40px;padding:8px 12px;border:1px solid #1765ce;border-radius:10px;background:#1765ce;color:#fff;font-size:12px;font-weight:800;cursor:pointer}
 .dp-add-product:disabled{opacity:.55;cursor:wait}.dp-detail-lines .dp-line-notes{white-space:pre-wrap;font-weight:700;color:#735000}
+.dp-detail-lines .dp-edit-product{margin:8px 0;min-height:40px;padding:8px 12px;border:1px solid #1765ce;color:#1765ce;font-weight:800;border-radius:10px}
 @media(max-width:640px){.dp-order-card>div>.dp-status-actions{flex:1;min-width:0}.dp-order-card>div>small{max-width:38%}.dp-order-heading>.dp-status-actions{max-width:48%;justify-content:flex-end}}

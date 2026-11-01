@@ -5544,7 +5544,7 @@ button,a,[role="button"]{touch-action:manipulation}
 #consumptionDialog .is-editing-consumption .consumption-optional { display: block; border: 0; background: transparent; }
 #consumptionDialog .is-editing-consumption .consumption-optional-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 #consumptionDialog .is-editing-consumption #consumptionQueueButton { display: none !important; }
-#consumptionDialog .is-editing-consumption :is(#tableConsumptionPreview, #viewTableConsumption, #consumptionProductHint, #consumptionLastAdded, #consumptionOptionalFields > summary) { display: none !important; }
+#consumptionDialog .is-editing-consumption :is(#tableSessionActions, #tableConsumptionPreview, #viewTableConsumption, #consumptionProductHint, #consumptionLastAdded, #consumptionOptionalFields > summary) { display: none !important; }
 #consumptionDialog .is-editing-consumption .section-head { margin-bottom: .7rem; }
 #consumptionDialog .is-editing-consumption .consumption-optional-grid { padding: .65rem; }
 #consumptionDialog .is-editing-consumption .dp-packing-controls { margin: 0 .65rem .65rem; padding: .65rem; }

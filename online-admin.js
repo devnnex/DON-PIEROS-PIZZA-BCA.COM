@@ -285,11 +285,12 @@
     }catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
   function productAddButton(order){return ['boss','admin'].includes(api().getUser()?.role)&&['nueva','atendiendo','lista'].includes(order.status)?`<button type="button" class="dp-add-product" data-dp-add-product="${esc(order.id)}" ${orderWrites.get(order.id)?.pending?'disabled':''}>＋ Agregar producto</button>`:'';}
-  function addOrderProduct(id){
+  function addOrderProduct(id,lineIndex=null){
     const order=findOrder(id),token=api().getToken();
     if(!order||!productAddButton(order)||orderWrites.get(id)?.pending)return;
     let pending=null;
     const opened=window.DonPierosWaiter?.chooseWebOrderProduct({title:'Pedido '+(order.sequence||order.id),fulfillment:order.fulfillment,
+      item:lineIndex===null?null:order.items[lineIndex],
       onClose:()=>{if(token===api().getToken()&&findOrder(id))openOrder(id);},
       onAdd:async line=>{
         if(token!==api().getToken())throw Error('La sesión cambió. Abre el pedido nuevamente.');
@@ -300,11 +301,11 @@
         if(!pending||pending.signature!==signature)pending={signature,operationId:crypto.randomUUID(),item};
         orderWrites.set(id,{before:order,after:order,pending:true});
         try{
-          const result=await request('dp_add_order_product',{id,version:order.version,operationId:pending.operationId,item:pending.item});
+          const result=await request(lineIndex===null?'dp_add_order_product':'dp_edit_order_product',{id,version:order.version,operationId:pending.operationId,item:pending.item,...(lineIndex===null?{}:{lineIndex})});
           if(token!==api().getToken())throw Error('La sesión cambió. Abre el pedido nuevamente.');
           if(!result.order)throw Error('No pudimos confirmar el producto. Actualiza la comanda.');
           orderEpoch++;orderWrites.set(id,{before:order,after:result.order,pending:false});
-          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated');notify('Producto agregado al pedido.');void loadOrders(true);
+          searchEpoch++;searchCache.clear();repaintOrders();signal('order-updated');notify(lineIndex===null?'Producto agregado al pedido.':'Producto actualizado.');void loadOrders(true);
         }catch(error){if(token===api().getToken()){orderWrites.delete(id);repaintOrders();void loadOrders(true);}throw error;}
       }
     });
@@ -364,6 +365,7 @@
     }
     $('#dp-order-detail .dp-detail-lines').querySelectorAll('article').forEach((row,index)=>{
       const line=order.items[index];
+      if(productAddButton(order)){row.querySelector('div').insertAdjacentHTML('beforeend',`<button class="ghost dp-edit-product" type="button" data-dp-edit-product="${index}">Editar producto</button>`);row.querySelector('[data-dp-edit-product]').onclick=()=>addOrderProduct(id,index);}
       if(line.notes)row.querySelector('div').insertAdjacentHTML('beforeend',`<p class="dp-line-notes">${esc(line.notes)}</p>`);
       row.querySelector('div').insertAdjacentHTML('beforeend',`<p class="dp-line-price">${money(line.unitPrice)} c/u · Productos: ${money(Number(line.unitPrice)*Number(line.quantity))}${line.packagingUnitFee?`<br>Caja ${esc(line.packagingSize)}: ${money(line.packagingUnitFee)} c/u · ${money(Number(line.packagingUnitFee)*Number(line.quantity))} en cajas`:''}</p>`);
     });

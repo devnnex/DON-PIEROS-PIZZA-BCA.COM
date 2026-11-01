@@ -161,7 +161,7 @@
   }
   function showProduct(id,lineId=''){
     if(draft?.pending&&!individualPick&&!webPick)return api().notify('Primero confirma el envío pendiente.','error');
-    const existing=individualPick||webPick?null:draft.items.find(item=>item.id===lineId),custom=id==='custom'||!!existing?.options?.custom;
+    const existing=webPick?.line||(individualPick||webPick?null:draft.items.find(item=>item.id===lineId)),custom=id==='custom'||!!existing?.options?.custom;
     if(webPick&&custom)return;
     if(!catalog&&!custom){void loadCatalog().then(()=>{if(catalog)showProduct(id,lineId);else api().notify(catalogError,'error');});return;}
     const customExisting=existing?.options?.custom?existing:null;
@@ -485,7 +485,27 @@
   function chooseWebOrderProduct(options){
     if(waiter()||!allowed()||busy)return false;
     if(document.querySelector('.dw-dialog[open]')){api().notify('Termina la selección actual antes de agregar productos.','error');return false;}
-    webPick=options;void beginCatalogChoice();void loadCatalog();return true;
+    webPick=options;
+    if(options.item)void editWebProduct(options);else{void beginCatalogChoice();void loadCatalog();}
+    return true;
+  }
+  async function editWebProduct(pick){
+    const dialog=$('#dw-product-dialog');dialog.dataset.webPicker='1';dialog.dataset.webEdit='1';
+    $('#dw-product-body').innerHTML='<header class="dw-dialog-head"><h2 id="dw-product-title">Editar producto</h2><button type="button" class="dw-close" data-dw-close aria-label="Cerrar">×</button></header><p>Preparando producto…</p>';
+    dialog.showModal();
+    if(!catalog)await loadCatalog();
+    if(webPick!==pick)return;
+    const item=pick.item,product=catalog?.products.find(product=>product.id===item.productId);
+    if(!product){$('#dw-product-body p').textContent='Este producto ya no está en la carta. Cierra y actualiza el menú.';return;}
+    const selectionIds={};
+    for(const group of product.modifiers||[]){
+      if(Array.isArray(item.selectionIds?.[group.id]))selectionIds[group.id]=item.selectionIds[group.id].slice();
+      else selectionIds[group.id]=(catalog.toppings||[]).filter(option=>option.kind===group.source&&(item.selections||[]).some(label=>String(label).replace(/\s*\(\+\$[^)]*\)\s*$/,'')===group.name+': '+option.name)).map(option=>option.id);
+    }
+    const packing=window.DonPierosPackaging,fee=Number(item.packagingUnitFee)||0;
+    pick.line={id:crypto.randomUUID(),product_id:item.productId,name:item.name,quantity:Number(item.quantity),unit_price:Number(item.unitPrice)+fee,options:{selectionIds},notes:packing.note(item.notes||'',fee?packing.size(item.packagingSize):'',pick.fulfillment!=='dinein')};
+    showProduct(item.productId,pick.line.id);
+    $('#dw-add-product').childNodes[0].textContent='Guardar cambios · ';
   }
   function sync(){
     if(!allowed()){root.hidden=true;reception.hidden=true;document.body.classList.remove('dw-waiter-mode');return;}
@@ -542,7 +562,7 @@
     dialog.addEventListener('cancel',event=>{if(busy)event.preventDefault();});
   }
   $('#dw-product-dialog').addEventListener('close',()=>{
-    if($('#dw-product-dialog').dataset.webPicker){delete $('#dw-product-dialog').dataset.webPicker;return;}
+    if($('#dw-product-dialog').dataset.webPicker){delete $('#dw-product-dialog').dataset.webPicker;if($('#dw-product-dialog').dataset.webEdit){delete $('#dw-product-dialog').dataset.webEdit;const pick=webPick;webPick=null;pick?.onClose();}return;}
     if($('#dw-product-dialog').dataset.individualPicker){delete $('#dw-product-dialog').dataset.individualPicker;return;}
     if(busy||!draft||!directLineEdit&&!draft.legacy)return;
     try{localStorage.removeItem(draftKey());}catch(_){}directLineEdit=false;
