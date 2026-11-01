@@ -120,12 +120,12 @@ test('la paginación y el turno no descargan el detalle de todas las órdenes hi
  h.reads.length=0;const created=h.call('createOrder',{order:h.order(p)});assert.equal(created.sequence,2001);assert.equal(created.ordersAhead,1);
  assert.ok(h.reads.filter(read=>read.sheet==='Ordenes_Web').every(read=>read.cols<=6));
 });
-test('la carta inicial contiene los 51 productos, tamaños y dos mitades repetibles sin duplicarse ni sobrescribir ediciones',()=>{
- const h=harness({seedMenu:true}),catalog=h.call('dp_admin_catalog');assert.equal(catalog.products.length,51);assert.equal(catalog.toppings.length,15);
+test('la carta inicial contiene los 52 productos, tamaños y dos mitades repetibles sin duplicarse ni sobrescribir ediciones',()=>{
+ const h=harness({seedMenu:true}),catalog=h.call('dp_admin_catalog');assert.equal(catalog.products.length,52);assert.equal(catalog.toppings.length,42);
  assert.equal(catalog.products.find(p=>p.name==='Gaseosa 1,5 litros').price,9000);
  const p=catalog.products.find(p=>p.name==='Pizza Hawaiana'&&p.category==='Pizzas sencillas'),size=catalog.toppings.find(t=>t.kind==='Tamaño pizza sencilla'&&t.name==='Mediana · 37 × 37 cm'),second=catalog.toppings.find(t=>t.kind==='Sabor pizza sencilla'&&t.name==='Hawaiana');
  const order=h.order(p);order.items[0].unitPrice=56000;order.items[0].selectionIds={[p.modifiers[0].id]:[size.id],[p.modifiers[1].id]:[second.id]};
  assert.equal(h.call('createOrder',{order}).total,58000);
  h.save('products',{...p,price:44000,available:false});h.context.CARGAR_MENU_INICIAL_DON_PIEROS();
- const refreshed=h.call('dp_admin_catalog');assert.equal(refreshed.products.length,51);assert.equal(refreshed.products.find(row=>row.id===p.id).price,44000);assert.equal(refreshed.products.find(row=>row.id===p.id).available,false);
+ const refreshed=h.call('dp_admin_catalog');assert.equal(refreshed.products.length,52);assert.equal(refreshed.products.find(row=>row.id===p.id).price,44000);assert.equal(refreshed.products.find(row=>row.id===p.id).available,false);
 });

@@ -25,7 +25,7 @@ const assert=require('node:assert/strict');const {chromium}=require('playwright-
  await client.screenshot({path:'artifacts/pizza-tamanos-movil.png',fullPage:true});await client.locator('#add-product').click();
  await client.locator('#toast.cart-feedback').waitFor();
  assert.equal(await client.locator('#nav-cart i').evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(245, 207, 73)');
- assert.equal(await client.locator('#nav-cart .cart-count').evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(17, 17, 17)');
+ assert.equal(await client.locator('#nav-cart .cart-count').evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(215, 25, 32)');
  assert.equal(await client.locator('#nav-cart .cart-count').innerText(),'1');
  assert.equal(await client.locator('#nav-cart i').evaluate(node=>getComputedStyle(node).animationName),'cart-added-confirm');
  assert.equal(await client.locator('#toast').evaluate(node=>getComputedStyle(node).animationName),'toast-slide-shake');

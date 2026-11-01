@@ -1,0 +1,44 @@
+const assert=require('node:assert/strict'),{chromium}=require('playwright-core'),{harness}=require('../tests/helpers/don-pieros-gas.cjs');
+(async()=>{
+ const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog'),combo=catalog.products.find(p=>p.name==='Pizza combinada'),[sizeGroup,flavorGroup]=combo.modifiers;
+ const size=name=>catalog.toppings.find(t=>t.kind===sizeGroup.source&&t.name.startsWith(name));
+ const flavor=name=>catalog.toppings.find(t=>t.kind===flavorGroup.source&&t.name===name);
+ const first=flavor('La Pamplonita'),second=flavor('Hawaiana'),third=flavor('Mexicana'),errors=[];
+ const browser=await chromium.launch({headless:true,executablePath:'C:/Program Files/Google/Chrome/Application/chrome.exe'});
+ try{
+  const context=await browser.newContext({viewport:{width:390,height:1000},serviceWorkers:'block'});
+  await context.routeWebSocket('wss://bxyvxbutjlvoconfsjub.supabase.co/**',socket=>socket.close());
+  await context.route('https://script.google.com/**',route=>{const req=route.request();if(req.method()==='GET')return route.fulfill({json:{ok:true}});const body=req.postDataJSON();return route.fulfill({json:h.call(body.action,body.payload||body,body.authToken||'',{clientSignals:body.clientSignals})});});
+  await context.route('https://bxyvxbutjlvoconfsjub.supabase.co/**',route=>{const rpc=new URL(route.request().url()).pathname.split('/').pop();return route.fulfill({json:rpc==='get_current_user'?{id:'boss-id',full_name:'Jefe',role:'boss',is_active:true}:rpc==='get_bootstrap_data'?{business:{business_name:'Don Pieros Pizza',currency:'COP',tips_enabled:false},tables:[],categories:[],items:[]}:rpc==='get_admin_snapshot'?{requests:[],sessions:[]}:rpc==='dp_list_waiter_comandas'?{orders:[]}:rpc==='dp_setup_status'?false:[]});});
+  await context.addInitScript(()=>{localStorage.setItem('waiter_alarm_enabled','0');window.navigation.addEventListener('navigate',event=>{if(event.destination.url.includes('whatsapp.com'))event.preventDefault();});});
+  const client=await context.newPage();client.on('pageerror',error=>errors.push(error.message));client.setDefaultNavigationTimeout(60000);
+  await client.goto('http://127.0.0.1:4173/');await client.locator('#welcome-close').click();await client.locator('[data-category="Pizzas especiales"]').click();
+  const clientNames=await client.locator('[data-product] h3').allTextContents();assert.deepEqual(clientNames.slice(0,2),['Pizza La Pamplonita','Pizza combinada']);
+  await client.locator(`[data-product="${combo.id}"]`).click();
+  assert.equal(await client.locator('#add-product').getAttribute('aria-disabled'),'true');
+  const pick=async id=>client.locator(`#product-detail input[value="${id}"]`).check();
+  await pick(size('Pizzeta').id);await pick(first.id);assert.equal(await client.locator('#add-product').getAttribute('aria-disabled'),'true');
+  await pick(second.id);assert.equal(await client.locator('#add-product').getAttribute('aria-disabled'),'false');assert.match(await client.locator('#detail-total').innerText(),/34.000/);
+  await client.locator(`#product-detail input[value="${third.id}"]`).click();assert.equal(await client.locator(`#product-detail input[value="${third.id}"]`).isChecked(),false,'Impide elegir una tercera mitad.');
+  await client.screenshot({path:'artifacts/pizza-combinada-cliente.png',fullPage:true});
+  await client.locator('#add-product').click();await client.locator('#header-cart').click();await client.locator('#go-checkout').click();
+  await client.locator('[name=fulfillment][value=pickup]').locator('..').click();await client.locator('[name=name]').fill('Cliente combinada QA');await client.locator('[name=phone]').fill('3102241444');await client.locator('[name=payment][value=efectivo]').locator('..').click();
+  await client.locator('#confirm-order').click();await client.locator('.queue-confirmation').waitFor();
+  const order=h.call('dp_get_orders').orders[0];assert.equal(order.total,34000);assert.equal(order.items[0].packagingSize,'Pizzeta');assert.deepEqual(order.items[0].selectionIds[flavorGroup.id],[first.id,second.id]);
+  const admin=await context.newPage();admin.on('pageerror',error=>errors.push(error.message));admin.setDefaultNavigationTimeout(60000);await admin.addInitScript(()=>localStorage.setItem('don_pieros_admin_token','boss'));
+  await admin.goto('http://127.0.0.1:4173/admin.html#dashboard');await admin.locator('#newWalkInSale').waitFor();await admin.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
+  await admin.locator(`#dp-dashboard-orders [data-dp-order="${order.id}"] [data-dp-view]`).click();
+  const [printed]=await Promise.all([context.waitForEvent('page'),admin.locator('#dp-print-order').click()]);await printed.waitForFunction(()=>document.body.dataset.thermalPdfReady==='1');
+  assert.match(await printed.locator('body').innerText(),/Pizza combinada/);assert.match(await printed.locator('.size-name').innerText(),/Pizzeta/);assert.match(await printed.locator('.options').innerText(),/La Pamplonita[\s\S]*Hawaiana/);await printed.close();
+  await admin.locator('[data-dp-edit-product="0"]').click();assert.equal(await admin.locator(`#dw-product-body input[value="${second.id}"]`).isChecked(),true);
+  await admin.locator(`#dw-product-body input[value="${second.id}"]`).uncheck();await admin.locator(`#dw-product-body input[value="${third.id}"]`).check();await admin.locator(`#dw-product-body input[value="${size('Super maxi').id}"]`).check();
+  await admin.locator('#dw-add-product').click();await admin.locator('#dp-order-dialog[open]').waitFor();assert.match(await admin.locator('.dp-total').innerText(),/100.000/);
+  const edited=h.call('dp_get_order',{id:order.id}).order;assert.equal(edited.items[0].unitPrice,96000);assert.deepEqual(edited.items[0].selectionIds[flavorGroup.id],[first.id,third.id]);
+  await admin.locator('#dp-order-dialog [data-dp-close]').click();await admin.locator('#newWalkInSale').click();await admin.locator('#paymentAddItem').click();
+  assert.deepEqual((await admin.locator('#dw-manager-products [data-dw-product] strong').allTextContents()).slice(0,2),['Pizza La Pamplonita','Pizza combinada']);
+  await admin.locator(`#dw-manager-products [data-dw-product="${combo.id}"]`).click();await admin.locator(`#dw-product-body input[value="${size('Pizzeta').id}"]`).check();await admin.locator(`#dw-product-body input[value="${first.id}"]`).check();await admin.locator('#dw-add-product').click();assert.match(await admin.locator('#dw-product-error').innerText(),/obligatorias/);
+  await admin.locator(`#dw-product-body input[value="${third.id}"]`).check();await admin.selectOption('#dw-fulfillment','pickup');assert.match(await admin.locator('#dw-packaging-summary').innerText(),/Pizzeta/);
+  await admin.screenshot({path:'artifacts/pizza-combinada-aplicacion.png',fullPage:false});await admin.locator('#dw-add-product').click();await admin.locator('#paymentDialog[open]').waitFor();assert.match(await admin.locator('#paymentDialog').innerText(),/La Pamplonita[\s\S]*Mexicana/);assert.match(await admin.locator('#paymentTotal').innerText(),/34.000/);
+  assert.deepEqual(errors,[]);console.log('OK: combinada junto a Pamplonita en cliente y aplicacion, dos sabores obligatorios, pizzeta, cajas, pedido web, edicion a Super maxi, impresion y venta individual.');
+ }finally{await browser.close();}
+})().catch(error=>{console.error(error);process.exit(1);});

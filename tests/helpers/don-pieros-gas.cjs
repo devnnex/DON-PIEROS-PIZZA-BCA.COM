@@ -34,7 +34,7 @@ function harness(options={}){
  // Test only the integration's access rules, without external account requests.
  context.validateSupabaseUser_=token=>{if(token==='boss')return{id:'boss-id',full_name:'Jefe',role:'boss'};if(token==='waiter')return{id:'waiter-id',full_name:'Mesero',role:'waiter'};if(token==='limited')return{id:'limited-id',role:'admin',permissions:['income']};throw Error('Sesión requerida.');};
  const call=(action,payload={},token='boss',envelope={})=>JSON.parse(JSON.stringify(context.apiRequest(JSON.stringify({...envelope,action,payload,authToken:token,origin:'http://localhost:5500'}))));
- if(!options.seedMenu)props.set('DP_INITIAL_MENU_LOADED','1');
+ if(!options.seedMenu){props.set('DP_INITIAL_MENU_LOADED','1');props.set('DP_COMBINED_PIZZA_LOADED','1');}
  context.ensureSystemReady_();
  const save=(kind,item)=>{const result=call('dp_save_catalog',{kind,item});if(!result.ok)throw Error(result.error);return result.item;};
  const product=()=>save('products',{name:'Pizza prueba',category:'Pizzas',price:25000,available:true,modifiers:[]});

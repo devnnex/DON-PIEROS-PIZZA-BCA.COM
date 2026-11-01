@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.12.0-donpieros",
+  version: "3.13.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1777,6 +1777,7 @@ function dpEnsureSheets_(spreadsheet) {
     if(!existing.some(function(item){var name=paymentKey(item.name);return paymentKey(item.id)===key||name===key||(key==='nequi'&&name.indexOf('nequi')>=0);}))payments.appendRow(row);
   });
   dpSeedInitialMenu_(spreadsheet);
+  dpSeedCombinedPizza_(spreadsheet);
 }
 
 function dpDispatch_(request) {
@@ -1936,6 +1937,7 @@ function dpBox_(product,labels) {
   var text=normalizeSearch_((labels||[]).length?labels.join(' '):product.name),name=normalizeSearch_(product.name+' '+product.category),size='';
   if(!/pizza|pizzeta/.test(name))return {size:'',fee:0};
   if(/pizzeta/.test(name))size='Pizzeta';
+  else if(/\bpizzeta\b/.test(text))size='Pizzeta';
   else if(/super\s*maxi/.test(text))size='Super maxi';
   else if(/\bmaxi\b/.test(text))size='Maxi';
   else if(/\bmediana\b/.test(text))size='Mediana';
@@ -3416,6 +3418,48 @@ var DP_INITIAL_MENU = {
     }
   ]
 };
+function dpCombinedPizzaMenu_(catalogProducts) {
+  var sizeSource='Tamaño pizza combinada',flavorSource='Sabor pizza combinada';
+  var sizes=[['Pizzeta · 24 × 24 cm',0],['Mini · 27 × 27 cm',14000],['Mediana · 37 × 37 cm',31000],['Maxi · 45 × 45 cm',46000],['Super maxi · 54 × 54 cm',64000]];
+  var toppings=sizes.map(function(size,index){return {id:'a922fe01-92f2-4d01-87ca-'+String(index+1).padStart(12,'0'),name:size[0],kind:sizeSource,price:size[1],available:true,sort_order:index,version:1};});
+  var flavors=Object.create(null),flavorIndex=0;
+  (catalogProducts||DP_INITIAL_MENU.products).forEach(function(product){
+    if(normalizeSearch_(product.name)==='pizza combinada'||(!/pizza|pizzeta|porcion/.test(normalizeSearch_(product.category))&&!/^(Pizza |Pizzeta |Porción )/i.test(product.name)))return;
+    var name=String(product.name).replace(/^(Pizza |Pizzeta |Porción )/i,'').trim(),key=normalizeSearch_(name);
+    if(flavors[key])return;
+    flavors[key]=true;
+    name=name.charAt(0).toUpperCase()+name.slice(1);
+    var digest=hash_('combined-flavor:'+key),id='ec02b4d1-'+digest.slice(0,4)+'-4'+digest.slice(4,7)+'-a'+digest.slice(7,10)+'-'+digest.slice(10,22);
+    toppings.push({id:id,name:name,kind:flavorSource,price:0,available:true,sort_order:flavorIndex++,version:1});
+  });
+  return {product:{id:'b6f16d35-eabc-4d79-bef7-892d543228f6',name:'Pizza combinada',category:'Pizzas especiales',price:32000,
+    image_url:'',image_path:'',description:'Elige 2 sabores de pizza de la carta: mitad y mitad. Disponible en pizzeta, Mini, Mediana, Maxi y Super maxi.',badge:'2 sabores · 5 tamaños',featured:true,available:true,sort_order:1,
+    modifiers:[{id:'dp-combined-size',name:'Elige el tamaño',source:sizeSource,required:true,min:1,max:1,usePrice:true},
+      {id:'dp-combined-flavors',name:'Elige 2 sabores (mitad y mitad)',source:flavorSource,required:true,min:2,max:2,usePrice:false}],version:1},toppings:toppings};
+}
+
+// One-time addition for both existing and new books. Preserve later menu edits.
+function dpSeedCombinedPizza_(spreadsheet) {
+  var properties=PropertiesService.getScriptProperties();
+  if(properties.getProperty('DP_COMBINED_PIZZA_LOADED')==='1')return;
+  var productRows=readSheetRows_(spreadsheet.getSheetByName(DP_TABLES.products.name),DP_TABLES.products.headers.length);
+  var menu=dpCombinedPizzaMenu_(dpObjects_('products',productRows)),definition=DP_TABLES.toppings,sheet=spreadsheet.getSheetByName(definition.name);
+  var rows=readSheetRows_(sheet,definition.headers.length),ids={},names={};
+  rows.forEach(function(row){ids[String(row[0])]=true;names[normalizeSearch_(row[1])+'|'+String(row[2])]=true;});
+  var missing=menu.toppings.filter(function(item){return !ids[item.id]&&!names[normalizeSearch_(item.name)+'|'+item.kind];});
+  appendRows_(sheet,missing.map(function(item){return definition.headers.map(function(header){return dpCell_(item[header]);});}));
+  definition=DP_TABLES.products;sheet=spreadsheet.getSheetByName(definition.name);rows=productRows;
+  if(!rows.some(function(row){return String(row[0])===menu.product.id||normalizeSearch_(row[1])==='pizza combinada';})){
+    var anchor=rows.filter(function(row){return String(row[0])==='cb53e3f4-d07b-524e-af1a-d829cf96dd36'||normalizeSearch_(row[1])==='pizza la pamplonita';})[0];
+    var position=anchor?Number(anchor[10]||0)+1:1;
+    menu.product.category=anchor?String(anchor[2]||menu.product.category):menu.product.category;menu.product.sort_order=position;
+    rows.forEach(function(row){if(row!==anchor&&String(row[2])===menu.product.category&&Number(row[10]||0)>=position){row[10]=Number(row[10]||0)+1;row[12]=(Number(row[12])||0)+1;}});
+    rows.push(definition.headers.map(function(header){return header==='modifiers'?JSON.stringify(menu.product.modifiers):menu.product[header];}));
+    sheet.getRange(2,1,rows.length,definition.headers.length).setValues(rows);
+  }
+  SpreadsheetApp.flush();dpInvalidateCatalog_();properties.setProperty('DP_COMBINED_PIZZA_LOADED','1');
+}
+
 // Carga inicial de la carta proporcionada por Don Pieros Pizza.
 function dpSeedInitialMenu_(spreadsheet) {
   var properties=PropertiesService.getScriptProperties();
