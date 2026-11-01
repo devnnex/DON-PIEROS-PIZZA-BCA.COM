@@ -22,6 +22,7 @@
 .dp-image-editor #dp-image-hint{font-size:11px;line-height:1.6;color:#7d6b5b;margin-top:13px}
 .dp-image-editor input[hidden]{display:none!important}
 #dp-new-category[hidden]{display:none!important}
+.order-time-form .order-observations-field{flex-basis:100%}.dp-order-products .dp-notes[hidden]{display:none!important}
 .dp-price-editor[hidden],#dp-edit-prices[hidden]{display:none!important}.dp-price-editor{margin:15px 0;padding:14px;border:1px solid #e5d7b8;border-radius:14px;background:#fffaf0}.dp-price-editor fieldset{display:grid;grid-template-columns:1fr 1fr;gap:10px;border:0;border-bottom:1px solid #e5d7b8;margin:0 0 14px;padding:8px 0}.dp-price-editor legend{font-weight:750}.dp-price-editor label{margin:6px 0}.dp-line-price{color:#247248!important;font-weight:700!important;font-size:13px!important}#dp-price-error{color:#a51a1a}
 .admin-sidebar #dp-nav-count:empty{display:none}
 .dp-order-card:focus-visible,.dp-card-actions button:focus-visible{outline:3px solid #e9b839;outline-offset:3px}
@@ -84,3 +85,14 @@
 body[data-page="admin"] :is(button,a,input,select,label){touch-action:manipulation}
 body[data-page="admin"] :is(.modal[open],.modal-card,.dp-dialog[open],.dp-dialog-card){animation:none}
 body[data-page="admin"] :is(button,a):active{transition-duration:0s}
+#dp-order-dialog .dp-order-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:stretch}
+#dp-order-dialog .dp-order-actions .dp-order-stage{grid-column:1/-1;width:min(100%,195px);margin:0 0 2px}
+#dp-order-dialog .dp-order-actions .dp-order-stage select{padding:9px 10px;font-size:13px;min-height:40px}
+#dp-order-dialog .dp-order-actions :is(button,a){min-width:0;width:100%;min-height:46px;margin:0;padding:11px 10px;display:flex;align-items:center;justify-content:center;gap:7px;white-space:normal;font-size:13px;line-height:1.3;text-decoration:none;border-radius:10px;grid-column:auto}
+#dp-order-dialog .dp-order-actions :is(#dp-charge-order,#dp-print-order){background:#1765ce;border:1px solid #1056b7;color:#fff;box-shadow:none;font-weight:800}
+#dp-order-dialog .dp-order-actions :is(#dp-charge-order,#dp-print-order):hover{background:#1056b7}
+#dp-order-dialog .dp-order-actions .dp-whatsapp-order{background:#168344;border:1px solid #126f39;color:#fff;font-weight:800}
+#dp-order-dialog .dp-order-actions .dp-whatsapp-order:hover{background:#126f39}
+#dp-order-dialog .dp-whatsapp-order svg{width:19px;height:19px;flex-shrink:0}
+#dp-order-dialog .dp-order-actions #dp-delete-order{background:#ce2929;border:1px solid #b51e1e;color:#fff;font-weight:800}
+#dp-order-dialog .dp-order-actions #dp-delete-order:hover{background:#b51e1e}

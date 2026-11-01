@@ -7,6 +7,9 @@
   const money=v=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(v)||0);
   const date=v=>window.DonPierosDates.dateTime(v);
   const api=()=>window.DonPierosAdmin;
+  const orderDetails=()=>window.DonPierosOrderDetails;
+  const timeEdits=new Map();
+  function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order)orderDetails().decorate(node,['cancelada','despachada','cobrada'].includes(order.status)?'':order.notes,order.createdAt);});}
   const deletions=()=>window.DonPierosDeletions;
   const friendly=(value)=>window.DonPierosLanguage.message(value);
   const labels={nueva:'Nueva',atendiendo:'En preparación',lista:'Lista',despachada:'Despachada',cancelada:'Cancelada'};
@@ -283,6 +286,7 @@
     const rows=searchRows('list',orders),searching=!!searchState.list.query||searchState.list.status!=='active';
     const visibleTotal=adjustedCount(orders,total,searchState.list.status);
     $('#dp-orders-list').innerHTML=rows.map(orderCard).join('')||'<div class="dp-empty">No encontramos pedidos con esta búsqueda y estado.</div>';
+    decorateTimes($('#dp-orders-list'));
     $('#dp-page').textContent=visibleTotal?`${offset+1}–${Math.min(offset+60,visibleTotal)} de ${visibleTotal}`:'Sin pedidos';$('#dp-prev').disabled=offset===0;$('#dp-next').disabled=offset+60>=visibleTotal;
     $('#dp-page').closest('.dp-pagination').hidden=searching;
     $('#dp-list-result').textContent=searching?(searchJobs.has(searchState.list.status)?'Buscando en todos los pedidos…':`${rows.length} pedido${rows.length===1?'':'s'} encontrado${rows.length===1?'':'s'}`):'';
@@ -298,6 +302,7 @@
     const visible=source;
     $('#dp-dashboard-result').textContent=searching?`${source.length} pedido${source.length===1?'':'s'} encontrado${source.length===1?'':'s'}${searchJobs.has(searchState.dashboard.status)?' · Buscando en los demás pedidos…':''}`:'';
     $('#dp-dashboard-order-list').innerHTML=visible.map(orderCard).join('')||'<p class="dp-muted">No hay pedidos que coincidan con esta búsqueda y estado.</p>';
+    decorateTimes($('#dp-dashboard-order-list'));
   }
 
   function openOrder(id){
@@ -316,10 +321,17 @@
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
-      <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button><label>Papel<select id="dp-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label>${order.phone?`<a class="ghost" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
+      <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button>${order.phone?`<a class="ghost dp-whatsapp-order" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
+    const whatsapp=$('#dp-order-detail .dp-whatsapp-order');
+    if(whatsapp){whatsapp.textContent='WhatsApp';whatsapp.insertAdjacentHTML('afterbegin','<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.5 3.5A11.8 11.8 0 0 0 1.9 17.7L.2 24l6.5-1.7A11.8 11.8 0 0 0 24 11.9c0-3.2-1.2-6.1-3.5-8.4ZM12 21.7a9.8 9.8 0 0 1-5-1.4l-.4-.2-3.9 1 1-3.8-.2-.4A9.8 9.8 0 1 1 12 21.7Zm5.4-7.3c-.3-.1-1.7-.8-2-.9-.2-.1-.4-.1-.6.2-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1a8 8 0 0 1-3.9-3.4c-.3-.4.3-.4.8-1.4.1-.2.1-.4 0-.6l-.9-2.1c-.2-.6-.5-.5-.7-.5H8c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.7 1.2 2.9c.1.2 2 3 4.8 4.2 1.8.8 2.5.9 3.4.8.6-.1 1.7-.7 1.9-1.4.3-.7.3-1.3.2-1.4-.1-.1-.3-.2-.6-.3Z"/></svg>');}
+    const timing=orderDetails().readTime(order.notes),noteParagraph=$('#dp-order-detail .dp-notes p');
+    if(noteParagraph){noteParagraph.textContent=timing.notes;noteParagraph.parentElement.hidden=!timing.notes;}
     if(['nueva','atendiendo','lista'].includes(order.status)){
-      $('#dp-order-detail .dp-order-actions').insertAdjacentHTML('afterbegin',`<label>Estado del pedido<select id="dp-change-order-stage">${[['nueva','Por atender'],['atendiendo','En preparación'],['lista','Listo']].map(([value,label])=>`<option value="${value}" ${order.status===value?'selected':''}>${label}</option>`).join('')}</select></label>`);
+      $('#dp-order-detail .dp-order-products').insertAdjacentHTML('beforeend',`<form class="order-time-form" id="dp-order-time-form"><label>Tiempo estimado<input name="estimated_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(timeEdits.get(id)??timing.time)}"></label><label class="order-observations-field">Observaciones<textarea name="order_observations" maxlength="1000" rows="2" placeholder="Indicaciones para este pedido…">${esc(timing.notes)}</textarea></label><button class="ghost" type="submit">Guardar tiempo y observaciones</button></form>`);
+      $('#dp-order-time-form input').oninput=event=>timeEdits.set(id,event.target.value);
+      $('#dp-order-time-form').onsubmit=event=>{event.preventDefault();const time=event.currentTarget.estimated_time.value.trim(),observations=event.currentTarget.order_observations.value.trim();timeEdits.delete(id);void mutateOrder(order,{...order,notes:orderDetails().withTime(orderDetails().withTime(observations,timing.time,timing.startedAt),time)},'dp_order_time',{estimatedTime:time,observations});};
+      $('#dp-order-detail .dp-order-actions').insertAdjacentHTML('afterbegin',`<label class="dp-order-stage">Estado del pedido<select id="dp-change-order-stage">${[['nueva','Por atender'],['atendiendo','En preparación'],['lista','Listo']].map(([value,label])=>`<option value="${value}" ${order.status===value?'selected':''}>${label}</option>`).join('')}</select></label>`);
       $('#dp-change-order-stage').onchange=event=>void mutateOrder(order,{...order,status:event.target.value},'dp_update_order',{status:event.target.value});
     }
     $('#dp-order-detail .dp-detail-lines').querySelectorAll('article').forEach((row,index)=>{
@@ -335,8 +347,7 @@
     }
     if($('#dp-charge-order'))$('#dp-charge-order').onclick=()=>void checkoutOrder(id);
     $('#dp-delete-order').onclick=()=>void deleteOrder(id);
-    $('#dp-print-order').onclick=()=>printOrder(order,Number($('#dp-print-width').value));
-    $('#dp-print-width').setAttribute('data-dp-paper','');$('#dp-print-width').value=String(paperWidth);
+    $('#dp-print-order').onclick=()=>printOrder(order,paperWidth);
     const dialog=$('#dp-order-dialog');
     $('#dp-order-detail h2').id='dp-order-title';
     dialog.querySelector('.dp-dialog-card').scrollTop=0;
@@ -421,7 +432,7 @@
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
       ${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
-      </main></body></html>`);d.close();
+      </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',order.items,order.notes);
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
     void window.DonPierosThermal.print(popup,width).catch(error=>{

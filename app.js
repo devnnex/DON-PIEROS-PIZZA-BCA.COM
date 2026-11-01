@@ -5533,7 +5533,7 @@ const App = (() => {
       : { kind: "client", name: "" };
   };
 
-  const requestBody = (request) => String(request.message || "");
+  const requestBody = (request) => String(request.message || "").replace(/^Tiempo asignado:.*(?:\r?\n|$)/gm,'');
 
   const requestGroupDetailsHtml = (request) => {
     if (!["song", "chat"].includes(request.kind) || request.count < 2) return "";
@@ -5647,6 +5647,7 @@ const App = (() => {
     const visible=rows.filter(session=>!board||board.matches('individual',session)).sort((a,b)=>board?board.compare(a,b):String(a.opened_at).localeCompare(String(b.opened_at)));
     grid.innerHTML=visible.map(session=>`<button type="button" class="compact-table-tile occupied individual-sale-tile" data-open-individual="${escapeHTML(session.id)}"><strong>${escapeHTML(individualSaleTitle(session))}</strong><span>${escapeHTML(session.payer_name||'Cliente individual')}</span><small>${money(sessionTotal(session))}</small><small>${escapeHTML(prettyDateTime(session.opened_at))}</small><em>Pendiente de cobro</em></button>`).join('')||'<p class="muted">No hay ventas individuales pendientes con este filtro.</p>';
     if($("#individualSalesCount"))$("#individualSalesCount").textContent=String(rows.length);
+    grid.querySelectorAll('[data-open-individual]').forEach(node=>{const session=rows.find(row=>row.id===node.dataset.openIndividual);if(session)window.DonPierosOrderDetails?.decorate(node,session.order_notes,session.opened_at);});
   };
 
   const renderServiceTables = () => {
@@ -9508,6 +9509,8 @@ const App = (() => {
 
   const renderAdminLive = () => {
     renderIndividualSales();
+    const form=$("#consumptionForm"),preview=$("#tableConsumptionPreview"),session=state.sessions.find(row=>row.id===form?.session_id.value);
+    if($("#consumptionDialog")?.open&&session&&preview&&preview.dataset.sessionSnapshot!==JSON.stringify(session.session_items||[])){const scroll=preview.scrollTop;renderTableConsumptionPreview(session);preview.scrollTop=scroll;}
     renderAdminShell();
     renderAlerts();
     if (state.activeAdminSection === "dashboard" && tablesSignature() !== state.tableRenderSignature) renderTables();
@@ -10194,6 +10197,10 @@ const App = (() => {
     if(form.individual_customer)form.individual_customer.value=session.payer_name==='Cliente individual'?'':session.payer_name||'';
     if($("#individualCustomerField"))$("#individualCustomerField").hidden=!manualSale;
     if($("#individualSaleActions"))$("#individualSaleActions").hidden=!manualSale;
+    if($("#individualTimeField"))$("#individualTimeField").hidden=!manualSale;
+    if(form.individual_estimated_time)form.individual_estimated_time.value=window.DonPierosOrderDetails?.readTime(session.order_notes).time||'';
+    if($("#individualObservationField"))$("#individualObservationField").hidden=!manualSale;
+    if(form.individual_observations)form.individual_observations.value=window.DonPierosOrderDetails?.readTime(session.order_notes).notes||'';
     form.mixed_method_one.value = "cash";
     form.mixed_method_two.value = "transfer";
     form.dataset.hasItems = activeItems.length ? "1" : "0";
@@ -10209,6 +10216,7 @@ const App = (() => {
     if (paymentLines) paymentLines.innerHTML = activeItems.length
       ? activeItems.map((item) => `<div class="${quickSale && state.individualProductFlashes?.get(item) > Date.now() ? "consumption-just-added" : ""}"><span>${Number(item.quantity || 0)} &times; ${escapeHTML(item.item_name)}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong>${manualSale?`<button class="ghost small" type="button" data-edit-individual-line="${escapeHTML(item.id)}">Editar</button>`:''}</div>`).join("")
       : '<p class="payment-empty-sale">Agrega el producto para continuar con el cobro.</p>';
+    paymentLines?.querySelectorAll(':scope > div').forEach((row,index)=>{const note=activeItems[index]?.notes;if(note){const text=document.createElement('p');text.className='individual-line-notes';text.textContent=window.DonPierosOrderDetails?.readTime(note).notes||note;row.append(text);}});
     const addItemButton = $("#paymentAddItem");
     if (addItemButton) {
       addItemButton.hidden = !quickSale||!!session.web_order_id;
@@ -10264,7 +10272,8 @@ const App = (() => {
     if(!session||!sessionHasConsumption(session))return;
     session.payer_name=$("#paymentForm").individual_customer.value.trim()||session.payer_name;persistWalkInDrafts();
     const popup=window.open('','_blank','width=420,height=720');if(!popup)return toast('Permite ventanas emergentes para imprimir.','error');
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:74mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${session.session_items.filter(line=>line.status!=='cancelled').map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>${money(line.unit_price)} c/u · ${money(Number(line.unit_price)*Number(line.quantity))}</p>${line.notes?`<p>${escapeHTML(line.notes)}</p>`:''}</article>`).join('')}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:74mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${session.session_items.filter(line=>line.status!=='cancelled').map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>${money(line.unit_price)} c/u · ${money(Number(line.unit_price)*Number(line.quantity))}</p>${String(line.notes||'').split(/\r?\n/).filter(Boolean).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
     void window.DonPierosThermal.print(popup,80).catch(error=>toast(String(error.message||error),'error'));
   };
 
@@ -10963,7 +10972,11 @@ const App = (() => {
     preview.hidden = quickCheckout || (window.matchMedia("(max-width: 640px)").matches && !previewWasVisible);
     $("#consumptionLayout")?.classList.toggle("without-consumption-preview", quickCheckout);
     preview.innerHTML = `<div class="table-consumption-preview-head"><span class="table-consumption-preview-title"><span>Consumo actual</span><small>${productCount.toLocaleString("es-CO")} ${productCount === 1 ? "producto" : "productos"}</small></span><strong>${money(session ? sessionTotal(session) : 0)}</strong></div><div class="table-consumption-preview-lines">${items.map((item) => { const formatted = formatConsumptionTimestamp(item.created_at); return `<button class="table-consumption-edit" type="button" data-consumption-item="${escapeHTML(item.id)}" data-edit-current-consumption="${escapeHTML(item.id)}" data-session-id="${escapeHTML(session.id)}" aria-label="Editar ${escapeHTML(item.item_name)}" aria-pressed="${$("#consumptionForm")?.session_item_id.value === item.id}"><span class="table-consumption-item"><span>${Number(item.quantity || 0)} × ${escapeHTML(item.item_name)}</span>${formatted ? `<time datetime="${escapeHTML(item.created_at)}">${escapeHTML(formatted)}</time>` : ""}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong></button>`; }).join("") || "<small>Sin consumos registrados.</small>"}</div>`;
+    preview.querySelectorAll('[data-consumption-item]').forEach((row,index)=>{const item=items[index],note=item.waiter_line_notes||item.notes;if(note){const text=document.createElement('small');text.className='consumption-observation';text.textContent=window.DonPierosOrderDetails?.readTime(note).notes||note;row.querySelector('.table-consumption-item')?.append(text);}});
+    const orderNotes=window.DonPierosWaiter?.getSessionObservations?.(session?.id)||[];
+    if(orderNotes.length)preview.insertAdjacentHTML('beforeend',`<div class="table-order-notes">${orderNotes.map(note=>`<p>Observaciones de comanda: ${escapeHTML(note)}</p>`).join('')}</div>`);
     if (session) preview.innerHTML += abonoRowsHtml(session) + (sessionPaid(session) ? `<div class="account-abono-summary">Saldo pendiente: ${money(sessionBalance(session))}</div>` : "");
+    preview.dataset.sessionSnapshot=JSON.stringify(session?.session_items||[]);
     if (!quickCheckout) setTableConsumptionPreviewVisible(Boolean(previewWasVisible));
   };
 
@@ -12377,6 +12390,14 @@ const App = (() => {
       if (event.target.name === "mixed_method_one" || event.target.name === "mixed_method_two") syncMixedMethods(event.target.name);
     });
     $("#paymentForm")?.addEventListener("input", (event) => {
+      if(event.target.name==='individual_observations'){
+        const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
+        if(isLocalWalkInSession(session)&&!session.web_order_id){const info=window.DonPierosOrderDetails.readTime(session.order_notes);session.order_notes=window.DonPierosOrderDetails.withTime(event.target.value,info.time,info.startedAt);state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
+      }
+      if(event.target.name==='individual_estimated_time'){
+        const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
+        if(isLocalWalkInSession(session)&&!session.web_order_id){session.order_notes=window.DonPierosOrderDetails.withTime(session.order_notes,event.target.value);state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
+      }
       if(event.target.name==='individual_customer'){
         const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
         if(isLocalWalkInSession(session)&&!session.web_order_id){session.payer_name=event.target.value.trim()||'Cliente individual';state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
@@ -12805,7 +12826,7 @@ const App = (() => {
       if (target.id === "paymentAddItem") {
         const sessionId = $("#paymentForm")?.session_id?.value || "";
         $("#paymentDialog")?.close();
-        openConsumptionDialog(sessionId, { quickCheckout: true });
+        window.DonPierosWaiter.chooseIndividualProduct(sessionId);
       }
       if (target.dataset.cancelConsumption !== undefined) cancelConsumption();
       if (target.dataset.cancelPayment !== undefined) cancelPayment();
@@ -13887,6 +13908,17 @@ const App = (() => {
     };
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+    openIndividualSale: openPaymentDialog,
+    addIndividualProduct: (sessionId,line) => {
+      const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
+      if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)throw Error('Esta venta ya no está disponible para agregar productos.');
+      const notes=[...(line.options?.labels||[]),line.notes].filter(Boolean).join('\n');
+      if(!line.name||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99||!Number.isSafeInteger(line.unit_price)||line.unit_price<0||notes.length>500)throw Error('Revisa los datos del producto.');
+      const now=new Date().toISOString(),matched=state.items.find(item=>item.id===line.product_id);
+      session.session_items.push({id:line.id,session_id:sessionId,table_id:null,menu_item_id:matched?.id||null,web_product_id:line.product_id,item_name:line.name,quantity:line.quantity,unit_price:line.unit_price,notes,waiter_options:line.options,status:'served',created_at:now,updated_at:now});
+      session.updated_at=now;state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
+      persistWalkInDrafts();renderAdminLive();
+    },
     refreshReception: () => {renderIndividualSales();renderAlerts();},
     openWebOrderCheckout,
     editTableConsumption: editConsumption,

@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.7.0-donpieros",
+  version: "3.8.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1782,13 +1782,14 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
   var user = validateSupabaseUser_(request.authToken);
-  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order'].indexOf(action)>=0) {
+  if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order','dp_order_time'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
     if (action === 'dp_get_orders') return dpOrders_(payload);
     if (action === 'dp_get_order') return Object.assign(dpGetOrder_(payload),{checkoutAvailable:true});
     if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user);
     if (action === 'dp_edit_order') return dpEditOrder_(payload,user);
+    if (action === 'dp_order_time') return dpOrderTime_(payload,user);
     return dpUpdateOrder_(payload,user);
   }
   requireSection_(user,'inventory');
@@ -2038,6 +2039,31 @@ function dpUpdateOrder_(payload,user) {
   });
   dpSignalOrder_('order-updated',payload.id);
   return result;
+}
+
+function dpOrderTime_(payload,user) {
+  var text=String(payload.estimatedTime==null?'':payload.estimatedTime).trim();
+  if(text.length>80||/[\r\n\u0000-\u001f]/.test(text))throw new Error('Escribe un tiempo estimado de hasta 80 caracteres.');
+  if(payload.observations!=null&&(typeof payload.observations!=='string'||payload.observations.length>1000))throw new Error('Escribe observaciones de hasta 1000 caracteres.');
+  var result=dpWithLock_(function(){
+    recoverPendingSaleJournal_();
+    var found=dpWebSaleOrder_({webOrderId:dpText_(payload.id,100)}),order=found.order;
+    if(['nueva','atendiendo','lista'].indexOf(order.status)<0)throw new Error('Este pedido ya no está en recepción.');
+    var oldTime='',oldStart='';
+    var notes=String(order.notes||'').split(/\r?\n/).filter(function(line){var match=line.match(/^Tiempo estimado:[ \t]*(.*)$/i);if(match){oldTime=match[1].trim();return false;}match=line.match(/^Tiempo asignado:[ \t]*(.*)$/i);if(match){oldStart=match[1].trim();return false;}return true;}).join('\n').trim();
+    if(payload.observations!=null)notes=dpText_(payload.observations,1000).split(/\r?\n/).filter(function(line){return !/^Tiempo (?:estimado|asignado):/i.test(line);}).join('\n').trim();
+    notes=[notes,text?'Tiempo estimado: '+text:'',text?'Tiempo asignado: '+(oldTime===text&&oldStart?oldStart:new Date().toISOString()):''].filter(Boolean).join('\n');
+    if(notes===order.notes)return {ok:true,duplicate:true,order:order};
+    if(Number(order.version)!==Number(payload.version))throw new Error('El pedido cambió en otro equipo. Actualiza antes de editar.');
+    var row=found.cells,headers=DP_TABLES.orders.headers;
+    row[headers.indexOf('notes')]=dpCell_(notes);row[headers.indexOf('version')]=Number(order.version)+1;
+    row[headers.indexOf('updatedAt')]=new Date().toISOString();row[headers.indexOf('handledByName')]=dpCell_(user.full_name||user.username);
+    try{found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);SpreadsheetApp.flush();}
+    finally{PropertiesService.getScriptProperties().setProperty('DP_ORDERS_REVISION',Utilities.getUuid());}
+    appendAudit_('WEB_ORDER_TIME',order.id,user.full_name,'OK',text);
+    return {ok:true,order:dpObjects_('orders',[row])[0]};
+  });
+  dpSignalOrder_('order-updated',payload.id);return result;
 }
 
 function dpEditOrder_(payload,user) {
