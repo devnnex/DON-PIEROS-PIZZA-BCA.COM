@@ -9363,6 +9363,7 @@ const App = (() => {
         <div class="account-detail-total"><span>Saldo pendiente</span><strong>${money(total)}</strong></div>
       </div>
       <div class="invoice-actions account-detail-actions">
+        ${session.table_id ? `<button class="ghost small" type="button" data-print-table-comanda="${escapeHTML(session.table_id)}">${icon("printer", 15)} Imprimir comanda completa</button>` : ""}
         ${items.length ? `<button class="ghost abono-button" type="button" data-abono-session="${session.id}">${icon("hand-coins", 16)} Abonar</button>` : ""}
         ${items.length ? `<button class="ghost small" type="button" data-add-manual="${session.id}">${icon("plus", 15)} Consumo</button>` : `<button class="ghost small danger-text" type="button" data-close-session="${session.id}">${icon("door-open", 15)} Liberar mesa</button>`}
         ${session.sale_channel === "walk_in" || !session.table_id ? "" : `<button class="ghost small" type="button" data-move-session="${session.id}">${icon("replace", 15)} Cambiar mesa</button>`}
@@ -12841,6 +12842,11 @@ const App = (() => {
         $("#consumptionDialog")?.close();
         openPaymentDialog(sessionId);
       }
+      if (target.id === "printCompleteTableComanda") {
+        const form = $("#consumptionForm"), session = state.sessions.find(entry => entry.id === form?.session_id.value);
+        if (session?.table_id) void window.DonPierosWaiter.printCompleteTable(session.table_id);
+      }
+      if (target.dataset.printTableComanda) void window.DonPierosWaiter.printCompleteTable(target.dataset.printTableComanda);
       if (target.id === "paymentAddItem") {
         const sessionId = $("#paymentForm")?.session_id?.value || "";
         $("#paymentDialog")?.close();

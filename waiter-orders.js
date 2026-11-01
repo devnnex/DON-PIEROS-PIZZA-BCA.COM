@@ -417,14 +417,46 @@
       api().notify('No pudimos guardar la solicitud de retiro. '+errorText(error),'error');
     }
   }
+  const tablePrints=new Set();
+  async function printCompleteTable(tableId){
+    if(waiter()||!allowed()||tablePrints.has(tableId))return;
+    const currentToken=api().getToken(),popup=window.open('','_blank','width=480,height=720');
+    if(!popup){api().notify('Permite las ventanas emergentes para imprimir la comanda.','error');return;}
+    popup.document.title='Comanda completa';popup.document.body.textContent='Preparando comanda completa…';tablePrints.add(tableId);
+    try{
+      // Read orders before consumption: accepting an order between the reads
+      // must not print its products twice or leave them out.
+      const listed=await rpc('dp_list_waiter_comandas');if(listed.error)throw listed.error;
+      const snapshot=await rpc('get_admin_snapshot',{auth_token:currentToken});if(snapshot.error)throw snapshot.error;
+      if(currentToken!==api().getToken()||waiter()||!allowed())throw Error('La sesión cambió. Abre la mesa nuevamente.');
+      if(!Array.isArray(listed.data?.orders)||!Array.isArray(snapshot.data?.sessions))throw Error('No pudimos actualizar la comanda completa. Intenta de nuevo.');
+      const account=snapshot.data.sessions.find(session=>session.table_id===tableId&&session.status==='open');
+      if(!account)throw Error('Esta mesa ya no tiene una cuenta abierta.');
+      const removed=new Set(listed.data.orders.filter(isRemoved).map(order=>order.id));
+      const session={...account,session_items:(account.session_items||[]).filter(item=>!removed.has(item.waiter_comanda_id))};
+      const tableOrders=listed.data.orders.filter(order=>order.session_id===session.id&&order.table_id===tableId&&!removed.has(order.id)&&order.items.length);
+      const items=details().completeTableItems(session,tableOrders).map(item=>{
+        const packing=window.DonPierosPackaging.read(item.waiter_comanda_id||item.pending?item.waiter_line_notes:item.notes);
+        return {...item,waiter_line_notes:packing.notes,packagingSize:window.DonPierosPackaging.sizes[packing.size]||''};
+      });
+      if(!items.length)throw Error('Esta mesa todavía no tiene productos para imprimir.');
+      const notes=tableOrders.map(order=>{const info=details().readTime(order.notes);return [info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).length?`${order.waiter_name||'Comanda'}: `+[info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).join(' · '):'';}).filter(Boolean).join('\n');
+      let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
+      if(!popup.closed)renderKitchenPrint(popup,{table:operations().tables.find(table=>table.id===tableId)||session.restaurant_tables,items,notes,waiter_name:[...new Set(tableOrders.map(order=>order.waiter_name).filter(Boolean))].join(', ')||session.assigned_waiter?.full_name||'',updated_at:new Date().toISOString()},width,true);
+    }catch(error){if(!popup.closed)popup.close();api().notify(errorText(error),'error');}
+    finally{tablePrints.delete(tableId);}
+  }
   function printKitchen(id){
     const order=orders.find(row=>row.id===id);if(!order||!allowed())return;
     printWidth=$('#dw-print-width')?.value==='58'?58:80;
     try{localStorage.setItem('don_pieros_order_paper',String(printWidth));}catch(_){}
     const popup=window.open('','_blank','width=480,height=720');
     if(!popup){api().notify('Permite las ventanas emergentes para imprimir la comanda.','error');return;}
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(tableLabel(order.table))}</title><style>@page{size:${printWidth}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}body{width:${printWidth-6}mm;margin:0;font:16px/1.45 monospace;color:#000;background:#fff}h1{text-align:center;font-size:22px;margin:8px 0}header,footer{text-align:center}article{display:flex;gap:8px;padding:10px 0;border-top:1px dashed #000}article>b{font-size:22px}article div{flex:1}article strong{font-size:19px}p{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.notes{border:2px solid #000;padding:8px;margin:12px 0}footer{border-top:1px dashed #000;padding:12px 0}${window.DonPierosThermal.sizeStyle}</style></head><body><header><b>DON PIEROS PIZZA</b><h1>${esc(tableLabel(order.table))}</h1><p>Comanda de mesa · v${Number(order.version)}</p><p>${esc(order.waiter_name)}<br>${esc(window.DonPierosDates.dateTime(order.updated_at))}</p></header>${order.items.map(item=>`<article><b>${Number(item.quantity)} ×</b><div><strong>${esc(item.item_name)}</strong>${(item.waiter_options?.labels||[]).map(label=>{const option=window.DonPierosThermal.sizeOption(label);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}${item.waiter_line_notes?`<p><b>${esc(item.waiter_line_notes)}</b></p>`:''}</div></article>`).join('')}${order.notes?`<section class="notes"><b>Indicaciones para cocina</b><p>${esc(order.notes)}</p></section>`:''}<footer>Total: ${esc(money(total(order.items)))}</footer></body></html>`);
-    popup.document.close();details().prepareComanda(popup.document,'article',order.items,order.notes);void window.DonPierosThermal.print(popup,printWidth).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
+    renderKitchenPrint(popup,order,printWidth);
+  }
+  function renderKitchenPrint(popup,order,width,complete=false){
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(tableLabel(order.table))}</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}body{width:${width-6}mm;margin:0;font:16px/1.45 monospace;color:#000;background:#fff}h1{text-align:center;font-size:22px;margin:8px 0}header,footer{text-align:center}article{display:flex;gap:8px;padding:10px 0;border-top:1px dashed #000}article>b{font-size:22px}article div{flex:1}article strong{font-size:19px}p{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.notes{border:2px solid #000;padding:8px;margin:12px 0}footer{border-top:1px dashed #000;padding:12px 0}${window.DonPierosThermal.sizeStyle}</style></head><body><header><b>DON PIEROS PIZZA</b><h1>${esc(tableLabel(order.table))}</h1><p>${complete?'COMANDA COMPLETA DE LA MESA':'Comanda de mesa · v'+Number(order.version)}</p><p>${esc(order.waiter_name)}<br>${esc(window.DonPierosDates.dateTime(order.updated_at))}</p></header>${order.items.map(item=>`<article><b>${Number(item.quantity)} ×</b><div><strong>${esc(item.item_name)}</strong>${(item.waiter_options?.labels||[]).map(label=>{const option=window.DonPierosThermal.sizeOption(label);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}${complete&&item.pending?'<p>Pendiente de aceptar</p>':''}${item.waiter_line_notes?`<p><b>${esc(item.waiter_line_notes)}</b></p>`:''}</div></article>`).join('')}${order.notes?`<section class="notes"><b>Indicaciones para cocina</b><p>${esc(order.notes)}</p></section>`:''}<footer>Total: ${esc(money(total(order.items)))}</footer></body></html>`);
+    popup.document.close();details().prepareComanda(popup.document,'article',order.items,order.notes);void window.DonPierosThermal.print(popup,width).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
   }
   async function beginCatalogChoice(replacement=''){
     replacingLine=replacement;$('#dw-review-dialog').close();category='';query='';
@@ -552,5 +584,5 @@
   });
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});
-  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
+  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,printCompleteTable,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();

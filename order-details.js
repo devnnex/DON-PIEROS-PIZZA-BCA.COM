@@ -72,5 +72,15 @@
     if(!sizes.length&&fallback)sizes.push('Tamaño: '+fallback);
     return {sizes,others};
   }
-  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda};
+  function completeTableItems(session,comandas=[]){
+    if(!session||session.status!=='open')return [];
+    const items=[...new Map((session.session_items||[]).filter(item=>item.status!=='cancelled'&&Number(item.quantity)>0).map(item=>[item.id,{...item,pending:false}])).values()];
+    const consumed=new Set(items.map(item=>item.waiter_comanda_id).filter(Boolean));
+    for(const order of comandas){
+      if(order.session_id!==session.id||order.table_id!==session.table_id||order.accepted_at||consumed.has(order.id))continue;
+      for(const item of order.items||[])if(item.status!=='cancelled'&&Number(item.quantity)>0)items.push({...item,pending:true});
+    }
+    return items;
+  }
+  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda,completeTableItems};
 });
