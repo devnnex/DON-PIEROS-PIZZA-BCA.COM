@@ -19,6 +19,13 @@
     return {fee:fee(selected),size:selected,notes:text.slice(0,match.index).trim(),fulfillment:'pickup'};
   }
   function note(notes,selected,takeaway=!!fee(selected)){return [read(notes).notes,fee(selected)?`Para llevar · Caja ${sizes[selected]}: $${fee(selected)===4000?'4.000':'2.000'} c/u`:takeaway?'Recoger en local':''].filter(Boolean).join('\n');}
+  function breakdown(line={}){
+    const saved=read(line.waiter_line_notes??line.notes),quantity=Number(line.quantity)||0;
+    const packagingUnitFee=Number(line.packagingUnitFee??saved.fee)||0;
+    const included=line.unit_price!=null,raw=Number(included?line.unit_price:line.unitPrice)||0;
+    const unitPrice=Math.max(0,raw-(included?packagingUnitFee:0)),products=quantity*unitPrice,packagingTotal=quantity*packagingUnitFee;
+    return {quantity,unitPrice,products,packagingUnitFee,packagingSize:line.packagingSize||sizes[saved.size]||'',packagingTotal,total:products+packagingTotal,notes:saved.notes,fulfillment:saved.fulfillment};
+  }
   function draft(form,name,price,notes){
     const selected=form.elements.namedItem('packing_mode')?.value==='takeaway'&&/pizza|pizzeta/.test(normalize(name))?form.elements.namedItem('packing_size')?.value:'';
     return {unitPrice:Number(price)+fee(selected),notes:note(notes,selected,form.elements.namedItem('packing_mode')?.value==='takeaway')};
@@ -43,5 +50,5 @@
     form.addEventListener('input',()=>update(form));form.addEventListener('change',event=>{if(event.target.name==='packing_size')event.target.dataset.manual='1';update(form);});
     form.addEventListener('reset',()=>{delete form.elements.namedItem('packing_size').dataset.manual;queueMicrotask(()=>update(form));});update(form);
   }
-  return {sizes,size,fee,forProduct,read,note,draft,restore,update,mount};
+  return {sizes,size,fee,forProduct,read,note,breakdown,draft,restore,update,mount};
 });

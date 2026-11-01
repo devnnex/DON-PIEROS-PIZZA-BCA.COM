@@ -24,10 +24,21 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   const waiterContext=await account('waiter'),bossContext=await account('boss');
   const waiter=await waiterContext.newPage(),boss=await bossContext.newPage();
   for(const page of [waiter,boss]){page.on('pageerror',e=>errors.push(e.message));page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(60000);}
-  await waiter.goto('http://127.0.0.1:4173/admin.html#service');await waiter.locator('[data-dw-individual]').click();
+  await waiter.goto('http://127.0.0.1:4173/admin.html#service');await waiter.locator('[data-dw-individual]').waitFor();
+  assert.deepEqual(await waiter.locator('[data-dw-individual]').evaluate(button=>({background:getComputedStyle(button).backgroundColor,color:getComputedStyle(button).color})),{background:'rgb(23, 103, 213)',color:'rgb(255, 255, 255)'});
+  await waiter.locator('[data-dw-individual]').click();assert.equal(await waiter.locator('#dw-selection').isVisible(),false,'Un pedido vacío no muestra barra para enviar.');
+  assert.deepEqual((await waiter.locator('[data-dw-product] strong').allTextContents()).slice(0,2),['Pizza combinada','Pizza La Pamplonita']);
+  assert.match(await waiter.locator(`[data-dw-product="${pizza.id}"] img`).getAttribute('src'),/pizza-combinada.webp/);
   await waiter.locator(`[data-dw-product="${pizza.id}"]`).click();
   for(const id of [size.id,...flavors.map(f=>f.id)])await waiter.locator(`#dw-product-body input[value="${id}"]`).check();
+  assert.equal(await waiter.locator('#dw-fulfillment').inputValue(),'');await waiter.locator('#dw-add-product').click();
+  assert.equal(await waiter.evaluate(()=>document.activeElement.id),'dw-fulfillment');assert.match(await waiter.locator('.dw-fulfillment-field').getAttribute('class'),/dw-required-flash/);
+  assert.equal(await waiter.locator('#dw-fulfillment-status').innerText(),'Obligatorio');assert.equal(await waiter.locator('#dw-fulfillment').getAttribute('aria-invalid'),'true');
+  assert.match(await waiter.locator('#dw-fulfillment').evaluate(select=>getComputedStyle(select).animationName),/dw-required-border/);
+  await waiter.screenshot({path:'artifacts/mesero-entrega-faltante.png',fullPage:false});
+  assert.equal(await waiter.locator('#dw-product-dialog').evaluate(dialog=>dialog.open),true);
   await waiter.selectOption('#dw-fulfillment','pickup');await waiter.locator('[data-dw-quantity="1"]').click();await waiter.locator('#dw-line-notes').fill('Sin cebolla');await waiter.locator('#dw-add-product').click();
+  assert.equal(await waiter.locator('#dw-selection').isVisible(),true);await waiter.screenshot({path:'artifacts/mesero-entrega-obligatoria.png',fullPage:false});
   await waiter.locator('[data-dw-review]').click();await waiter.locator('#dw-individual-customer').fill('Laura mostrador');await waiter.locator('#dw-estimated-time').fill('20 minutos');await waiter.locator('#dw-order-notes').fill('Entregar juntas');
   await waiter.reload();await waiter.locator('[data-dw-individual]').click();assert.match(await waiter.locator('[data-dw-review]').innerText(),/2 productos/);
   await waiter.locator('[data-dw-review]').click();assert.equal(await waiter.locator('#dw-individual-customer').inputValue(),'Laura mostrador');assert.equal(await waiter.locator('#dw-order-notes').inputValue(),'Entregar juntas');
@@ -36,7 +47,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await waiter.locator('#dw-send-order').click();await waiter.locator('#dp-waiter-app [role=status]').waitFor();assert.equal(writes,2);assert.equal(h.call('dp_get_orders').orders.length,1);
   const order=h.call('dp_get_orders').orders[0];assert.equal(order.total,96000);assert.equal(order.items[0].quantity,2);assert.equal(order.waiterName,'Mesero');assert.match(order.notes,/Entregar juntas/);
   assert.equal(h.sheets.get('Ventas').rows.length,1,'Enviar una comanda no registra un cobro.');
-  await boss.goto('http://127.0.0.1:4173/admin.html#dashboard');await boss.locator('#newWalkInSale').waitFor();await boss.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
+  await boss.goto('http://127.0.0.1:4173/admin.html#dashboard');await boss.locator('#salesShiftDialog[open]').waitFor();await boss.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
   await boss.selectOption('#receptionSource','individual');
   const card=boss.locator(`#dp-dashboard-orders [data-dp-order="${order.id}"]`);await card.waitFor();assert.match(await card.innerText(),/Venta individual.*Mesero/);
   await card.locator('[data-dp-view]').click();assert.match(await boss.locator('#dp-order-detail').innerText(),/Sin cebolla/);

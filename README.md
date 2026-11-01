@@ -2,6 +2,8 @@
 
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.
 
+**Actualización v52:** entrega obligatoria con aviso en rojo en la carta de comandas; barra de envío oculta al estar vacía; venta individual con botón azul. Pizza combinada primero, con foto mitad champiñones y mitad hawaiana. WhatsApp, recepción y comandas desglosan productos, cajas y total, sin cajas para consumo local. El domicilio sin tarifa permanece **Por confirmar**. Publica Apps Script **3.15.0** y los archivos web v52; no requiere SQL adicional.
+
 **Actualización v51:** los meseros pueden tomar ventas individuales y enviar sus comandas a la recepción compartida para imprimir y cobrar desde caja. Publica Apps Script **3.14.0** conservando `/exec`. El acceso privado de mantenimiento se habilita mediante `supabase/install/08_ACCESO_MANTENIMIENTO.sql` y el generador local de credenciales; no vence y permite eliminar la propia cuenta. Consulta los pasos en [LEEME-IMPLEMENTACION.md](LEEME-IMPLEMENTACION.md).
 
 **Actualización de mesas:** ejecuta `supabase/install/07_COMANDAS_MESERO.sql` después de 01–06. El mesero toma pedidos con categorías, fotografías, tamaños y notas. Enviar deja la comanda pendiente; aceptar desde administración agrega sus productos al consumo de la mesa una sola vez. Administración y el mesero pueden corregir la misma comanda antes o después de aceptarla. Los consumos aceptados se cobran con la caja existente; la venta de artículos del inventario se conserva. Esta actualización no requiere volver a publicar Code.gs.

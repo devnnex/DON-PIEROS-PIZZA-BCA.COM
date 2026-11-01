@@ -6,12 +6,23 @@ function setup(){
  const [sizeGroup,flavorGroup]=product.modifiers;
  return {h,catalog,product,sizeGroup,flavorGroup,sizes:catalog.toppings.filter(t=>t.kind===sizeGroup.source),flavors:catalog.toppings.filter(t=>t.kind===flavorGroup.source)};
 }
-test('combinada junto a Pamplonita, cinco tamanos y todos los sabores de pizza sin bebidas',()=>{
+test('combinada primero, Pamplonita segunda, cinco tamanos y todos los sabores de pizza sin bebidas',()=>{
  const {catalog,product,sizes,flavors}=setup(),specials=catalog.products.filter(p=>p.category===product.category);
- const anchor=specials.findIndex(p=>p.name==='Pizza La Pamplonita');assert.equal(specials[anchor+1].id,product.id);
+ assert.equal(specials[0].id,product.id);assert.equal(specials[1].name,'Pizza La Pamplonita');
  assert.equal(sizes.length,5);assert.equal(flavors.length,22);assert.equal(new Set(flavors.map(t=>t.name.toLowerCase())).size,22);
  for(const name of ['La Pamplonita','Don Pieros','Hawaiana','Napolitana','Especial','Peperoni'])assert.ok(flavors.some(t=>t.name===name),name);
  assert.ok(!flavors.some(t=>/gaseosa|cerveza|panzerotti|lasa/i.test(t.name)));
+});
+
+test('reordena una instalación anterior una vez y conserva precios, disponibilidad y demás posiciones',()=>{
+ const {h,product}=setup(),pamplonita=h.call('dp_admin_catalog').products.find(p=>p.name==='Pizza La Pamplonita');
+ h.save('products',{...product,sort_order:10,price:35000,available:false});h.save('products',{...pamplonita,sort_order:5,price:49000});
+ const other=h.save('products',{name:'Producto propio',category:'Especiales',price:9000,sort_order:-5,available:true});
+ h.props.delete('DP_COMBINED_PIZZA_FIRST_V1');h.props.set('DP_SCHEMA_VERSION','old');h.context.ensureSystemReady_();
+ const catalog=h.call('dp_admin_catalog');assert.deepEqual(catalog.products.slice(0,2).map(p=>p.id),[product.id,pamplonita.id]);
+ assert.equal(catalog.products[0].price,35000);assert.equal(catalog.products[0].available,false);assert.equal(catalog.products[1].price,49000);
+ assert.equal(catalog.products.find(p=>p.id===other.id).sort_order,-5);
+ const before=JSON.stringify(h.sheets.get('Menu_Web').rows);h.props.set('DP_SCHEMA_VERSION','old');h.context.ensureSystemReady_();assert.equal(JSON.stringify(h.sheets.get('Menu_Web').rows),before);
 });
 test('cada tamano cobra una pizza, dos mitades y su caja por unidad; editar conserva ambas mitades',()=>{
  const {h,product,sizeGroup,flavorGroup,sizes,flavors}=setup(),prices=[32000,46000,63000,78000,96000];

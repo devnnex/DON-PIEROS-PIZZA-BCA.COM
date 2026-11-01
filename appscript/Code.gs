@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.14.0-donpieros",
+  version: "3.15.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -40,7 +40,7 @@ var HEADERS = {
   sales: [
     "sale_id", "factura", "session_id", "table_id", "mesa", "fecha", "responsable",
     "mesero", "subtotal", "descuento", "impuestos", "servicio", "total",
-    "forma_pago", "referencia_pago", "origen", "sincronizado_en", "cobrado_por", "cobrado_usuario_id", "pedido_web_id", "cobro_id", "entrega", "cobrado_rol"
+    "forma_pago", "referencia_pago", "origen", "sincronizado_en", "cobrado_por", "cobrado_usuario_id", "pedido_web_id", "cobro_id", "entrega", "cobrado_rol", "domicilio_por_confirmar"
   ],
   details: [
     "sale_id", "factura", "line_id", "menu_item_id", "producto", "cantidad",
@@ -720,7 +720,7 @@ function getIncomeReport_(filters) {
       date: String(row[5] instanceof Date ? row[5].toISOString() : row[5] || ""),
       payer: String(row[6] || ""),
       waiter: String(row[7] || ""),
-      cashier:String(row[17]||''),cashierId:String(row[18]||''),webOrderId:String(row[19]||''),fulfillment:String(row[21]||''),cashierRole:String(row[22]||''),
+      cashier:String(row[17]||''),cashierId:String(row[18]||''),webOrderId:String(row[19]||''),fulfillment:String(row[21]||''),cashierRole:String(row[22]||''),deliveryFeePending:row[23]===true,
       subtotal: asNumber_(row[8]),
       discount: asNumber_(row[9]),
       tax: asNumber_(row[10]),
@@ -1087,18 +1087,19 @@ function dpValidateWebSale_(invoice){
     var error=new Error(order.status==='cobrada'?'Este pedido ya fue cobrado. Revisa Ventas.':'El pedido fue eliminado.');error.retryable=false;error.alreadyPaid=order.status==='cobrada';throw error;
   }
   if(invoice.id!=='walk-in-web-'+order.id||invoice.sessionId!==invoice.id||invoice.saleChannel!=='walk_in'||!invoice.checkoutId)throw new Error('Identidad de cobro inválida.');
-  var delivery=order.deliveryFeePending?dpMoney_(invoice.webDeliveryFee):Number(order.deliveryFee||0);
+  var delivery=order.deliveryFeePending?0:Number(order.deliveryFee||0);
   var expected=Number(order.subtotal)+Number(order.packagingFee||0)+delivery;
   var subtotal=(invoice.items||[]).reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.unit_price);},0);
   var paid=(invoice.payments||[]).reduce(function(sum,p){return sum+Number(p.amount);},0);
   if(subtotal!==expected||Number(invoice.totals.total)-Number(invoice.tipAmount||0)!==expected||paid!==Number(invoice.totals.total))throw new Error('El importe del pedido cambió. Revisa el pedido antes de cobrar.');
   invoice.orderSource=order.source||'web';
+  invoice.deliveryFeePending=!!order.deliveryFeePending;
+  invoice.webDeliveryFee=delivery;
   if(order.source==='staff_walk_in'){invoice.waiterName=order.waiterName;invoice.table='Venta individual';}
 }
 function dpFinishWebSale_(invoice){
   var found=dpWebSaleOrder_(invoice),row=found.cells,headers=DP_TABLES.orders.headers;
   if(row[5]==='cobrada')return;
-  if(found.order.deliveryFeePending){row[11]=Number(invoice.webDeliveryFee);row[13]=Number(found.order.subtotal)+Number(found.order.packagingFee||0)+Number(invoice.webDeliveryFee);row[headers.indexOf('deliveryFeePending')]=false;}
   row[5]='cobrada';row[4]=new Date().toISOString();row[20]=safeText_(invoice.cashierName);row[21]=Number(row[21]||0)+1;
   found.sheet.getRange(found.row,1,1,headers.length).setValues([row]);
   var props=PropertiesService.getScriptProperties(),revision=Utilities.getUuid();props.setProperty('DP_ORDERS_REVISION',revision);props.setProperty('DP_HISTORY_REVISION',revision);props.setProperty('DP_MOVEMENT_REVISION',revision);props.setProperty('DP_INVENTORY_INITIALIZED','1');
@@ -1142,7 +1143,7 @@ function recordSale_(invoice, user, authToken) {
       asNumber_(totals.subtotal), asNumber_(totals.discount), asNumber_(totals.tax),
       asNumber_(totals.serviceFee), asNumber_(totals.total), safeText_(invoice.paymentMethod),
       safeText_(invoice.reference), invoice.orderSource==='staff_walk_in'?'Venta individual/AppScript':invoice.webOrderId?'Pedido en linea/AppScript':invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now,
-      safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role)
+      safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role),invoice.deliveryFeePending===true
     ]];
 
     var inventoryTable = readInventoryTable_();
@@ -1781,6 +1782,7 @@ function dpEnsureSheets_(spreadsheet) {
   });
   dpSeedInitialMenu_(spreadsheet);
   dpSeedCombinedPizza_(spreadsheet);
+  dpPrioritizeCombinedPizza_(spreadsheet);
 }
 
 function dpDispatch_(request) {
@@ -2010,7 +2012,9 @@ function dpPriceOrder_(raw,catalog) {
 }
 
 function dpOrderResult_(order,duplicate) {
-  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,packagingFee:Number(order.packagingFee)||0,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
+  return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,packagingFee:Number(order.packagingFee)||0,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate,
+    orderItems:(order.items||[]).map(function(item){return {productId:item.productId,name:item.name,quantity:item.quantity,unitPrice:item.unitPrice,
+      selections:item.selections||[],packagingSize:item.packagingSize||'',packagingUnitFee:Number(item.packagingUnitFee)||0,notes:item.notes||''};})};
 }
 
 function dpPriceStaffOrder_(raw,catalog) {
@@ -2069,7 +2073,7 @@ function dpCreateOrder_(raw,staffUser) {
     var active=metadata.filter(function(row){return ['nueva','atendiendo','lista'].indexOf(String(row[5]))>=0;});
     var id='DP-'+Utilities.formatDate(new Date(),'America/Bogota','yyyyMMdd')+'-'+String(sequence).padStart(4,'0');
     var order={id:id,request_id:raw.requestId,sequence:sequence,createdAt:now,updatedAt:now,status:'nueva',customerName:customerName,phone:phone,fulfillment:priced.fulfillment,address:priced.fulfillment==='delivery'?dpText_(raw.address,300):'',neighborhood:priced.neighborhood,deliveryFee:priced.deliveryFee,subtotal:priced.subtotal,total:priced.total,paymentMethod:priced.payment.name,paymentValue:priced.payment.account_value,notes:dpText_(raw.notes,1000),itemsJson:JSON.stringify(priced.items),queuePosition:active.length+1,ordersAhead:active.length,handledByName:'',version:1};
-    order.deliveryFeePending=priced.deliveryFeePending;order.packagingFee=priced.packagingFee;
+    order.deliveryFeePending=priced.deliveryFeePending;order.packagingFee=priced.packagingFee;order.items=priced.items;
     order.source=staffUser?'staff_walk_in':'web';order.waiterId=staffUser?staffUser.id:'';order.waiterName=staffUser?staffUser.full_name||staffUser.username:'';order.requestSignature=signature;
     try {
       sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
@@ -3474,7 +3478,7 @@ function dpCombinedPizzaMenu_(catalogProducts) {
     toppings.push({id:id,name:name,kind:flavorSource,price:0,available:true,sort_order:flavorIndex++,version:1});
   });
   return {product:{id:'b6f16d35-eabc-4d79-bef7-892d543228f6',name:'Pizza combinada',category:'Pizzas especiales',price:32000,
-    image_url:'',image_path:'',description:'Elige 2 sabores de pizza de la carta: mitad y mitad. Disponible en pizzeta, Mini, Mediana, Maxi y Super maxi.',badge:'2 sabores · 5 tamaños',featured:true,available:true,sort_order:1,
+    image_url:'',image_path:'',description:'Elige 2 sabores de pizza de la carta: mitad y mitad. Disponible en pizzeta, Mini, Mediana, Maxi y Super maxi.',badge:'2 sabores · 5 tamaños',featured:true,available:true,sort_order:0,
     modifiers:[{id:'dp-combined-size',name:'Elige el tamaño',source:sizeSource,required:true,min:1,max:1,usePrice:true},
       {id:'dp-combined-flavors',name:'Elige 2 sabores (mitad y mitad)',source:flavorSource,required:true,min:2,max:2,usePrice:false}],version:1},toppings:toppings};
 }
@@ -3492,13 +3496,31 @@ function dpSeedCombinedPizza_(spreadsheet) {
   definition=DP_TABLES.products;sheet=spreadsheet.getSheetByName(definition.name);rows=productRows;
   if(!rows.some(function(row){return String(row[0])===menu.product.id||normalizeSearch_(row[1])==='pizza combinada';})){
     var anchor=rows.filter(function(row){return String(row[0])==='cb53e3f4-d07b-524e-af1a-d829cf96dd36'||normalizeSearch_(row[1])==='pizza la pamplonita';})[0];
-    var position=anchor?Number(anchor[10]||0)+1:1;
+    var position=anchor?Number(anchor[10]||0):0;
     menu.product.category=anchor?String(anchor[2]||menu.product.category):menu.product.category;menu.product.sort_order=position;
-    rows.forEach(function(row){if(row!==anchor&&String(row[2])===menu.product.category&&Number(row[10]||0)>=position){row[10]=Number(row[10]||0)+1;row[12]=(Number(row[12])||0)+1;}});
+    rows.forEach(function(row){if(String(row[2])===menu.product.category&&Number(row[10]||0)>=position){row[10]=Number(row[10]||0)+1;row[12]=(Number(row[12])||0)+1;}});
     rows.push(definition.headers.map(function(header){return header==='modifiers'?JSON.stringify(menu.product.modifiers):menu.product[header];}));
     sheet.getRange(2,1,rows.length,definition.headers.length).setValues(rows);
   }
   SpreadsheetApp.flush();dpInvalidateCatalog_();properties.setProperty('DP_COMBINED_PIZZA_LOADED','1');
+}
+
+// Apply the requested first two positions once; later menu edits remain editable.
+function dpPrioritizeCombinedPizza_(spreadsheet){
+  var props=PropertiesService.getScriptProperties();if(props.getProperty('DP_COMBINED_PIZZA_FIRST_V1')==='1')return;
+  var definition=DP_TABLES.products,sheet=spreadsheet.getSheetByName(definition.name),rows=readSheetRows_(sheet,definition.headers.length);
+  var combined=rows.filter(function(row){return String(row[0])==='b6f16d35-eabc-4d79-bef7-892d543228f6'||normalizeSearch_(row[1])==='pizza combinada';})[0];
+  if(!combined)return;
+  var anchor=rows.filter(function(row){return String(row[0])==='cb53e3f4-d07b-524e-af1a-d829cf96dd36'||normalizeSearch_(row[1])==='pizza la pamplonita';})[0];
+  var rest=rows.filter(function(row){return row[0]&&row!==combined&&row!==anchor;});
+  var first=Math.min.apply(null,[0].concat(rest.map(function(row){return Number(row[10]||0)-2;})));
+  var ordered=[combined].concat(anchor?[anchor]:[]),changed=false;
+  ordered.forEach(function(row,index){
+    var category=row===combined&&anchor?anchor[2]:row[2];
+    if(Number(row[10])!==first+index||row[2]!==category){row[10]=first+index;row[2]=category;row[12]=(Number(row[12])||0)+1;changed=true;}
+  });
+  if(changed){sheet.getRange(2,1,rows.length,definition.headers.length).setValues(rows);SpreadsheetApp.flush();dpInvalidateCatalog_();}
+  props.setProperty('DP_COMBINED_PIZZA_FIRST_V1','1');
 }
 
 // Carga inicial de la carta proporcionada por Don Pieros Pizza.

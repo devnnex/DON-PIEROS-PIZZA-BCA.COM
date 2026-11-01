@@ -13,7 +13,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await context.addInitScript(()=>{localStorage.setItem('waiter_alarm_enabled','0');window.navigation.addEventListener('navigate',event=>{if(event.destination.url.includes('whatsapp.com'))event.preventDefault();});});
   const client=await context.newPage();client.on('pageerror',error=>errors.push(error.message));client.setDefaultNavigationTimeout(60000);
   await client.goto('http://127.0.0.1:4173/');await client.locator('#welcome-close').click();await client.locator('[data-category="Pizzas especiales"]').click();
-  const clientNames=await client.locator('[data-product] h3').allTextContents();assert.deepEqual(clientNames.slice(0,2),['Pizza La Pamplonita','Pizza combinada']);
+  const clientNames=await client.locator('[data-product] h3').allTextContents();assert.deepEqual(clientNames.slice(0,2),['Pizza combinada','Pizza La Pamplonita']);
   await client.locator(`[data-product="${combo.id}"]`).click();
   assert.equal(await client.locator('#add-product').getAttribute('aria-disabled'),'true');
   const pick=async id=>client.locator(`#product-detail input[value="${id}"]`).check();
@@ -35,8 +35,8 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await admin.locator('#dw-add-product').click();await admin.locator('#dp-order-dialog[open]').waitFor();assert.match(await admin.locator('.dp-total').innerText(),/100.000/);
   const edited=h.call('dp_get_order',{id:order.id}).order;assert.equal(edited.items[0].unitPrice,96000);assert.deepEqual(edited.items[0].selectionIds[flavorGroup.id],[first.id,third.id]);
   await admin.locator('#dp-order-dialog [data-dp-close]').click();await admin.locator('#newWalkInSale').click();await admin.locator('#paymentAddItem').click();
-  assert.deepEqual((await admin.locator('#dw-manager-products [data-dw-product] strong').allTextContents()).slice(0,2),['Pizza La Pamplonita','Pizza combinada']);
-  await admin.locator(`#dw-manager-products [data-dw-product="${combo.id}"]`).click();await admin.locator(`#dw-product-body input[value="${size('Pizzeta').id}"]`).check();await admin.locator(`#dw-product-body input[value="${first.id}"]`).check();await admin.locator('#dw-add-product').click();assert.match(await admin.locator('#dw-product-error').innerText(),/obligatorias/);
+  assert.deepEqual((await admin.locator('#dw-manager-products [data-dw-product] strong').allTextContents()).slice(0,2),['Pizza combinada','Pizza La Pamplonita']);
+  await admin.locator(`#dw-manager-products [data-dw-product="${combo.id}"]`).click();await admin.locator(`#dw-product-body input[value="${size('Pizzeta').id}"]`).check();await admin.locator(`#dw-product-body input[value="${first.id}"]`).check();await admin.selectOption('#dw-fulfillment','pickup');await admin.locator('#dw-add-product').click();assert.match(await admin.locator('#dw-product-error').innerText(),/obligatorias/);
   await admin.locator(`#dw-product-body input[value="${third.id}"]`).check();await admin.selectOption('#dw-fulfillment','pickup');assert.match(await admin.locator('#dw-packaging-summary').innerText(),/Pizzeta/);
   await admin.screenshot({path:'artifacts/pizza-combinada-aplicacion.png',fullPage:false});await admin.locator('#dw-add-product').click();await admin.locator('#paymentDialog[open]').waitFor();assert.match(await admin.locator('#paymentDialog').innerText(),/La Pamplonita[\s\S]*Mexicana/);assert.match(await admin.locator('#paymentTotal').innerText(),/34.000/);
   assert.deepEqual(errors,[]);console.log('OK: combinada junto a Pamplonita en cliente y aplicacion, dos sabores obligatorios, pizzeta, cajas, pedido web, edicion a Super maxi, impresion y venta individual.');

@@ -348,7 +348,7 @@
           ${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}
         </section>
         <aside class="dp-order-summary"><section class="dp-order-customer"><small>DATOS DEL CLIENTE</small><h3>${esc(order.customerName)}</h3>${order.phone?`<a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a>`:''}<div class="dp-fulfillment-label">${fulfillmentLabel(order.fulfillment)}</div>${order.fulfillment==='delivery'?`<p><strong>Barrio:</strong> ${esc(order.neighborhood)}<br><strong>Dirección:</strong> ${esc(order.address)}</p>`:''}</section>
-          <div class="dp-totals">${order.packagingFee?`<p>Cajas para llevar <b>${money(order.packagingFee)}</b></p>`:''}${order.fulfillment==='delivery'?`<p>Productos <b>${money(order.subtotal)}</b></p><p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<small>${esc(order.paymentValue)}</small>`:''}</div>
+          <div class="dp-totals"><p>Productos <b>${money(order.subtotal)}</b></p>${order.packagingFee?`<p>Cajas para llevar <b>${money(order.packagingFee)}</b></p>`:''}${order.fulfillment==='delivery'?`<p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos y cajas':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<small>${esc(order.paymentValue)}</small>`:''}</div>
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
@@ -405,12 +405,7 @@
       const order=findOrder(id);
       if(!order||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya fue cobrado o retirado. Actualiza la recepción.');
       let fee=Number(order.deliveryFee||0);
-      if(order.deliveryFeePending){
-        const value=await window.DonPierosDialogs.prompt({title:'Confirmar domicilio',message:'Escribe el valor acordado del domicilio antes de cobrar el pedido.',label:'Valor en pesos colombianos',value:'0',accept:'Continuar al cobro'});
-        if(value===null)return;
-        if(!/^\s*\$?[\d.\s]+\s*$/.test(value))throw new Error('Escribe un valor de domicilio válido.');
-        fee=Number(value.replace(/[^\d]/g,''));if(!Number.isSafeInteger(fee)||fee<0||fee>100000000)throw new Error('Valor de domicilio inválido.');
-      }
+      if(order.deliveryFeePending)fee=0;
       $('#dp-order-dialog').close();api().openWebOrderCheckout(order,fee);
     }catch(error){notify(String(error.message||error),true);}finally{if(button?.isConnected)button.disabled=false;}
   }
@@ -465,8 +460,8 @@
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
       ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>Caja ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${item.selections.map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}</section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
-      <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio por confirmar</p>':''}
-      ${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
+      <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio: Por confirmar</p>':''}
+      <p>Productos: <strong>${money(order.subtotal)}</strong></p>${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}${order.fulfillment==='delivery'&&!order.deliveryFeePending?`<p>Domicilio: <strong>${money(order.deliveryFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS Y CAJAS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
       </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',order.items,order.notes);
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.

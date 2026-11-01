@@ -26,10 +26,15 @@ test('una respuesta perdida después del registro se recupera con la misma opera
  assert.equal(h.call('checkout_web_order',{invoice}).ok,false);
  assert.equal(h.call('checkout_web_order',{invoice}).ok,true);assert.equal(h.sheets.get('Ventas').rows.length,2);assert.equal(h.call('dp_get_orders').orders.length,0);
 });
-test('el cobro confirma un domicilio pendiente y admite propina sin cambiar el precio del pedido',()=>{
+test('cobra productos y cajas, mantiene el domicilio Por confirmar y admite propina',()=>{
  const {h,invoice,receipt}=setup({fulfillment:'delivery',address:'Calle 10 numero 20',neighborhood:'Barrio nuevo'});
- invoice.webDeliveryFee=5000;invoice.fulfillment='delivery';invoice.items.push({id:'delivery',item_name:'Domicilio',quantity:1,unit_price:5000});
- invoice.tipAmount=1000;invoice.totals.subtotal+=5000;invoice.totals.total+=6000;invoice.payments[0].amount=invoice.totals.total;
+ const bad=structuredClone(invoice);bad.webDeliveryFee=5000;bad.items.push({id:'delivery',item_name:'Domicilio',quantity:1,unit_price:5000});bad.totals.total+=5000;bad.payments[0].amount+=5000;
+ assert.equal(h.call('checkout_web_order',{invoice:bad}).ok,false);
+ invoice.webDeliveryFee=0;invoice.fulfillment='delivery';
+ invoice.tipAmount=1000;invoice.totals.total+=1000;invoice.payments[0].amount=invoice.totals.total;
  const result=h.call('checkout_web_order',{invoice});assert.equal(result.ok,true,result.error);
- const order=h.call('dp_get_order',{id:receipt.orderId}).order;assert.equal(order.deliveryFeePending,false);assert.equal(order.deliveryFee,5000);assert.equal(order.total,receipt.total+5000);
+ const order=h.call('dp_get_order',{id:receipt.orderId}).order;assert.equal(order.deliveryFeePending,true);assert.equal(order.deliveryFee,0);assert.equal(order.total,receipt.total);
+ assert.equal(h.sheets.get('Ventas').rows[1][23],true);
+ h.context.Utilities.formatDate=()=> '2026-10-30';
+ const report=h.call('get_income_report',{filters:{dateFrom:'2026-10-30',dateTo:'2026-10-30'}});assert.equal(report.ok,true,report.error);assert.equal(report.records[0].deliveryFeePending,true);
 });

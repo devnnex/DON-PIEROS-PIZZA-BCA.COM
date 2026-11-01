@@ -6103,11 +6103,12 @@ const App = (() => {
     if(state.paymentProcessing||checkoutSubmissionBusy)throw new Error('Hay un cobro en proceso; espera su confirmación.');
     if(!isManager())throw new Error('Tu usuario no tiene permiso para cobrar.');
     if(!order?.id||['cobrada','eliminada','cancelada'].includes(order.status))throw new Error('Este pedido ya no está disponible para cobrar.');
+    if(order.deliveryFeePending)deliveryFee=0;
     const id='walk-in-web-'+order.id;
     if(state.invoiceHistory.some(invoice=>invoice.webOrderId===order.id))throw new Error('Este pedido ya fue cobrado. Revisa Ventas.');
     const now=new Date().toISOString();
     const session={id,local_only:true,table_id:null,status:'open',sale_channel:'walk_in',web_order_id:order.id,
-      web_delivery_fee:deliveryFee,fulfillment:order.fulfillment,payer_name:order.customerName,
+      web_delivery_fee:order.deliveryFeePending?0:deliveryFee,delivery_fee_pending:!!order.deliveryFeePending,fulfillment:order.fulfillment,payer_name:order.customerName,
       order_source:order.source||'web',waiter_name:order.waiterName||'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
       session_items:order.items.map((line,index)=>{
         const sameName=state.items.filter(item=>normalizeText(item.name)===normalizeText(line.name));
@@ -6318,7 +6319,7 @@ const App = (() => {
         if (!snapshot?.ok || snapshot.stale || !Array.isArray(snapshot.records)) throw transientAppsScriptError("Falta conciliar la operacion rechazada.");
         const record = snapshot.records.find(row => String(row.saleId) === saleId);
         const invoice = record ? { id: record.saleId, sessionId: record.sessionId, number: record.invoice, table: record.table,
-          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',fulfillment:record.fulfillment||'',reference: record.reference,
+          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||'',reference: record.reference,
           payments: record.payments, paymentMethod: record.isMixed ? "mixed" : record.payments?.[0]?.method,
           totals: { total: record.total, subtotal: record.subtotal, discount: record.discount, tax: record.tax, serviceFee: record.service },
           items: (record.items || []).map(line => ({ id: line.lineId, menu_item_id: line.menuItemId, item_name: line.name,
@@ -8258,7 +8259,7 @@ const App = (() => {
         date: invoice.createdAt || new Date().toISOString(),
         payer: invoice.payerName || "",
         waiter: invoice.waiterName || "",
-        cashier:invoice.cashierName||'',cashierRole:invoice.cashierRole||'',webOrderId:invoice.webOrderId||'',fulfillment:invoice.fulfillment||'',
+        cashier:invoice.cashierName||'',cashierRole:invoice.cashierRole||'',webOrderId:invoice.webOrderId||'',deliveryFeePending:!!invoice.deliveryFeePending,fulfillment:invoice.fulfillment||'',
         subtotal: Number(invoice.totals?.subtotal || 0),
         discount: Number(invoice.totals?.discount || 0),
         tax: Number(invoice.totals?.tax || 0),
@@ -9189,7 +9190,7 @@ const App = (() => {
       createdAt: correctedDate.toISOString(),
       payerName: form.payer.value.trim(),
       waiterName: form.waiter.value.trim(),
-      cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',fulfillment:record.fulfillment||'',
+      cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||'',
       paymentMethod: selectedPaymentMethod,
       payments: correctedPayments,
       reference: form.reference.value.trim(),
@@ -10057,6 +10058,7 @@ const App = (() => {
           <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
           <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
           <span>Entrega:</span><strong>${invoice?.fulfillment==='delivery'?'Domicilio':items.some(item=>globalThis.DonPierosPackaging?.read(item.notes).fulfillment==='pickup')?'Recoger en local':'Para comer en mesa'}</strong>
+          ${invoice?.deliveryFeePending||session.delivery_fee_pending?'<span>Domicilio:</span><strong>Por confirmar</strong>':''}
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
           <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
@@ -10275,9 +10277,12 @@ const App = (() => {
     if(!session||!sessionHasConsumption(session))return;
     session.payer_name=$("#paymentForm").individual_customer.value.trim()||session.payer_name;persistWalkInDrafts();
     const popup=window.open('','_blank','width=420,height=720');if(!popup)return toast('Permite ventanas emergentes para imprimir.','error');
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:80mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:74mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${session.session_items.filter(line=>line.status!=='cancelled').map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>${money(line.unit_price)} c/u · ${money(Number(line.unit_price)*Number(line.quantity))}</p>${String(line.notes||'').split(/\r?\n/).filter(Boolean).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
+    const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
+    let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${line.packing.notes.split(/\r?\n/).filter(Boolean).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
-    void window.DonPierosThermal.print(popup,80).catch(error=>toast(String(error.message||error),'error'));
+    void window.DonPierosThermal.print(popup,width).catch(error=>toast(String(error.message||error),'error'));
   };
 
   const paymentFromForm = (form) => {
@@ -10398,7 +10403,7 @@ const App = (() => {
       createdAt: record.date,
       payerName: record.payer || "",
       waiterName: record.waiter || "",
-      cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',
+      cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',
       paymentMethod: record.isMixed || payments.length > 1 ? "mixed" : (payments[0]?.method || storedInvoice?.paymentMethod || "cash"),
       payments,
       reference: record.reference || "",
@@ -10415,7 +10420,7 @@ const App = (() => {
       id: invoice.sessionId,
       table_id: isWalkIn ? null : (storedInvoice?.tableId || "income-history"),
       sale_channel: isWalkIn ? "walk_in" : (storedInvoice?.saleChannel || "table"),
-      web_order_id:record.webOrderId||'',
+      web_order_id:record.webOrderId||'',delivery_fee_pending:!!record.deliveryFeePending,
       order_source:normalizeText(tableName)==='venta individual'?'staff_walk_in':'web',
       payer_name: record.payer || "",
       assigned_waiter: { full_name: record.waiter || "Equipo" },
@@ -10702,7 +10707,7 @@ const App = (() => {
       payerName: session.payer_name || "",
       waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
       cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
-      ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,fulfillment:session.fulfillment,orderSource:session.order_source,checkoutId:uid()}:{}),
+      ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,deliveryFeePending:!!session.delivery_fee_pending,fulfillment:session.fulfillment,orderSource:session.order_source,checkoutId:uid()}:{}),
       paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
       payments: aggregateAccountPayments(session, payment.payments),
       prepayments: sessionPayments(session),

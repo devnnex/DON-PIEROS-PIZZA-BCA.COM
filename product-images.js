@@ -3,7 +3,8 @@
   const normalize=value=>String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
   function example(product={}) {
     const name=normalize(product.name),category=normalize(product.category);let photo='pizza-clasica';
-    if(/panzerotti/.test(name))photo='panzerotti';
+    if(product.id==='b6f16d35-eabc-4d79-bef7-892d543228f6'||/pizza combinada/.test(name))photo='pizza-combinada';
+    else if(/panzerotti/.test(name))photo='panzerotti';
     else if(/lasana|bolonesa/.test(name))photo='lasana';
     else if(/cerveza|club colombia|aguila/.test(name))photo='cerveza';
     else if(/limonada/.test(name))photo='limonada';

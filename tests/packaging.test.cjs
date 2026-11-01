@@ -1,5 +1,17 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {harness}=require('./helpers/don-pieros-gas.cjs'),boxes=require('../packaging.js');
+
+test('el desglose impreso separa las cajas incluidas en ventas individuales y mesas y las cajas adicionales de pedidos web',()=>{
+ const note=boxes.note('Sin cebolla','maxi');
+ const individual=boxes.breakdown({quantity:2,unit_price:82000,notes:note});
+ const web=boxes.breakdown({quantity:2,unitPrice:78000,packagingUnitFee:4000,packagingSize:'Maxi',notes:'Sin cebolla'});
+ for(const line of [individual,web,boxes.breakdown({quantity:2,unit_price:82000,waiter_line_notes:note})]){
+  assert.equal(line.unitPrice,78000);assert.equal(line.products,156000);assert.equal(line.packagingTotal,8000);assert.equal(line.total,164000);assert.equal(line.packagingSize,'Maxi');assert.equal(line.notes,'Sin cebolla');
+ }
+ const complete=boxes.breakdown({quantity:2,unit_price:82000,waiter_line_notes:'Sin cebolla',packagingUnitFee:4000,packagingSize:'Maxi'});
+ assert.equal(complete.products,156000);assert.equal(complete.packagingTotal,8000);assert.equal(complete.total,164000);
+ assert.equal(boxes.breakdown({quantity:2,unit_price:78000,notes:''}).packagingTotal,0);
+});
 test('cajas por tamaño: servidor calcula cantidad, conserva recibo y no cobra en mesa',()=>{
  const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog');
  const pizza=catalog.products.find(p=>p.name==='Pizza Don Pieros'),sizeGroup=pizza.modifiers[0];

@@ -56,3 +56,15 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 @media(max-width:760px){#dw-kitchen-body .dw-review-lines strong{font-size:19px}}
 .dw-custom-field select{box-sizing:border-box;width:100%;min-width:0;padding:13px;border:1px solid #e6d3a6;border-radius:13px;background:#fffcf2;color:#2b2115;font:inherit;font-size:16px}
 #dw-packaging-summary{color:#247248;font-weight:650}
+#dw-selection[hidden]{display:none!important}
+#dp-waiter-app [data-dw-individual]{background:#1767d5;border-color:#1767d5;color:#fff;box-shadow:0 5px 16px #1767d52b}
+#dp-waiter-app [data-dw-individual] strong,#dp-waiter-app [data-dw-individual] small{color:#fff}
+#dp-waiter-app [data-dw-individual]:hover{background:#1257b8;border-color:#1257b8}
+.dw-fulfillment-field #dw-fulfillment-status{justify-self:start;color:#a6292d;background:#fff0ed;border-radius:8px;padding:3px 7px;font-weight:800}
+.dw-fulfillment-field.is-complete #dw-fulfillment-status{color:#167c44;background:#d9f5e4}
+.dw-fulfillment-field.is-invalid select{border:2px solid #d9232a;box-shadow:0 0 0 3px #d9232a22}
+.dw-required-flash select{animation:dw-required-border .45s ease-in-out 3}
+.dw-required-flash #dw-fulfillment-status{animation:dw-required-label .45s ease-in-out 3}
+@keyframes dw-required-border{0%,100%{border-color:#d9232a;box-shadow:0 0 0 3px #d9232a33}50%{border-color:#ffb4b8;box-shadow:0 0 0 6px #d9232a08}}
+@keyframes dw-required-label{0%,100%{background:#d9232a;color:#fff}50%{background:#ffe5e7;color:#b11a24}}
+@media(prefers-reduced-motion:reduce){.dw-required-flash select,.dw-required-flash #dw-fulfillment-status{animation:none}}
