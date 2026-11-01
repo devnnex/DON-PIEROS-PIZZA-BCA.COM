@@ -1,0 +1,47 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+const {PGlite}=require('@electric-sql/pglite'),{pgcrypto}=require('@electric-sql/pglite/contrib/pgcrypto');
+test('mantenimiento: credenciales privadas, permisos de jefe, lista protegida y eliminación propia',async()=>{
+ const db=new PGlite({extensions:{pgcrypto}});await db.waitReady;
+ try{
+  await db.exec(`create role anon;create role authenticated;create role service_role;create schema realtime;create schema storage;
+   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
+   create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text);alter table storage.objects enable row level security;
+   grant usage on schema storage to anon,authenticated;grant select,insert,update,delete on storage.objects to anon,authenticated;
+   create function realtime.send(jsonb,text,text,boolean) returns void language sql as $$select$$;create publication supabase_realtime;
+   create schema extensions;create extension pgcrypto with schema extensions;`);
+  const dir=path.join(__dirname,'../supabase/install');
+  for(const name of fs.readdirSync(dir).filter(f=>/^0[1-8]_.*\.sql$/.test(f)).sort())await db.exec(fs.readFileSync(path.join(dir,name),'utf8'));
+  const scalar=async(sql,args=[])=>(await db.query(sql,args)).rows[0].data;
+  await db.query("select dp_create_boss('Jefe QA','jefeqatest','1234')");
+  const boss=await scalar("select login('jefeqatest','1234') data");
+  const id=await scalar("select dp_provision_maintenance('soporte_temporal','123456789012') data");
+  await db.exec(fs.readFileSync(path.join(dir,'08_ACCESO_MANTENIMIENTO.sql'),'utf8'));
+  assert.equal(await scalar("select login('soporte_temporal',null) data"),null);
+  assert.equal(await scalar("select login('soporte_temporal','') data"),null);
+  assert.equal(await scalar("select login('soporte_temporal','999999999999') data"),null);
+  const support=await scalar("select login('soporte_temporal','123456789012') data");
+  assert.equal(support.user.role,'boss');assert.equal(support.user.is_maintenance,true);
+  assert.equal((await scalar('select get_current_user($1) data',[support.token])).is_maintenance,true);
+  const visible=await scalar('select list_users($1) data',[boss.token]);assert.equal(visible.length,1);assert.equal(visible.some(u=>u.id===id),false);
+  const all=await scalar('select list_users($1) data',[support.token]);assert.equal(all.length,2);assert.equal(JSON.stringify(all).includes('pin_hash'),false);
+  await assert.rejects(db.query('select delete_user($1,$2)',[boss.token,id]),/No puedes eliminar/);
+  await assert.rejects(db.query("select save_user($1,$2,'Intruso','nuevo','9999','boss',false,'[]')",[boss.token,id]),/No puedes modificar/);
+  await assert.rejects(db.query("select save_user($1,$2,'Jefe QA','jefeqatest','','waiter',true,'[]')",[boss.token,boss.user.id]),/Jefe/);
+  await assert.rejects(db.query('select delete_user($1,$2)',[support.token,boss.user.id]),/Jefe/);
+  await db.exec('set role anon');
+  await assert.rejects(db.query("select dp_provision_maintenance('otra','123456789012')"),/permission denied/);
+  await assert.rejects(db.query('select * from dp_maintenance_users'),/permission denied/);
+  assert.equal((await scalar('select list_users($1) data',[boss.token])).length,1);
+  await db.exec('reset role');
+  const saved=await scalar("select save_user($1,$2,'Mi soporte','soporte_temporal','','boss',true,'[]') data",[support.token,id]);
+  assert.equal(saved.is_maintenance,true);
+  await scalar("select save_user($1,gen_random_uuid(),'Mesero QA','meseroqa','1234','waiter',true,'[]') data",[support.token]);
+  assert.equal((await scalar('select list_users($1) data',[support.token])).length,3);
+  assert.equal((await scalar('select list_users($1) data',[boss.token])).length,2);
+  await assert.rejects(db.query('select delete_user($1,$2)',[boss.token,boss.user.id]),/propio usuario/);
+  assert.equal((await scalar('select delete_user($1,$2) data',[support.token,id])).deleted,true);
+  await assert.rejects(db.query('select get_current_user($1)',[support.token]),/sesi|Sesion|Usuario/i);
+  assert.equal(await scalar("select login('soporte_temporal','123456789012') data"),null);
+  assert.equal((await db.query('select count(*)::int n from dp_maintenance_users')).rows[0].n,0);
+ }finally{await db.close();}
+});

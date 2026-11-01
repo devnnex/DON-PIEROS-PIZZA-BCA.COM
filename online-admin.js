@@ -8,6 +8,7 @@
   const date=v=>window.DonPierosDates.dateTime(v);
   const api=()=>window.DonPierosAdmin;
   const orderDetails=()=>window.DonPierosOrderDetails;
+  const sourceLabel=order=>order.source==='staff_walk_in'?'Venta individual · '+(order.waiterName||'Mesero'):'Pedido en línea';
   const timeEdits=new Map();
   function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active);}});}
   const newestFirst=(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0)||(Number(b.sequence)||0)-(Number(a.sequence)||0);
@@ -31,7 +32,7 @@
     let text=searchText.get(order);
     if(text===undefined){
       text=normalize([order.id,order.sequence,order.customerName,order.phone,order.address,order.neighborhood,order.notes,
-        labels[order.status],fulfillmentLabel(order.fulfillment),order.paymentMethod,order.paymentValue,
+        sourceLabel(order),labels[order.status],fulfillmentLabel(order.fulfillment),order.paymentMethod,order.paymentValue,
         order.total,money(order.total),date(order.createdAt),...(order.items||[]).flatMap(item=>[item.name,item.quantity,item.notes,...(item.selections||[])])].join(' '));
       searchText.set(order,text);
     }
@@ -102,7 +103,7 @@
     const main=$('.admin-app');
     main.insertAdjacentHTML('beforeend',`
       <section class="panel dp-panel" id="onlineorders" data-admin-section="onlineorders">
-        <div class="section-head"><div><span class="eyebrow">Recepción de pedidos</span><h2>Pedidos web</h2><p id="dp-orders-status" role="status">Esperando conexión…</p></div><button class="ghost" id="dp-orders-refresh" type="button">↻ Actualizar</button></div>
+        <div class="section-head"><div><span class="eyebrow">Recepción de pedidos</span><h2>Pedidos recibidos</h2><p id="dp-orders-status" role="status">Esperando conexión…</p></div><button class="ghost" id="dp-orders-refresh" type="button">↻ Actualizar</button></div>
         <div class="dp-toolbar">${receptionFilters('list')}${paperControl()}<a class="ghost" href="index.html" target="_blank" rel="noopener">Abrir carta ↗</a></div>
         <p id="dp-list-result" class="dp-muted" role="status"></p><div class="dp-orders" id="dp-orders-list"></div><div class="dp-pagination"><button class="ghost" id="dp-prev">← Anteriores</button><span id="dp-page"></span><button class="ghost" id="dp-next">Siguientes →</button></div>
       </section>
@@ -240,7 +241,7 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status-actions"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
+  function orderCard(order){return `<article class="dp-order-card dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="Pedido ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status-actions"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(sourceLabel(order))}<br>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
   function overlayOrders(rows){
     const next=new Map(rows.map(row=>[row.id,row]));
     for(const [id,write] of orderWrites){
@@ -324,10 +325,10 @@
   function renderDashboard(rows,count){
     count=adjustedCount(rows,activeCount,'active');$('#dp-nav-count').textContent=count||'';
     const root=$('#dp-dashboard-orders');
-    if(!$('#dp-dashboard-order-list'))root.innerHTML=`<div class="section-head"><h3>Pedidos de la carta <span class="dp-count"></span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${receptionFilters('dashboard')}<p id="dp-dashboard-result" class="dp-muted" role="status"></p><div id="dp-dashboard-order-list"></div>`;
+    if(!$('#dp-dashboard-order-list'))root.innerHTML=`<div class="section-head"><h3>Pedidos recibidos <span class="dp-count"></span></h3><div class="dp-dashboard-controls">${paperControl()}<a href="#onlineorders">Ver todos →</a></div></div>${receptionFilters('dashboard')}<p id="dp-dashboard-result" class="dp-muted" role="status"></p><div id="dp-dashboard-order-list"></div>`;
     root.querySelector('.dp-count').textContent=count;
     const board=window.DonPierosReceptionBoard;
-    const source=searchRows('dashboard',rows).filter(order=>!board||board.matches('online',order)),searching=!!searchState.dashboard.query||searchState.dashboard.status!=='active';
+    const source=searchRows('dashboard',rows).filter(order=>!board||board.matches(order.source==='staff_walk_in'?'individual':'online',order)),searching=!!searchState.dashboard.query||searchState.dashboard.status!=='active';
     source.sort(board?board.compare:newestFirst);
     const visible=source;
     $('#dp-dashboard-result').textContent=searching?`${source.length} pedido${source.length===1?'':'s'} encontrado${source.length===1?'':'s'}${searchJobs.has(searchState.dashboard.status)?' · Buscando en los demás pedidos…':''}`:'';
@@ -352,6 +353,7 @@
         </aside>
       </div>
       <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button>${order.phone?`<a class="ghost dp-whatsapp-order" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
+    $('#dp-order-detail .eyebrow').textContent=sourceLabel(order);
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
     const whatsapp=$('#dp-order-detail .dp-whatsapp-order');
     if(whatsapp){whatsapp.textContent='WhatsApp';whatsapp.insertAdjacentHTML('afterbegin','<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.5 3.5A11.8 11.8 0 0 0 1.9 17.7L.2 24l6.5-1.7A11.8 11.8 0 0 0 24 11.9c0-3.2-1.2-6.1-3.5-8.4ZM12 21.7a9.8 9.8 0 0 1-5-1.4l-.4-.2-3.9 1 1-3.8-.2-.4A9.8 9.8 0 1 1 12 21.7Zm5.4-7.3c-.3-.1-1.7-.8-2-.9-.2-.1-.4-.1-.6.2-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1a8 8 0 0 1-3.9-3.4c-.3-.4.3-.4.8-1.4.1-.2.1-.4 0-.6l-.9-2.1c-.2-.6-.5-.5-.7-.5H8c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.7 1.2 2.9c.1.2 2 3 4.8 4.2 1.8.8 2.5.9 3.4.8.6-.1 1.7-.7 1.9-1.4.3-.7.3-1.3.2-1.4-.1-.1-.3-.2-.6-.3Z"/></svg>');}
@@ -458,7 +460,7 @@
       .total{font-size:12px;font-weight:900}.total-amount{display:block;font-size:21px}.total-amount small{font-size:10px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
       </style></head><body><main class="kitchen-ticket"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>COMANDA DE COCINA</strong></p>
       <div class="order-number">PEDIDO ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
-      <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
+      <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p>${esc(sourceLabel(order))}</p><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       ${order.fulfillment==='delivery'?`<p><strong>Barrio: ${esc(order.neighborhood)}</strong></p><p>Dirección: ${esc(order.address)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
       ${order.items.map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>Caja ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${item.selections.map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}</section>`).join('')}

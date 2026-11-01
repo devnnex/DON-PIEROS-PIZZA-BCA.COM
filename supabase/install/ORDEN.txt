@@ -2,6 +2,10 @@
 2. 02_ACTUALIZACIONES_NAPOLES.sql
 3. 03_DON_PIEROS.sql
 4. 04_PIN_4_A_12.sql (si ya ejecutaste el 03 anterior, ejecuta solo este para habilitar PIN de 4 a 12 números).
+5. 05_PEDIDOS_MESERO.sql
+6. 06_OPCIONES_QR.sql
+7. 07_COMANDAS_MESERO.sql
+8. 08_ACCESO_MANTENIMIENTO.sql (no crea una cuenta por defecto; aprovisionar desde SQL como propietario con el archivo privado generado por tools/create-maintenance-access.cjs).
 No ejecutar schema.sql aparte: ya está incluido en las migraciones.
 NO ejecutar backups/data_2026-09-03.sql ni backups/roles_2026-09-03.sql.
 Después: abre admin.html y crea tu Jefe.

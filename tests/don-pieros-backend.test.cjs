@@ -83,9 +83,9 @@ test('domicilio admite barrio escrito sin tarifa, lo conserva como pendiente y n
 
 test('la actualización de órdenes agrega el indicador sin cambiar pedidos anteriores',()=>{
  const h=harness(),p=h.product();h.call('createOrder',{order:h.order(p)});
- const sheet=h.sheets.get('Ordenes_Web');sheet.rows[0].pop();sheet.rows[1].pop();
+ const sheet=h.sheets.get('Ordenes_Web');sheet.rows[0].length=22;sheet.rows[1].length=22;
  const original=JSON.stringify(sheet.rows[1]);h.props.set('DP_SCHEMA_VERSION','3.2.0-donpieros');h.context.ensureSystemReady_();
- assert.equal(sheet.rows[0].at(-1),'packagingFee');assert.equal(JSON.stringify(sheet.rows[1]),original);
+ assert.equal(sheet.rows[0][23],'packagingFee');assert.equal(sheet.rows[0][24],'source');assert.equal(sheet.rows[0].at(-1),'requestSignature');assert.equal(JSON.stringify(sheet.rows[1]),original);
  assert.equal(h.call('dp_get_orders').orders[0].deliveryFeePending,false);
 });
 test('pedidos privados, roles, conflictos de versión y revisiones',()=>{

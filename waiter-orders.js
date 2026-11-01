@@ -24,6 +24,8 @@
   let writeRevision=0,reloadWanted=false,serviceReady=false;const localWrites=new Map();
   let printWidth=80,directLineEdit=false;
   let individualPick=null;
+  const individualTable='staff-walk-in';
+  let lastIndividual=null;
   let webPick=null;
   // Share the public menu cache with the storefront. Refresh in the background.
   const menuCache=()=>window.DonPierosPerformance;
@@ -43,7 +45,7 @@
   }
   const draftKey=()=>`dp_waiter_draft_v1:${api()?.getUser()?.id}:${selectedTable}`;
   function persist(){if(!draft||!selectedTable||draft.legacy)return;try{localStorage.setItem(draftKey(),JSON.stringify(draft));}catch(_){}}
-  function newDraft(){draft={id:crypto.randomUUID(),version:0,session_id:sessionFor(selectedTable)?.id||null,items:[],notes:'',pending:null};persist();renderSelection();}
+  function newDraft(){draft={id:crypto.randomUUID(),version:0,session_id:sessionFor(selectedTable)?.id||null,items:[],notes:'',pending:null,...(selectedTable===individualTable?{individual:true,customerName:''}:{})};persist();renderSelection();}
   function syncDraftSession(){
     if(!draft||!selectedTable||draft.legacy||draft.version||draft.pending||busy)return;
     const sessionId=sessionFor(selectedTable)?.id||null;
@@ -74,11 +76,18 @@
       const pending=orders.some(order=>!isRemoved(order)&&order.table_id===table.id&&!order.accepted_at&&order.items.length);
       return `<button class="dw-table ${items.length||pending?'is-occupied':''}" data-dw-table="${esc(table.id)}" type="button"><span class="dw-table-symbol" aria-hidden="true">▦</span><strong>${esc(tableLabel(table))}</strong><span>${units?`${units} productos · ${money(total(items))}`:pending?'Pedido pendiente de aceptar':'Lista para atender'}</span><small>${units||pending?'Ver pedido y consumo':'Tomar pedido'} <b>→</b></small></button>`;
     }).join('')||'<div class="dw-empty">No hay mesas disponibles. Pide al responsable que las agregue.</div>'}</div>`;
+    root.querySelector('.dw-home-head').insertAdjacentHTML('afterend',`<button class="dw-button dw-add-more" type="button" data-dw-individual><strong>＋ Venta individual</strong><small> Toma un pedido sin mesa y envía la comanda a caja.</small></button>${lastIndividual?`<p class="dw-edit-notice" role="status">Comanda ${esc(lastIndividual.orderId)} enviada a caja · ${money(lastIndividual.total)}</p>`:''}`);
+  }
+  function openStaffIndividual(){
+    if(!waiter()||!serviceReady||busy)return;
+    selectedTable=individualTable;tab='menu';category='';query='';restoreDraft();homeSignature='';renderTable();void loadCatalog();
+    root.scrollIntoView({block:'start',behavior:'instant'});
   }
   function renderTable(){
-    const table=operations().tables.find(t=>t.id===selectedTable);if(!table)return;
+    const table=selectedTable===individualTable?{table_name:'Venta individual'}:operations().tables.find(t=>t.id===selectedTable);if(!table)return;
     root.innerHTML=`<header class="dw-table-head"><button type="button" class="dw-back" data-dw-home>← Mesas</button><div><span class="eyebrow">Tomando pedido</span><h2>${esc(tableLabel(table))}</h2></div><button type="button" class="dw-account-shortcut" data-dw-tab="account">Ver consumo</button></header><div class="dw-tabs"><button type="button" data-dw-tab="menu" class="${tab==='menu'?'active':''}">Carta</button><button type="button" data-dw-tab="account" class="${tab==='account'?'active':''}">Consumo de la mesa</button></div><div id="dw-menu-view" ${tab==='menu'?'':'hidden'}><label class="dw-search"><span>Buscar un producto</span><input type="search" id="dw-product-search" placeholder="Pizza, bebida, lasaña…" value="${esc(query)}" autocomplete="off"></label><div class="dw-categories" id="dw-categories"></div><div class="dw-product-grid" id="dw-products"></div></div><div id="dw-account-view" ${tab==='account'?'':'hidden'}></div><div class="dw-order-footer" id="dw-selection"></div>`;
     renderProducts();renderAccount();renderSelection();
+    if(draft?.individual){root.querySelector('.dw-account-shortcut').hidden=true;root.querySelector('.dw-tabs').hidden=true;}
   }
   function renderProducts(){
     if(!$('#dw-products'))return;
@@ -241,6 +250,10 @@
     const locked=busy||!!draft.pending;
     $('#dw-review-body').innerHTML=`<header class="dw-dialog-head"><div><span class="eyebrow">${esc(tableLabel(operations().tables.find(t=>t.id===selectedTable)))}</span><h2 id="dw-review-title">${draft.version?'Editar comanda':'Revisar pedido'}</h2></div><button type="button" class="dw-close" data-dw-close aria-label="Cerrar">×</button></header>${draft.version?'<p class="dw-edit-notice">Los cambios actualizarán la misma comanda. No se enviará otra solicitud.</p>':''}<div class="dw-review-lines">${draft.items.map(item=>`<article><div><strong>${item.quantity} × ${esc(item.name)}</strong>${item.options.labels.map(label=>`<p>${esc(label)}</p>`).join('')}${item.notes?`<p class="dw-order-notes">${esc(item.notes)}</p>`:''}<small>${money(item.unit_price*item.quantity)}</small></div><div class="dw-line-actions"><button type="button" data-dw-edit-line="${esc(item.id)}" ${locked?'disabled':''}>Editar</button><button type="button" data-dw-replace-line="${esc(item.id)}" ${locked?'disabled':''}>Cambiar</button><button type="button" data-dw-remove-line="${esc(item.id)}" ${locked?'disabled':''}>Quitar</button></div></article>`).join('')||'<p class="dw-empty">Se retirarán todos los productos de esta comanda.</p>'}</div><label class="dw-notes-label">Notas para cocina <small>Opcional</small><textarea id="dw-order-notes" maxlength="500" placeholder="Indicaciones generales para este pedido…" ${locked?'disabled':''}>${esc(draft.notes)}</textarea></label><div class="dw-review-total"><span>Total de esta comanda</span><strong>${money(total(draft.items))}</strong></div><p id="dw-send-error" class="dw-error" role="alert">${draft.pending&&!busy?'Hay un envío pendiente de confirmar. Reintenta para comprobarlo sin duplicarlo.':''}</p><button class="dw-primary" type="button" id="dw-send-order" ${busy?'disabled':''}>${busy?'Guardando…':draft.pending?'Confirmar envío pendiente':draft.version?'Guardar cambios':'Enviar comanda'}</button>`;
     const info=details().readTime(draft.notes);
+    if(draft.individual){
+      $('#dw-review-body .eyebrow').textContent='Venta individual · enviar a caja';
+      $('#dw-review-body .dw-review-lines').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Nombre del cliente <small>Opcional</small><input id="dw-individual-customer" type="text" maxlength="80" placeholder="Cliente individual" value="${esc(draft.customerName||'')}" ${locked?'disabled':''}></label>`);
+    }
     $('#dw-order-notes').value=info.notes;
     $('#dw-order-notes').closest('label').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Tiempo estimado <small>Opcional</small><input id="dw-estimated-time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(info.time)}" ${locked?'disabled':''}></label>`);
     const add=document.createElement('button');add.type='button';add.className='dw-button dw-add-more';add.setAttribute('data-dw-add-extra','');add.textContent='＋ Agregar otro producto';add.disabled=locked;
@@ -314,6 +327,7 @@
   }
   async function sendOrder({finishQuietly=false}={}){
     if(busy||!draft||(!draft.items.length&&!draft.version))return;
+    if(draft.individual)return sendIndividualOrder();
     const sendingDraft=draft,currentToken=api().getToken();
     syncDraftSession();
     if(!draft.pending){draft.notes=details().withTime(details().withTime($('#dw-order-notes').value.trim(),details().readTime(draft.notes).time,details().readTime(draft.notes).startedAt),$('#dw-estimated-time').value);if(draft.notes.length>500){$('#dw-send-error').textContent='Acorta las observaciones para guardar también el tiempo estimado.';return;}draft.pending={p_operation_id:crypto.randomUUID(),p_comanda_id:draft.id,p_table_id:selectedTable,p_session_id:draft.session_id,p_expected_version:draft.version,p_items:clone(draft.items),p_notes:draft.notes};persist();}
@@ -341,6 +355,34 @@
       if(draft.version&&error?.code==='P0001'&&/cuenta ya se cerró/i.test(error.message||'')){leaveClosedDraft();return;}
       if(['P0001','PGRST202','42883','42P01','22P02','23514'].includes(error?.code)){draft.pending=null;persist();}
       review();$('#dw-send-error').textContent=errorText(error);void loadOrders();void api().refreshOperations();
+    }
+  }
+  async function sendIndividualOrder(){
+    const sendingDraft=draft,currentToken=api().getToken();
+    if(!draft.pending){
+      const info=details().readTime(draft.notes);
+      draft.notes=details().withTime(details().withTime($('#dw-order-notes').value.trim(),info.time,info.startedAt),$('#dw-estimated-time').value);
+      draft.customerName=$('#dw-individual-customer').value.trim();
+      if(draft.customerName&&draft.customerName.length<2){$('#dw-send-error').textContent='Escribe al menos dos caracteres para el cliente.';return;}
+      draft.pending={requestId:draft.id,customerName:draft.customerName,notes:draft.notes,items:draft.items.map(line=>{
+        const packing=window.DonPierosPackaging.read(line.notes);
+        return {productId:line.product_id,name:line.name,quantity:line.quantity,unitPrice:line.unit_price-packing.fee,
+          selectionIds:clone(line.options.selectionIds||{}),manualUnitPrice:line.options.manualUnitPrice,
+          custom:!!line.options.custom,notes:packing.notes,takeaway:packing.fulfillment==='pickup',packagingSize:window.DonPierosPackaging.sizes[packing.size]||''};
+      })};persist();
+    }
+    busy=true;renderReview();
+    try{
+      const result=await api().createStaffOrder(draft.pending);
+      if(currentToken!==api().getToken()||draft!==sendingDraft)return;
+      if(!result?.orderId)throw Error('No pudimos confirmar el envío.');
+      lastIndividual=result;try{localStorage.removeItem(draftKey());}catch(_){}draft=null;selectedTable='';busy=false;
+      $('#dw-review-dialog').close();homeSignature='';renderHome();
+      api().notify('Venta individual enviada a caja. Comanda '+result.orderId);
+    }catch(error){
+      if(currentToken!==api().getToken()||draft!==sendingDraft)return;
+      busy=false;if(error.retryable===false){draft.pending=null;persist();}
+      renderReview();$('#dw-send-error').textContent=errorText(error);
     }
   }
   function editOrder(id,focusLine=''){
@@ -522,6 +564,7 @@
     const target=event.target.closest('button');if(!target)return;
     if(busy&&target.closest('#dp-waiter-app,.dw-dialog'))return;
     if(target.dataset.dwTable){openTable(target.dataset.dwTable);return;}
+    if(target.hasAttribute('data-dw-individual')){openStaffIndividual();return;}
     if(target.hasAttribute('data-dw-home')){selectedTable='';replacingLine='';homeSignature='';renderHome();root.scrollIntoView({block:'start',behavior:'instant'});}
     if(target.hasAttribute('data-dw-tab')){tab=target.dataset.dwTab;$('#dw-menu-view').hidden=tab!=='menu';$('#dw-account-view').hidden=tab!=='account';root.querySelectorAll('[data-dw-tab]').forEach(b=>b.classList.toggle('active',b.dataset.dwTab===tab));renderSelection();if(tab==='account')void loadOrders();}
     if(target.hasAttribute('data-dw-category')){category=target.dataset.dwCategory;renderProducts();}
@@ -548,6 +591,7 @@
   document.addEventListener('input',event=>{
     if(event.target.id==='dw-product-search'){query=event.target.value;renderProducts();}
     if(event.target.id==='dw-manager-search'){query=event.target.value;renderManagerProducts();}
+    if(event.target.id==='dw-individual-customer'&&draft&&!draft.pending){draft.customerName=event.target.value;persist();}
     if(['dw-custom-name','dw-custom-price','dw-unit-price'].includes(event.target.id))updateProductOptions();
     if(['dw-order-notes','dw-estimated-time'].includes(event.target.id)&&draft&&!draft.pending){const old=details().readTime(draft.notes);draft.notes=details().withTime(details().withTime($('#dw-order-notes').value,old.time,old.startedAt),$('#dw-estimated-time').value);persist();}
   });
@@ -582,7 +626,7 @@
   });
   function tick(){
     if(!allowed()||document.hidden)return;
-    const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';sync();void loadCatalog();}
+    const next=api().getToken();if(next!==token){token=next;busy=false;serviceReady=false;orders=[];lastIndividual=null;localWrites.clear();selectedTable='';draft=null;lastSnapshot='';homeSignature='';managerSignature='';sync();void loadCatalog();}
     sync();void loadOrders();
   }
   const editComanda=async(id,removeId='')=>{if(!orders.some(order=>order.id===id))await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}void loadOrders();};

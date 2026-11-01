@@ -906,7 +906,7 @@ const App = (() => {
   };
   const qrRegenerationEnabled = () => localStorage.getItem(QR_REGENERATION_STORAGE_KEY) === "1";
 
-  const sessionLabel = (session) => session?.web_order_id ? 'Pedido en línea '+session.web_order_id : session?.sale_channel === "walk_in" || !session?.table_id
+  const sessionLabel = (session) => session?.order_source==='staff_walk_in'?'Venta individual':session?.web_order_id ? 'Pedido en línea '+session.web_order_id : session?.sale_channel === "walk_in" || !session?.table_id
     ? "Venta individual"
     : tableLabel(session?.restaurant_tables);
 
@@ -6108,14 +6108,14 @@ const App = (() => {
     const now=new Date().toISOString();
     const session={id,local_only:true,table_id:null,status:'open',sale_channel:'walk_in',web_order_id:order.id,
       web_delivery_fee:deliveryFee,fulfillment:order.fulfillment,payer_name:order.customerName,
-      waiter_name:'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
+      order_source:order.source||'web',waiter_name:order.waiterName||'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
       session_items:order.items.map((line,index)=>{
         const sameName=state.items.filter(item=>normalizeText(item.name)===normalizeText(line.name));
         const matched=state.items.find(item=>item.id===line.productId)||(sameName.length===1?sameName[0]:null);
         const box=Number(line.packagingUnitFee||0),selected=window.DonPierosPackaging.size(line.packagingSize);
         return {id:id+'-'+index,session_id:id,table_id:null,menu_item_id:matched?.id||null,item_name:line.name,
           quantity:Number(line.quantity),unit_price:Number(line.unitPrice)+box,status:'served',
-          notes:box?window.DonPierosPackaging.note((line.selections||[]).join('\n'),selected):(line.selections||[]).join('\n'),created_at:now};
+          notes:box?window.DonPierosPackaging.note([...(line.selections||[]),line.notes].filter(Boolean).join('\n'),selected):[...(line.selections||[]),line.notes].filter(Boolean).join('\n'),created_at:now};
       })};
     if(deliveryFee)session.session_items.push({id:id+'-delivery',session_id:id,table_id:null,menu_item_id:null,item_name:'Domicilio',quantity:1,unit_price:deliveryFee,status:'served',notes:'',created_at:now});
     state.sessions=[session,...state.sessions.filter(row=>row.id!==id)];
@@ -8116,6 +8116,7 @@ const App = (() => {
 
   const incomeRecordSaleType = (record) => {
     const stored = (state.invoiceHistory || []).find((invoice) => String(invoice.id || invoice.sessionId) === String(record.saleId));
+    if(normalizeText(record.table||stored?.table||'')==='venta individual')return 'walk_in';
     if(record.webOrderId||stored?.webOrderId||String(record.sessionId||'').startsWith('walk-in-web-'))return 'online';
     if (record.saleChannel === "walk_in" || stored?.saleChannel === "walk_in"
       || normalizeText(record.table || "") === "venta individual" || String(record.sessionId || "").startsWith("walk-in-")) return "walk_in";
@@ -10415,6 +10416,7 @@ const App = (() => {
       table_id: isWalkIn ? null : (storedInvoice?.tableId || "income-history"),
       sale_channel: isWalkIn ? "walk_in" : (storedInvoice?.saleChannel || "table"),
       web_order_id:record.webOrderId||'',
+      order_source:normalizeText(tableName)==='venta individual'?'staff_walk_in':'web',
       payer_name: record.payer || "",
       assigned_waiter: { full_name: record.waiter || "Equipo" },
       restaurant_tables: isWalkIn ? null : { table_name: tableName },
@@ -10700,7 +10702,7 @@ const App = (() => {
       payerName: session.payer_name || "",
       waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
       cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
-      ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,fulfillment:session.fulfillment,checkoutId:uid()}:{}),
+      ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,fulfillment:session.fulfillment,orderSource:session.order_source,checkoutId:uid()}:{}),
       paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
       payments: aggregateAccountPayments(session, payment.payments),
       prepayments: sessionPayments(session),
@@ -13439,7 +13441,7 @@ const App = (() => {
 
   const persistUsersCache = () => {
     try {
-      localStorage.setItem(USER_LIST_CACHE_KEY, JSON.stringify(state.users));
+      localStorage.setItem(USER_LIST_CACHE_KEY+':'+state.currentUser?.id, JSON.stringify(state.users));
     } catch (error) { /* La lista remota sigue siendo la fuente principal. */ }
   };
 
@@ -13509,7 +13511,7 @@ const App = (() => {
   };
 
   const loadUsers = async () => {
-    const cachedUsers = readLocalJson(USER_LIST_CACHE_KEY, []);
+    const cachedUsers = readLocalJson(USER_LIST_CACHE_KEY+':'+state.currentUser?.id, []);
     const fallbackUsers = mergeUsers(Array.isArray(cachedUsers) ? cachedUsers : [], state.users, state.currentUser ? [state.currentUser] : []);
     if (!isBoss()) {
       state.users = mergeUsers(state.currentUser ? [state.currentUser] : []);
@@ -13664,7 +13666,7 @@ const App = (() => {
       return;
     }
     state.users = mergeUsers(state.users.map((user) => String(user.id) === String(saved.id) ? saved : user), [saved]);
-    if (pin) {
+    if (pin && !(String(saved.id)===String(state.currentUser?.id)&&state.currentUser?.is_maintenance)) {
       state.userCredentialPins[saved.id] = pin;
       persistUserCredentialPins();
     }
@@ -13716,7 +13718,7 @@ const App = (() => {
     if (!canDeleteRecords()) return;
     const user = state.users.find((entry) => entry.id === id);
     if (!user) return;
-    if (String(user.id) === String(state.currentUser?.id)) {
+    if (String(user.id) === String(state.currentUser?.id) && !state.currentUser?.is_maintenance) {
       toast("No puedes eliminar el usuario con el que tienes la sesion abierta.", "error", "delete-current-user");
       return;
     }
@@ -13734,6 +13736,7 @@ const App = (() => {
       toast(deleteError?.message || "No se pudo eliminar el usuario.", "error", `delete-user:${id}`);
       return;
     }
+    if(String(id)===String(state.currentUser?.id)){await logoutAdmin();return;}
     state.users = state.users.filter((entry) => entry.id !== id);
     delete state.userCredentialPins[id];
     persistUserCredentialPins();
@@ -13932,6 +13935,11 @@ const App = (() => {
     };
   };
   window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+    createStaffOrder: async order => {
+      const result=await appsScriptRequest('dp_create_staff_order',{order},45000);
+      if(!result.ok)throw Object.assign(Error(result.error||'No pudimos enviar la comanda.'),{retryable:result.retryable,code:result.code});
+      return result;
+    },
     openIndividualSale: openPaymentDialog,
     addIndividualProduct: (sessionId,line) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');

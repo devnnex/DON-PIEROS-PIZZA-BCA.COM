@@ -2,6 +2,8 @@
 
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.
 
+**Actualización v51:** los meseros pueden tomar ventas individuales y enviar sus comandas a la recepción compartida para imprimir y cobrar desde caja. Publica Apps Script **3.14.0** conservando `/exec`. El acceso privado de mantenimiento se habilita mediante `supabase/install/08_ACCESO_MANTENIMIENTO.sql` y el generador local de credenciales; no vence y permite eliminar la propia cuenta. Consulta los pasos en [LEEME-IMPLEMENTACION.md](LEEME-IMPLEMENTACION.md).
+
 **Actualización de mesas:** ejecuta `supabase/install/07_COMANDAS_MESERO.sql` después de 01–06. El mesero toma pedidos con categorías, fotografías, tamaños y notas. Enviar deja la comanda pendiente; aceptar desde administración agrega sus productos al consumo de la mesa una sola vez. Administración y el mesero pueden corregir la misma comanda antes o después de aceptarla. Los consumos aceptados se cobran con la caja existente; la venta de artículos del inventario se conserva. Esta actualización no requiere volver a publicar Code.gs.
 
 El icono de administración lleva un aro rojo y una etiqueta amarilla **ADMIN**. La aplicación de pedidos conserva su icono original. Si el teléfono conserva el icono anterior de administración, vuelve a añadirla a la pantalla de inicio.

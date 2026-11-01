@@ -21,6 +21,8 @@ test('Distingue ventas individuales, mesas, barras y materas, incluso al editar 
   for (const [record, expected] of [
     [{ saleChannel: 'walk_in' }, 'walk_in'], [{ table: 'Venta individual' }, 'walk_in'],
     [{ saleId: 'edited', table: 'Cliente Ana' }, 'walk_in'], [{ sessionId: 'walk-in-123' }, 'walk_in'],
+    [{ table: 'Venta individual', webOrderId: 'DP-1', sessionId: 'walk-in-web-DP-1' }, 'walk_in'],
+    [{ table: 'Pedido en línea DP-2', webOrderId: 'DP-2' }, 'online'],
     [{ table: 'Mesa 1' }, 'table'], [{ table: 'Barra 1' }, 'bar'],
     [{ tableId: 'bar', table: 'Terraza 1' }, 'bar'], [{ table: 'Matera 2' }, 'planter']
   ]) assert.equal(f.api.incomeRecordSaleType(record), expected);
@@ -122,6 +124,7 @@ function brandContext() {
     $: selector => selector === '#businessForm' ? form : selector.includes('data-upload-box') ? boxes[selector.match(/"([^"]+)"/)[1]] : {},
     document: { createElement: () => ({ getAttribute() { return this.src; }, remove() {} }) },
     uid: () => 'unique', toast: (message, kind) => notices.push({ message, kind }) });
+  vm.runInContext(source.match(/const CLIENT_ACTION_FIELDS = [^;]+;/)[0], context);
   vm.runInContext(section('renderBrandAssetFields', 'renderBusinessForm') + section('uploadAsset', 'saveTable')
     + ';globalThis.api = {renderBrandAssetFields, clearSavedBrandAssetDrafts, uploadAsset};', context);
   return { context, form, boxes, notices };

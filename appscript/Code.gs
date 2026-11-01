@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.13.0-donpieros",
+  version: "3.14.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1092,6 +1092,8 @@ function dpValidateWebSale_(invoice){
   var subtotal=(invoice.items||[]).reduce(function(sum,line){return sum+Number(line.quantity)*Number(line.unit_price);},0);
   var paid=(invoice.payments||[]).reduce(function(sum,p){return sum+Number(p.amount);},0);
   if(subtotal!==expected||Number(invoice.totals.total)-Number(invoice.tipAmount||0)!==expected||paid!==Number(invoice.totals.total))throw new Error('El importe del pedido cambió. Revisa el pedido antes de cobrar.');
+  invoice.orderSource=order.source||'web';
+  if(order.source==='staff_walk_in'){invoice.waiterName=order.waiterName;invoice.table='Venta individual';}
 }
 function dpFinishWebSale_(invoice){
   var found=dpWebSaleOrder_(invoice),row=found.cells,headers=DP_TABLES.orders.headers;
@@ -1139,7 +1141,7 @@ function recordSale_(invoice, user, authToken) {
       safeText_(invoice.createdAt || now), safeText_(invoice.payerName), safeText_(invoice.waiterName),
       asNumber_(totals.subtotal), asNumber_(totals.discount), asNumber_(totals.tax),
       asNumber_(totals.serviceFee), asNumber_(totals.total), safeText_(invoice.paymentMethod),
-      safeText_(invoice.reference), invoice.webOrderId?'Pedido en linea/AppScript':invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now,
+      safeText_(invoice.reference), invoice.orderSource==='staff_walk_in'?'Venta individual/AppScript':invoice.webOrderId?'Pedido en linea/AppScript':invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now,
       safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role)
     ]];
 
@@ -1740,7 +1742,7 @@ var DP_TABLES = {
   toppings: { name: 'Adicionales_Web', headers: ['id','name','kind','price','available','sort_order','version'] },
   payments: { name: 'Pagos_Web', headers: ['id','name','account_value','instructions','available','sort_order','version'] },
   neighborhoods: { name: 'Barrios_Web', headers: ['id','name','delivery_fee','available','sort_order','version'] },
-  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version','deliveryFeePending','packagingFee'] }
+  orders: { name: 'Ordenes_Web', headers: ['id','request_id','sequence','createdAt','updatedAt','status','customerName','phone','fulfillment','address','neighborhood','deliveryFee','subtotal','total','paymentMethod','paymentValue','notes','itemsJson','queuePosition','ordersAhead','handledByName','version','deliveryFeePending','packagingFee','source','waiterId','waiterName','requestSignature'] }
 };
 var DP_STATUSES = ['nueva','atendiendo','lista','despachada','cancelada'];
 
@@ -1762,6 +1764,7 @@ function dpEnsureSheets_(spreadsheet) {
       if(key==='orders'){
         sheet.getRange(1,definition.headers.indexOf('deliveryFeePending')+1).setValue('deliveryFeePending');
         sheet.getRange(1,definition.headers.indexOf('packagingFee')+1).setValue('packagingFee');
+        sheet.getRange(1,25,1,4).setValues([definition.headers.slice(24)]);
       }
   });
   // Add missing payment methods without replacing configured account details
@@ -1785,6 +1788,11 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order);
   var user = validateSupabaseUser_(request.authToken);
+  if(action==='dp_create_staff_order'){
+    dpRequireOrders_(user);
+    validateOrigin_(request.origin);
+    return dpCreateOrder_(payload.order,user);
+  }
   if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order','dp_order_time','dp_add_order_product','dp_edit_order_product'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
@@ -2005,12 +2013,42 @@ function dpOrderResult_(order,duplicate) {
   return {ok:true,orderId:order.id,sequence:order.sequence,total:order.total,subtotal:order.subtotal,packagingFee:Number(order.packagingFee)||0,deliveryFee:order.deliveryFee,deliveryFeePending:!!order.deliveryFeePending,neighborhood:order.neighborhood,queuePosition:order.queuePosition,ordersAhead:order.ordersAhead,duplicate:!!duplicate};
 }
 
-function dpCreateOrder_(raw) {
+function dpPriceStaffOrder_(raw,catalog) {
+  if(!Array.isArray(raw.items)||!raw.items.length||raw.items.length>60)dpRejectOrder_('Agrega entre 1 y 60 productos.');
+  var items=raw.items.map(function(line){
+    if(!line||!/^[a-f0-9-]{36}$/i.test(String(line.productId||''))||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99
+      ||!Number.isSafeInteger(line.unitPrice)||line.unitPrice<0||line.unitPrice>10000000
+      ||typeof line.notes!=='string'||line.notes.length>500)dpRejectOrder_('Revisa los datos del producto.');
+    var product=catalog.products.filter(function(item){return item.id===line.productId;})[0],item;
+    if(line.custom===true&&!product){
+      var name=dpText_(line.name,160);
+      if(!name)dpRejectOrder_('Escribe el nombre del producto.');
+      var box=dpBox_({name:name,category:''},[String(line.packagingSize||'')]);
+      item={productId:line.productId,name:name,quantity:line.quantity,unitPrice:line.unitPrice,selections:[],selectionIds:{},
+        custom:true,packagingSize:box.size,packagingUnitFee:line.takeaway===true?box.fee:0};
+    }else item=dpPriceOrderItems_([line],catalog,line.takeaway===true?'pickup':'dinein',true)[0];
+    if(line.name!==undefined){
+      if(typeof line.name!=='string'||!line.name.trim()||line.name.trim().length>160||/[\u0000-\u001f]/.test(line.name))dpRejectOrder_('Escribe un nombre de producto de entre 1 y 160 caracteres.');
+      if(!item.custom)item.catalogName=item.name;
+      item.name=line.name.trim();
+    }
+    item.notes=dpText_(line.notes,500);
+    return item;
+  });
+  var subtotal=items.reduce(function(sum,line){return sum+line.quantity*line.unitPrice;},0);
+  var boxes=items.reduce(function(sum,line){return sum+line.quantity*line.packagingUnitFee;},0);
+  return {items:items,fulfillment:raw.items.some(function(line){return line.takeaway===true;})?'pickup':'dinein',neighborhood:'',
+    deliveryFee:0,deliveryFeePending:false,subtotal:subtotal,packagingFee:boxes,total:subtotal+boxes,payment:{name:'Por definir en caja',account_value:''}};
+}
+
+function dpCreateOrder_(raw,staffUser) {
   if(!raw || !/^[a-f0-9-]{36}$/i.test(String(raw.requestId||'')))dpRejectOrder_('Identificador de pedido inválido.');
   var customerName=dpText_(raw.customerName,80),phone=dpText_(raw.phone,25);
+  if(staffUser&&!customerName)customerName='Cliente individual';
   if(customerName.length<2)dpRejectOrder_('Escribe un nombre de al menos dos caracteres.');
-  if(!/^[\d\s]{10,25}$/.test(phone)||phone.replace(/\D/g,'').length!==10)dpRejectOrder_('El teléfono debe tener exactamente 10 dígitos. Puedes separarlos con espacios.');
+  if(!staffUser&&(!/^[\d\s]{10,25}$/.test(phone)||phone.replace(/\D/g,'').length!==10))dpRejectOrder_('El teléfono debe tener exactamente 10 dígitos. Puedes separarlos con espacios.');
   phone=phone.replace(/\s/g,'');
+  var signature=staffUser?hash_(JSON.stringify([staffUser.id,raw])):'';
   var result=dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES.orders.name),last=sheet.getLastRow();
     // Read metadata only. Historical item JSON is not downloaded to assign a turn.
@@ -2018,18 +2056,21 @@ function dpCreateOrder_(raw) {
     metadata.some(function(row,index){if(row[1]===raw.requestId){duplicateIndex=index+2;return true;}return false;});
     if(duplicateIndex>0){
       var duplicate=dpObjects_('orders',sheet.getRange(duplicateIndex,1,1,DP_TABLES.orders.headers.length).getValues())[0];
+      if(staffUser&&(duplicate.source!=='staff_walk_in'||String(duplicate.waiterId)!==String(staffUser.id)||duplicate.requestSignature!==signature))dpRejectOrder_('Este envío ya existe con otro contenido.');
+      if(!staffUser&&duplicate.source==='staff_walk_in')dpRejectOrder_('Identificador de pedido inválido.');
       if(duplicate.status==='eliminada')dpRejectOrder_('Este pedido fue retirado por el negocio. Crea un nuevo pedido si deseas volver a ordenar.');
       return dpOrderResult_(duplicate,true);
     }
     // Authoritative prices and availability, including direct edits to Sheets.
     var priced;
-    try{priced=dpPriceOrder_(raw,dpCatalog_(true));}catch(error){error.retryable=false;error.code='ORDER_VALIDATION';throw error;}
+    try{priced=staffUser?dpPriceStaffOrder_(raw,dpCatalog_(true)):dpPriceOrder_(raw,dpCatalog_(true));}catch(error){error.retryable=false;error.code='ORDER_VALIDATION';throw error;}
     var now=new Date().toISOString(),properties=PropertiesService.getScriptProperties();
     var sequence=Math.max(Number(properties.getProperty('DP_NEXT_ORDER')||1),metadata.reduce(function(max,row){return Math.max(max,(Number(row[2])||0)+1);},1));
     var active=metadata.filter(function(row){return ['nueva','atendiendo','lista'].indexOf(String(row[5]))>=0;});
     var id='DP-'+Utilities.formatDate(new Date(),'America/Bogota','yyyyMMdd')+'-'+String(sequence).padStart(4,'0');
     var order={id:id,request_id:raw.requestId,sequence:sequence,createdAt:now,updatedAt:now,status:'nueva',customerName:customerName,phone:phone,fulfillment:priced.fulfillment,address:priced.fulfillment==='delivery'?dpText_(raw.address,300):'',neighborhood:priced.neighborhood,deliveryFee:priced.deliveryFee,subtotal:priced.subtotal,total:priced.total,paymentMethod:priced.payment.name,paymentValue:priced.payment.account_value,notes:dpText_(raw.notes,1000),itemsJson:JSON.stringify(priced.items),queuePosition:active.length+1,ordersAhead:active.length,handledByName:'',version:1};
     order.deliveryFeePending=priced.deliveryFeePending;order.packagingFee=priced.packagingFee;
+    order.source=staffUser?'staff_walk_in':'web';order.waiterId=staffUser?staffUser.id:'';order.waiterName=staffUser?staffUser.full_name||staffUser.username:'';order.requestSignature=signature;
     try {
       sheet.getRange(sheet.getLastRow()+1,1,1,DP_TABLES.orders.headers.length).setValues([DP_TABLES.orders.headers.map(function(header){return dpCell_(order[header]);})]);
       SpreadsheetApp.flush();
