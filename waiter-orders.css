@@ -78,3 +78,12 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 #individualCustomerField.dw-required-flash input{animation:dw-required-border .45s ease-in-out 3}
 #individualCustomerField.dw-required-flash small{animation:dw-required-label .45s ease-in-out 3}
 @media(prefers-reduced-motion:reduce){#individualCustomerField.dw-required-flash input,#individualCustomerField.dw-required-flash small{animation:none}}
+.dw-comanda-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px;min-width:0;margin:0 0 24px;padding:16px 18px 18px;border:1px solid #e6d3a6;border-radius:18px;background:#fffcf2}
+.dw-comanda-fields legend{padding:0 7px;color:#755019;font-weight:800;font-size:15px}
+.dw-comanda-fields .dw-custom-field{margin:0;align-content:start;color:#755d39}
+.dw-comanda-fields .dw-comanda-observations{grid-column:1/-1}
+.dw-comanda-fields textarea{box-sizing:border-box;width:100%;min-width:0;resize:vertical;padding:13px;border:1px solid #e6d3a6;border-radius:13px;background:#fffef9;color:#111;font:inherit;font-size:16px;font-weight:800}
+.dw-comanda-fields input{background:#fffef9}
+.dw-comanda-observations textarea,#individualObservationField textarea{color:#111;font-weight:800;text-decoration:underline;text-decoration-color:#218653;text-decoration-thickness:2px;text-underline-offset:3px}
+.dp-notes p,.dw-kitchen-notes p,.dw-order-notes,.individual-line-notes{color:#111!important;font-weight:800;text-decoration:underline;text-decoration-color:#218653;text-decoration-thickness:2px;text-underline-offset:3px}
+@media(max-width:600px){.dw-comanda-fields{grid-template-columns:minmax(0,1fr);padding:12px;gap:14px}}

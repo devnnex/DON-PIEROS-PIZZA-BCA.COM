@@ -1,6 +1,23 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const {harness}=require('./helpers/don-pieros-gas.cjs'),boxes=require('../packaging.js');
 
+test('domicilio conserva entrega y notas, cobra una caja por unidad y permite cambiar a local',()=>{
+ for(const size of Object.keys(boxes.sizes)){
+  const notes=boxes.note('Salsa aparte',size,'delivery'),saved=boxes.read(notes);
+  assert.equal(saved.fulfillment,'delivery');assert.equal(saved.fee,boxes.fee(size));assert.equal(saved.notes,'Salsa aparte');
+  const line=boxes.breakdown({quantity:3,unit_price:20000+saved.fee,notes});
+  assert.equal(line.products,60000);assert.equal(line.packagingTotal,3*saved.fee);assert.equal(line.total,60000+3*saved.fee);
+  assert.equal(boxes.note(notes,size,'delivery'),notes,'Reeditar no duplica el cobro ni la nota.');
+  assert.equal(boxes.note(notes,'','dinein'),'Salsa aparte');
+  assert.equal(boxes.read(boxes.note(notes,size,'pickup')).fulfillment,'pickup');
+ }
+ const fields={packing_mode:{value:'delivery'},packing_size:{value:'maxi'}};
+ const form={elements:{namedItem:name=>fields[name]}};
+ assert.equal(boxes.draft(form,'Pizza Maxi',20000,'Sin cebolla').unitPrice,24000);
+ assert.deepEqual(boxes.draft(form,'Gaseosa',4000,'Sin hielo'),{unitPrice:4000,notes:'Sin hielo\nDomicilio'});
+ assert.equal(boxes.read('Sin hielo\nDomicilio').fulfillment,'delivery');
+});
+
 test('el desglose impreso separa las cajas incluidas en ventas individuales y mesas y las cajas adicionales de pedidos web',()=>{
  const note=boxes.note('Sin cebolla','maxi');
  const individual=boxes.breakdown({quantity:2,unit_price:82000,notes:note});

@@ -64,6 +64,23 @@
     sizeFirst(doc,selector,items);const info=readTime(notes),paragraph=doc.querySelector('.notes p');
     if(paragraph){paragraph.textContent=info.notes;if(!info.notes)paragraph.closest('.notes').remove();}
     else if(info.notes){const section=doc.createElement('section');section.className='notes';const title=doc.createElement('b'),text=doc.createElement('p');title.textContent='Observaciones';text.textContent=info.notes;section.append(title,text);doc.querySelector('header,.fulfillment,h2')?.after(section);}
+    const first=doc.querySelector(selector),observations=doc.querySelector('.notes');
+    if(first&&observations)first.before(observations);
+    const style=doc.createElement('style');
+    style.textContent='.comanda-underline{color:#000!important;font-weight:900!important;text-decoration-line:underline!important;text-decoration-color:#218653!important;text-decoration-thickness:2px!important;text-underline-offset:3px!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}';
+    doc.head.append(style);
+    const underline=node=>{const text=doc.createElement('span');text.className='comanda-underline';text.textContent=node.textContent;node.replaceChildren(text);};
+    doc.querySelectorAll('.notes p,.line-notes').forEach(underline);
+    doc.querySelectorAll('.fulfillment,p').forEach(node=>{if(/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))underline(node);});
+    doc.querySelectorAll(selector).forEach((block,index)=>{
+      const item=items?.[index]||{},packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+      const fulfillment=item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||packing?.fulfillment;
+      if(fulfillment==='delivery'){
+        const line=[...block.querySelectorAll('p')].find(node=>/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))||doc.createElement('p');
+        if(!line.textContent){line.textContent='Domicilio';underline(line);}
+        block.querySelector('h3,div>strong,strong')?.after(line);
+      }
+    });
     if(info.time){const line=doc.createElement('p');line.className='estimated-print';line.textContent='Tiempo estimado: '+info.time;doc.querySelector('header,.fulfillment,h2')?.after(line);}
   }
   function sizeParts(labels=[],fallback=''){

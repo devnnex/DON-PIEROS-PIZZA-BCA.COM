@@ -8,6 +8,15 @@ function setup(){
   quantity:2,unitPrice:78000,selectionIds:{[sizes.id]:[size.id],[flavors.id]:choices.map(t=>t.id)},takeaway:true,notes:'Bien dorada',packagingSize:'Maxi'}]};
  return {h,raw,product};
 }
+
+test('venta individual a domicilio conserva la entrega y calcula cajas sin duplicar productos',()=>{
+ const {h,raw}=setup();raw.items[0].fulfillment='delivery';
+ const receipt=h.call('dp_create_staff_order',{order:raw},'waiter');assert.equal(receipt.ok,true,receipt.error);
+ const order=h.call('dp_get_order',{id:receipt.orderId}).order;
+ assert.equal(order.fulfillment,'delivery');assert.equal(order.items[0].fulfillment,'delivery');
+ assert.equal(order.items[0].packagingUnitFee,4000);assert.equal(order.total,164000);
+ assert.equal(h.call('dp_create_staff_order',{order:raw},'waiter').duplicate,true);
+});
 test('mesero envía venta sin mesa ni teléfono, caja compartida, atribución e idempotencia',()=>{
  const {h,raw}=setup(),receipt=h.call('dp_create_staff_order',{order:raw},'waiter');assert.equal(receipt.ok,true,receipt.error);assert.equal(receipt.total,164000);
  const order=h.call('dp_get_order',{id:receipt.orderId}).order;

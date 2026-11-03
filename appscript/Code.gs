@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.16.0-donpieros",
+  version: "3.17.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1880,13 +1880,13 @@ function dpStaffOrderCatalog_(lines){
 }
 
 function dpLineFulfillment_(line,fallback){
-  if(line.fulfillment!==undefined&&['dinein','pickup'].indexOf(line.fulfillment)<0)throw new Error('Selecciona una entrega válida.');
-  return line.fulfillment||(fallback==='dinein'?'dinein':'pickup');
+  if(line.fulfillment!==undefined&&['dinein','pickup','delivery'].indexOf(line.fulfillment)<0)throw new Error('Selecciona una entrega válida.');
+  return line.fulfillment||(['dinein','delivery'].indexOf(fallback)>=0?fallback:'pickup');
 }
 
 function dpOrderFulfillment_(items,original){
   items.forEach(function(item){item.fulfillment=dpLineFulfillment_(item,original);});
-  return original==='delivery'?'delivery':items.some(function(item){return item.fulfillment==='pickup';})?'pickup':'dinein';
+  return original==='delivery'||items.some(function(item){return item.fulfillment==='delivery';})?'delivery':items.some(function(item){return item.fulfillment==='pickup';})?'pickup':'dinein';
 }
 function dpObjects_(key,rows) {
   var definition=DP_TABLES[key];
@@ -2013,7 +2013,7 @@ function dpPriceOrderItems_(lines,catalog,fulfillment,managerPrices) {
     }
     if(Number(line.unitPrice)!==unitPrice)throw new Error('El precio de '+product.name+' cambió. Actualiza la carta antes de confirmar.');
     var box=dpBox_(product,managerPrices?labels:sizeLabels);
-    return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels,selectionIds:selected,packagingSize:box.size,packagingUnitFee:fulfillment==='dinein'?0:box.fee,fulfillment:fulfillment==='dinein'?'dinein':'pickup'};
+    return {productId:product.id,name:product.name,quantity:quantity,unitPrice:unitPrice,selections:labels,selectionIds:selected,packagingSize:box.size,packagingUnitFee:fulfillment==='dinein'?0:box.fee,fulfillment:fulfillment};
   });
 }
 function dpPriceOrder_(raw,catalog) {
@@ -2050,14 +2050,14 @@ function dpPriceStaffOrder_(raw,catalog) {
     if(!line||!/^[a-f0-9-]{36}$/i.test(String(line.productId||''))||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99
       ||!Number.isSafeInteger(line.unitPrice)||line.unitPrice<0||line.unitPrice>10000000
       ||typeof line.notes!=='string'||line.notes.length>500)dpRejectOrder_('Revisa los datos del producto.');
-    var product=catalog.products.filter(function(item){return item.id===line.productId;})[0],item;
+    var product=catalog.products.filter(function(item){return item.id===line.productId;})[0],item,fulfillment=dpLineFulfillment_(line,line.takeaway===true?'pickup':'dinein');
     if(line.custom===true&&!product){
       var name=dpText_(line.name,160);
       if(!name)dpRejectOrder_('Escribe el nombre del producto.');
       var box=dpBox_({name:name,category:''},[String(line.packagingSize||'')]);
       item={productId:line.productId,name:name,quantity:line.quantity,unitPrice:line.unitPrice,selections:[],selectionIds:{},
-        custom:true,packagingSize:box.size,packagingUnitFee:line.takeaway===true?box.fee:0,fulfillment:line.takeaway===true?'pickup':'dinein'};
-    }else item=dpPriceOrderItems_([line],catalog,line.takeaway===true?'pickup':'dinein',true)[0];
+        custom:true,packagingSize:box.size,packagingUnitFee:fulfillment!=='dinein'?box.fee:0,fulfillment:fulfillment};
+    }else item=dpPriceOrderItems_([line],catalog,fulfillment,true)[0];
     if(line.name!==undefined){
       if(typeof line.name!=='string'||!line.name.trim()||line.name.trim().length>160||/[\u0000-\u001f]/.test(line.name))dpRejectOrder_('Escribe un nombre de producto de entre 1 y 160 caracteres.');
       if(!item.custom)item.catalogName=item.name;
@@ -2068,7 +2068,7 @@ function dpPriceStaffOrder_(raw,catalog) {
   });
   var subtotal=items.reduce(function(sum,line){return sum+line.quantity*line.unitPrice;},0);
   var boxes=items.reduce(function(sum,line){return sum+line.quantity*line.packagingUnitFee;},0);
-  return {items:items,fulfillment:raw.items.some(function(line){return line.takeaway===true;})?'pickup':'dinein',neighborhood:'',
+  return {items:items,fulfillment:dpOrderFulfillment_(items,'dinein'),neighborhood:'',
     deliveryFee:0,deliveryFeePending:false,subtotal:subtotal,packagingFee:boxes,total:subtotal+boxes,payment:{name:'Por definir en caja',account_value:''}};
 }
 

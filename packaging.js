@@ -13,12 +13,12 @@
     return {size:selected,fee:fee(selected)};
   }
   function read(notes){
-    const text=String(notes||''),match=text.match(/(?:^|\n)Para llevar · Caja (Mini|Mediana|Maxi|Super maxi|Pizzeta): \$(2\.000|4\.000) c\/u$/);
-    if(!match){const pickup=text.match(/(?:^|\n)Recoger en local$/);return {fee:0,size:'',notes:pickup?text.slice(0,pickup.index).trim():text,fulfillment:pickup?'pickup':'dinein'};}
-    const selected=size(match[1]);if(fee(selected)!==Number(match[2].replace('.','')))return {fee:0,size:'',notes:text};
-    return {fee:fee(selected),size:selected,notes:text.slice(0,match.index).trim(),fulfillment:'pickup'};
+    const text=String(notes||''),match=text.match(/(?:^|\n)(Para llevar|Domicilio) · Caja (Mini|Mediana|Maxi|Super maxi|Pizzeta): \$(2\.000|4\.000) c\/u$/);
+    if(!match){const delivery=text.match(/(?:^|\n)(Recoger en local|Domicilio)$/);return {fee:0,size:'',notes:delivery?text.slice(0,delivery.index).trim():text,fulfillment:delivery?delivery[1]==='Domicilio'?'delivery':'pickup':'dinein'};}
+    const selected=size(match[2]);if(fee(selected)!==Number(match[3].replace('.','')))return {fee:0,size:'',notes:text};
+    return {fee:fee(selected),size:selected,notes:text.slice(0,match.index).trim(),fulfillment:match[1]==='Domicilio'?'delivery':'pickup'};
   }
-  function note(notes,selected,takeaway=!!fee(selected)){return [read(notes).notes,fee(selected)?`Para llevar · Caja ${sizes[selected]}: $${fee(selected)===4000?'4.000':'2.000'} c/u`:takeaway?'Recoger en local':''].filter(Boolean).join('\n');}
+  function note(notes,selected,takeaway=!!fee(selected)){const delivery=takeaway==='delivery';return [read(notes).notes,fee(selected)?`${delivery?'Domicilio':'Para llevar'} · Caja ${sizes[selected]}: $${fee(selected)===4000?'4.000':'2.000'} c/u`:delivery?'Domicilio':takeaway&&takeaway!=='dinein'?'Recoger en local':''].filter(Boolean).join('\n');}
   function breakdown(line={}){
     const saved=read(line.waiter_line_notes??line.notes),quantity=Number(line.quantity)||0;
     const packagingUnitFee=Number(line.packagingUnitFee??saved.fee)||0;
@@ -27,12 +27,13 @@
     return {quantity,unitPrice,products,packagingUnitFee,packagingSize:line.packagingSize||sizes[saved.size]||'',packagingTotal,total:products+packagingTotal,notes:saved.notes,fulfillment:saved.fulfillment};
   }
   function draft(form,name,price,notes){
-    const selected=form.elements.namedItem('packing_mode')?.value==='takeaway'&&/pizza|pizzeta/.test(normalize(name))?form.elements.namedItem('packing_size')?.value:'';
-    return {unitPrice:Number(price)+fee(selected),notes:note(notes,selected,form.elements.namedItem('packing_mode')?.value==='takeaway')};
+    const mode=form.elements.namedItem('packing_mode')?.value,takeaway=['takeaway','delivery'].includes(mode);
+    const selected=takeaway&&/pizza|pizzeta/.test(normalize(name))?form.elements.namedItem('packing_size')?.value:'';
+    return {unitPrice:Number(price)+fee(selected),notes:note(notes,selected,mode==='delivery'?'delivery':takeaway)};
   }
   function restore(form,notes,price){
     const saved=read(notes),mode=form.elements.namedItem('packing_mode'),select=form.elements.namedItem('packing_size');
-    if(mode){mode.value=saved.fulfillment==='pickup'?'takeaway':'local';select.value=saved.size||'mini';select.dataset.manual='1';}
+    if(mode){mode.value=saved.fulfillment==='delivery'?'delivery':saved.fulfillment==='pickup'?'takeaway':'local';select.value=saved.size||'mini';select.dataset.manual='1';}
     update(form);return {price:Math.max(0,Number(price)-saved.fee),notes:saved.notes};
   }
   function update(form){
@@ -40,13 +41,13 @@
     const name=form.item_name.value||form.querySelector('#consumptionProductSearch')?.value||'';
     const pizza=/pizza|pizzeta/.test(normalize(name)),inferred=size(name);
     if(inferred&&select.dataset.manual!=='1')select.value=inferred;
-    const takeaway=mode.value==='takeaway';select.closest('label').hidden=!takeaway||!pizza;
+    const takeaway=['takeaway','delivery'].includes(mode.value);select.closest('label').hidden=!takeaway||!pizza;
     const box=takeaway&&pizza?fee(select.value):0,qty=Number(form.quantity.value)||1;
     form.querySelector('[data-packing-summary]').textContent=box?`${qty} caja${qty===1?'':'s'} ${sizes[select.value]} · $${(box*qty).toLocaleString('es-CO')}`:takeaway?'Este producto no lleva cobro de caja de pizza.':'Sin cobro de caja.';
   }
   function mount(){
     const form=document.querySelector('#consumptionForm');if(!form)return;
-    form.querySelector('#consumptionOptionalFields').insertAdjacentHTML('beforeend',`<div class="dp-packing-controls"><label>Entrega<select name="packing_mode"><option value="local">En el local</option><option value="takeaway">Para llevar</option></select></label><label hidden>Tamaño de caja<select name="packing_size">${Object.entries(sizes).map(([id,label])=>`<option value="${id}">${label} · $${fee(id).toLocaleString('es-CO')}</option>`).join('')}</select></label><small data-packing-summary>Sin cobro de caja.</small></div>`);
+    form.querySelector('#consumptionOptionalFields').insertAdjacentHTML('beforeend',`<div class="dp-packing-controls"><label>Entrega<select name="packing_mode"><option value="local">En el local</option><option value="takeaway">Para llevar</option><option value="delivery">Domicilio</option></select></label><label hidden>Tamaño de caja<select name="packing_size">${Object.entries(sizes).map(([id,label])=>`<option value="${id}">${label} · $${fee(id).toLocaleString('es-CO')}</option>`).join('')}</select></label><small data-packing-summary>Sin cobro de caja.</small></div>`);
     form.addEventListener('input',()=>update(form));form.addEventListener('change',event=>{if(event.target.name==='packing_size')event.target.dataset.manual='1';update(form);});
     form.addEventListener('reset',()=>{delete form.elements.namedItem('packing_size').dataset.manual;queueMicrotask(()=>update(form));});update(form);
   }

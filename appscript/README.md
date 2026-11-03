@@ -2,7 +2,9 @@
 
 Pega únicamente el contenido completo de Code.gs en el proyecto nuevo de Apps Script. Ya incorpora el servicio original de caja y la extensión de menú/pedidos.
 
-Versión actual: **3.16.0-donpieros**. Exige nombre de cliente en nuevas comandas individuales y permite corregir la entrega por producto, recalculando cajas y total. Los envíos del mesero consultan solo los productos elegidos y sus opciones; el aviso de recepción se envía desde el navegador después de guardar. Los clientes anteriores conservan el aviso desde el servidor. Los cobros web sin artículos de inventario evitan leer/regrabar existencias y descargar movimientos históricos. El diario financiero y los reintentos con identidad estable siguen protegiendo ventas y pagos. Publica Code.gs conservando `/exec` y los archivos web **v53** para los avisos por origen, sabores compactos y cobro con recuperación automática en segundo plano. Se conserva el domicilio **Por confirmar**. No requiere SQL adicional. El acceso de mantenimiento sigue documentado en [LEEME-IMPLEMENTACION.md](../LEEME-IMPLEMENTACION.md).
+Versión actual: **3.17.0-donpieros**. Acepta **Domicilio** como entrega por producto en las comandas individuales y al agregar o editar productos, calculando las cajas por tamaño y cantidad. Conserva las entregas y notas al reeditar. Publica el contenido completo de **Code.gs** como una nueva versión de la implementación existente, conservando `/exec`, junto con los archivos web **v56**. El push de los archivos web no actualiza por sí solo Apps Script. No requiere SQL adicional.
+
+En la venta individual, el modal del producto incluye nombre del cliente, tiempo estimado y observaciones de la comanda; estos datos se conservan al seguir agregando productos. Al agregar un producto se regresa al catálogo y al cerrarlo se vuelve a la comanda. Las impresiones colocan las observaciones antes del primer producto y subrayan en verde las observaciones y la entrega a domicilio, conservando la letra negra en negrita.
 
 Hoja: 1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E.
 

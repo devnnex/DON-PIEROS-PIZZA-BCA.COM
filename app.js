@@ -10285,7 +10285,7 @@ const App = (() => {
     const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean)).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean)).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes'}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
     void window.DonPierosThermal.print(popup,width).catch(error=>toast(String(error.message||error),'error'));
   };
@@ -11616,6 +11616,12 @@ const App = (() => {
       created_at: previousLine?.created_at || new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+    if(isLocalWalkInSession(session)&&previousLine?.waiter_options){
+      const fulfillment=globalThis.DonPierosPackaging.read(payload.notes).fulfillment;
+      const labels=(previousLine.waiter_options.labels||[]).filter(label=>!['Para llevar','Domicilio'].includes(label));
+      if(fulfillment!=='dinein')labels.push(fulfillment==='delivery'?'Domicilio':'Para llevar');
+      optimisticItem.waiter_options={...previousLine.waiter_options,fulfillment,labels};
+    }
     let optimisticSession = session;
     state.sessions = state.sessions.map((entry) => entry.id === sessionId
       ? (optimisticSession = {
@@ -13987,10 +13993,24 @@ const App = (() => {
       return result;
     },
     openIndividualSale: openPaymentDialog,
+    getIndividualDetails: sessionId => {
+      const session=state.sessions.find(row=>row.id===sessionId);
+      return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};
+    },
+    updateIndividualDetails: (sessionId,values) => {
+      const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
+      if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)return;
+      const details=window.DonPierosOrderDetails,old=details.readTime(session.order_notes);
+      session.payer_name=values.customerName||'Cliente individual';
+      session.order_notes=details.withTime(details.withTime(values.notes,old.time,old.startedAt),values.time);
+      session.updated_at=new Date().toISOString();
+      state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();
+    },
     addIndividualProduct: (sessionId,line) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
       if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)throw Error('Esta venta ya no está disponible para agregar productos.');
-      const notes=window.DonPierosOrderLabels.compact([...(line.options?.labels||[]),line.notes].filter(Boolean)).join('\n');
+      const labels=(line.options?.labels||[]).filter(label=>!['Para llevar','Domicilio'].includes(label));
+      const notes=window.DonPierosOrderLabels.compact([...labels,line.notes].filter(Boolean)).join('\n');
       if(!line.name||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99||!Number.isSafeInteger(line.unit_price)||line.unit_price<0||notes.length>500)throw Error('Revisa los datos del producto.');
       const now=new Date().toISOString(),matched=state.items.find(item=>item.id===line.product_id);
       session.session_items.push({id:line.id,session_id:sessionId,table_id:null,menu_item_id:matched?.id||null,web_product_id:line.product_id,item_name:line.name,quantity:line.quantity,unit_price:line.unit_price,notes,waiter_options:line.options,status:'served',created_at:now,updated_at:now});
