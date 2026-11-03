@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {chromium}=require('playwright-core');
 const root=path.resolve(__dirname,'..');
-const instrument=source=>source.replace('  return { init };','  return { init, state, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
+const instrument=source=>source.replace('  return { init };','  return { init, state, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption, holdIndividualSale };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
 
 test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ¡logo; comanda con observaciones primero y subrayado',async()=>{
  const server=http.createServer((req,res)=>{
@@ -41,6 +41,11 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   await page.locator('#dw-product-customer').fill('Laura');
   await page.locator('#dw-product-time').fill('25 minutos');
   await page.locator('#dw-product-observations').fill('Entregar en porterÃ­a.\nSalsa aparte.');
+  assert.equal(await page.locator('#dw-product-observations').evaluate(node=>getComputedStyle(node).textDecorationLine),'none','El subrayado se reserva para la impresiÃ³n.');
+  if(width>600){
+   const alignment=await page.evaluate(()=>{const name=document.querySelector('#dw-product-customer').getBoundingClientRect(),time=document.querySelector('#dw-product-time').getBoundingClientRect();return {top:Math.abs(name.top-time.top),height:Math.abs(name.height-time.height)};});
+   assert.ok(alignment.top<1,'Nombre y tiempo comienzan a la misma altura.');assert.ok(alignment.height<1,'Los inputs tienen la misma altura.');
+  }
   await page.locator('#dw-line-notes').fill('Bien dorada');
   await page.locator('#dw-add-product').click();
   assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.open),true,'La entrega es obligatoria.');
@@ -64,7 +69,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   await page.waitForFunction(()=>!document.querySelector('#dw-product-dialog').open);
   await page.locator('#dw-catalog-dialog [data-dw-close]').click();
   await page.waitForFunction(()=>document.querySelector('#paymentDialog').open);
-  assert.equal(await page.locator('[name="individual_customer"]').inputValue(),'Laura');
+  assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'Laura');
   assert.equal(await page.locator('#paymentSaleLines>div').count(),2);
   const saved=await page.evaluate(()=>{
    saleTest.loadWalkInDrafts();
@@ -106,6 +112,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
    return {packing:DonPierosPackaging.read(line.notes),fulfillment:line.waiter_options.fulfillment,total:session.session_items.reduce((sum,line)=>sum+line.quantity*line.unit_price,0)};
   });
   assert.equal(edited.packing.fulfillment,'dinein');assert.equal(edited.packing.fee,0);assert.equal(edited.fulfillment,'dinein');assert.equal(edited.total,24000,'Cambiar a local retira la caja sin alterar la bebida.');
+  assert.equal(await page.evaluate(()=>saleTest.holdIndividualSale()),true,'Guardar pendiente usa los datos del producto sin depender de inputs eliminados.');
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

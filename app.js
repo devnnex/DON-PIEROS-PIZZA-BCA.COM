@@ -10200,14 +10200,7 @@ const App = (() => {
     form.reset();
     form.session_id.value = session.id;
     form.payment_method.value = "cash";
-    if(form.individual_customer)form.individual_customer.value=session.payer_name==='Cliente individual'?'':session.payer_name||'';
-    if($("#individualCustomerField"))$("#individualCustomerField").hidden=!manualSale;
-    if($("#individualComandaFields"))$("#individualComandaFields").hidden=!manualSale;
     if($("#individualSaleActions"))$("#individualSaleActions").hidden=!manualSale;
-    if($("#individualTimeField"))$("#individualTimeField").hidden=!manualSale;
-    if(form.individual_estimated_time)form.individual_estimated_time.value=window.DonPierosOrderDetails?.readTime(session.order_notes).time||'';
-    if($("#individualObservationField"))$("#individualObservationField").hidden=!manualSale;
-    if(form.individual_observations)form.individual_observations.value=window.DonPierosOrderDetails?.readTime(session.order_notes).notes||'';
     form.mixed_method_one.value = "cash";
     form.mixed_method_two.value = "transfer";
     form.dataset.hasItems = activeItems.length ? "1" : "0";
@@ -10255,7 +10248,6 @@ const App = (() => {
     const session = state.sessions.find((entry) => entry.id === sessionId);
     if (isLocalWalkInSession(session)) {
       if(!session.web_order_id&&sessionHasConsumption(session)){
-        session.payer_name=$("#paymentForm")?.individual_customer?.value.trim()||session.payer_name;
         state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
         if(!persistWalkInDrafts())return;renderAdminLive();
         toast("Venta individual guardada para cobrar después.","ok",`walk-in-held:${sessionId}`);
@@ -10268,10 +10260,13 @@ const App = (() => {
     if(state.paymentProcessing||checkoutSubmissionBusy)return false;
     const form=$("#paymentForm"),session=state.sessions.find(row=>row.id===form.session_id.value);
     if(!isLocalWalkInSession(session)||session.web_order_id||!sessionHasConsumption(session)){toast('Agrega productos antes de guardar la venta.','error');return false;}
-    if(form.individual_customer.value.trim().length<2){
-      const input=form.individual_customer,field=$('#individualCustomerField');field.classList.remove('dw-required-flash');void field.offsetWidth;field.classList.add('is-invalid','dw-required-flash');input.setAttribute('aria-invalid','true');input.scrollIntoView({block:'center',behavior:'smooth'});input.focus({preventScroll:true});toast('Escribe el nombre del cliente (mínimo 2 caracteres).','error');return false;
+    const customerName=String(session.payer_name||'').trim();
+    if(customerName.length<2||customerName==='Cliente individual'){
+      toast('Escribe el nombre del cliente (mínimo 2 caracteres).','error');
+      editConsumption(session.id,session.session_items.find(item=>item.status!=='cancelled').id);
+      $('#consumptionForm').payer_name.focus();return false;
     }
-    session.payer_name=form.individual_customer.value.trim()||session.payer_name||'Cliente individual';session.updated_at=new Date().toISOString();
+    session.payer_name=customerName;session.updated_at=new Date().toISOString();
     state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
     if(!persistWalkInDrafts())return false;
     $("#paymentDialog").close();renderAdminLive();renderIndividualSales();return true;
@@ -10280,7 +10275,7 @@ const App = (() => {
   const printIndividualSale = () => {
     const session=state.sessions.find(row=>row.id===$("#paymentForm").session_id.value);
     if(!session||!sessionHasConsumption(session))return;
-    session.payer_name=$("#paymentForm").individual_customer.value.trim()||session.payer_name;persistWalkInDrafts();
+    persistWalkInDrafts();
     const popup=window.open('','_blank','width=420,height=720');if(!popup)return toast('Permite ventanas emergentes para imprimir.','error');
     const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
@@ -12459,19 +12454,6 @@ const App = (() => {
       if (event.target.name === "mixed_method_one" || event.target.name === "mixed_method_two") syncMixedMethods(event.target.name);
     });
     $("#paymentForm")?.addEventListener("input", (event) => {
-      if(event.target.name==='individual_observations'){
-        const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
-        if(isLocalWalkInSession(session)&&!session.web_order_id){const info=window.DonPierosOrderDetails.readTime(session.order_notes);session.order_notes=window.DonPierosOrderDetails.withTime(event.target.value,info.time,info.startedAt);state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
-      }
-      if(event.target.name==='individual_estimated_time'){
-        const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
-        if(isLocalWalkInSession(session)&&!session.web_order_id){session.order_notes=window.DonPierosOrderDetails.withTime(session.order_notes,event.target.value);state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
-      }
-      if(event.target.name==='individual_customer'){
-        if(event.target.value.trim().length>=2){$('#individualCustomerField')?.classList.remove('is-invalid','dw-required-flash');event.target.removeAttribute('aria-invalid');}
-        const session=state.sessions.find(row=>row.id===event.currentTarget.session_id.value);
-        if(isLocalWalkInSession(session)&&!session.web_order_id){session.payer_name=event.target.value.trim()||'Cliente individual';state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();}
-      }
       if (event.target.name === "mixed_amount_one" || event.target.name === "mixed_amount_two") updateMixedPayment(event.target.name);
       if (event.target.name === "cash_received") updateCashChange();
     });

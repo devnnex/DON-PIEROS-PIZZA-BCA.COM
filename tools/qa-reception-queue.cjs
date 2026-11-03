@@ -46,11 +46,13 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
    await page.locator(`#dw-manager-products [data-dw-product="${menuProduct.id}"]`).click();
    await page.locator(`#dw-product-body input[value="${size.id}"]`).check();
    await page.locator('#dw-unit-price').fill(String(price));await page.locator('[data-dw-quantity="1"]').click();
+   await page.locator('#dw-product-customer').fill(name);await page.locator('#dw-product-time').fill('25 minutos');await page.locator('#dw-product-observations').fill('Observación general: entregar a '+name);
+   await page.locator('#dw-fulfillment').selectOption('dinein');
    await page.locator('#dw-line-notes').fill('Observación de '+name+': salsa aparte');
-   await page.locator('#dw-add-product').click();await page.locator('#paymentDialog[open]').waitFor();
+   await page.locator('#dw-add-product').click();await page.locator('#dw-product-dialog').waitFor({state:'hidden'});await page.locator('#dw-catalog-dialog [data-dw-close]').click();await page.locator('#paymentDialog[open]').waitFor();
    assert.match(await page.locator('#paymentSaleLines').innerText(),new RegExp('Observación de '+name));
    assert.match(await page.locator('#paymentSaleLines').innerText(),/Mini/,'Conserva las opciones de la carta normal.');
-   await page.locator('#paymentForm [name=individual_customer]').fill(name);await page.locator('#paymentForm [name=individual_estimated_time]').fill('25 minutos');await page.locator('#paymentForm [name=individual_observations]').fill('Observación general: entregar a '+name);await page.locator('#holdIndividualSale').click();await page.locator('#paymentDialog').waitFor({state:'hidden'});
+   await page.locator('#holdIndividualSale').click();await page.locator('#paymentDialog').waitFor({state:'hidden'});
   }
   await addIndividual('Ana',20000);await addIndividual('Luis',15000);
   assert.equal(await page.locator('[data-open-individual]').count(),2);assert.equal(h.sheets.get('Ventas').rows.length,1,'Guardar pendiente no registra ventas.');
@@ -66,13 +68,13 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await page.locator('#consumptionForm [name=individual_edit_time]').fill('30 min');
   await page.locator('#consumptionForm [name=individual_edit_observations]').fill('Salsa aparte; entrega a Ana');
   await page.locator('#consumptionSubmitButton').click();await page.locator('#paymentDialog[open]').waitFor();
-  assert.equal(await page.locator('#paymentForm [name=individual_estimated_time]').inputValue(),'30 min');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails(document.querySelector('#paymentForm').session_id.value).time),'30 min');
   assert.match(await page.locator('#paymentTotal').innerText(),/40.000/,'Editar la comanda conserva sus importes.');
   const editedDeadline=await page.locator('[data-open-individual]').filter({hasText:'Ana'}).getAttribute('data-order-deadline');
   await page.locator('[data-edit-individual-line]').first().click();
   await page.locator('#consumptionForm [name=individual_edit_time]').fill('45 minutos');
   await page.locator('#consumptionDialog [data-cancel-consumption]').first().click();await page.locator('#paymentDialog[open]').waitFor();
-  assert.equal(await page.locator('#paymentForm [name=individual_estimated_time]').inputValue(),'30 min','Cancelar no cambia el plazo guardado.');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails(document.querySelector('#paymentForm').session_id.value).time),'30 min','Cancelar no cambia el plazo guardado.');
   await page.locator('#holdIndividualSale').click();await load();
   assert.equal(await page.locator('[data-open-individual]').filter({hasText:'Ana'}).getAttribute('data-order-deadline'),editedDeadline,'El tiempo editado sobrevive recarga.');
   for(const width of [390,768,1440]){
@@ -87,9 +89,9 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   assert.deepEqual(await page.locator('[data-open-individual]').evaluateAll(nodes=>nodes.map(node=>node.dataset.orderDeadline)),originalDeadlines,'El contador conserva su vencimiento.');
   const peer=await context.newPage();await peer.goto('http://127.0.0.1:4173/admin.html#dashboard');await peer.waitForFunction(()=>document.querySelectorAll('[data-open-individual]').length===2);
   await page.selectOption('#receptionSource','individual');await page.locator('#receptionSearch').fill('Ana');
-  assert.equal(await page.locator('[data-open-individual]').count(),1);assert.equal(await page.locator('#dp-dashboard-orders').isVisible(),false);
+  assert.equal(await page.locator('[data-open-individual]').count(),1);assert.equal(await page.locator('#dp-dashboard-orders [data-dp-order]').count(),0,'El filtro individual excluye las tarjetas de pedidos web.');
   await page.locator('[data-open-individual]').click();
-  assert.equal(await page.locator('#paymentForm [name=individual_observations]').inputValue(),'Salsa aparte; entrega a Ana');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails(document.querySelector('#paymentForm').session_id.value).notes),'Salsa aparte; entrega a Ana');
   const [manualPrint]=await Promise.all([context.waitForEvent('page'),page.locator('#printIndividualSale').click()]);
   await manualPrint.waitForSelector('article .size-option');
   assert.equal(await manualPrint.locator('article .size-name').first().evaluate(node=>parseFloat(getComputedStyle(node).fontSize)),17);
@@ -147,7 +149,7 @@ const assert=require('node:assert/strict'),{chromium}=require('playwright-core')
   await page.locator(`#dw-manager-products [data-dw-product="${menuProduct.id}"]`).click();
   await page.locator('#dw-add-product').click();assert.match(await page.locator('#dw-product-error').innerText(),/obligatorias/);
   await page.locator(`#dw-product-body input[value="${size.id}"]`).check();
-  assert.equal(await page.locator('#dw-fulfillment').inputValue(),'pickup');assert.equal(await page.locator('#dw-fulfillment').isDisabled(),true);
+  assert.equal(await page.locator('#dw-fulfillment').inputValue(),'pickup');assert.equal(await page.locator('#dw-fulfillment').isDisabled(),false,'La entrega por producto sigue editable.');
   await page.locator('[data-dw-quantity="1"]').click();await page.locator('#dw-unit-price').fill('27000');
   await page.locator('#dw-line-notes').fill('Producto extra: salsa aparte');
   await page.setViewportSize({width:390,height:1000});
