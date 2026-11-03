@@ -1,4 +1,3 @@
-// DEVNEX connection 4f18f803-e68a-49c2-af6a-1d68b53fac96: refresh the cached client shell.
 const PWA_BRAND_CACHE = "don-pieros-pwa-brand-v3";
 const APP_ASSET_CACHE = "don-pieros-assets-20261102-v57";
 const DYNAMIC_PWA_ASSETS = new Set([
