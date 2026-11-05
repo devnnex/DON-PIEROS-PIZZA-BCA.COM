@@ -10062,6 +10062,7 @@ const App = (() => {
     const receiptNumber = invoice?.number || `FACT-${sessionReference(session)}`;
     const issuedAt = new Date(invoice?.createdAt || Date.now());
     const payments = invoice?.payments || [];
+    const invoiceLogoUrl = new URL("images/don-pieros-invoice-logo.png", location.href).href;
     return `<!doctype html>
       <html lang="es"><head><meta charset="utf-8"><title>${isPaid ? "Factura" : "Pre-cuenta"} ${escapeHTML(receiptNumber)}</title>
       <style>
@@ -10069,6 +10070,7 @@ const App = (() => {
         * { box-sizing: border-box; color: #000; font-weight: 800; }
         body { width: 72mm; margin: 0 auto; color: #000; background: #fff; font: 800 12px/1.35 "Courier New", monospace; }
         .logo { margin: 2mm 0 0; text-align: center; font: 900 22px/1 Arial, sans-serif; letter-spacing: .7px; }
+        .invoice-logo { display: block; width: 56mm; height: auto; max-height: 42mm; object-fit: contain; margin: 0 auto 1mm; }
         .subtitle, .center { text-align: center; }
         .subtitle { margin: 1mm 0 3mm; font-weight: 700; }
         .rule { margin: 2.5mm 0; border-top: 1px dashed #000; }
@@ -10095,7 +10097,7 @@ const App = (() => {
         .devnex-contact svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
         @media screen { body { padding: 8mm 4mm; box-shadow: 0 0 22px #bbb; } }
       </style></head><body>
-        <div class="logo">${escapeHTML(businessName)}</div>
+        ${isPaid ? `<img class="invoice-logo" src="${escapeHTML(invoiceLogoUrl)}" alt="${escapeHTML(businessName)}">` : `<div class="logo">${escapeHTML(businessName)}</div>`}
         <div class="subtitle">FACTURA DE VENTA</div>
         <div class="rule"></div>
         <div class="meta">
