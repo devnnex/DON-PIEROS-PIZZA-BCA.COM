@@ -1,6 +1,5 @@
 (() => {
   'use strict';
-  const activeUrls=new WeakMap();
   function sizeOption(value){
     const text=String(value??''),escape=text=>text.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const match=text.match(/^((?:Elige\s+el\s+)?Tama[ñn]o\s*:\s*)(Super\s+maxi|Maxi|Mediana|Mini|Pizzeta)\b(.*)$/i);
@@ -11,7 +10,8 @@
     const doc=target.document;width=width===58?58:80;
     const style=doc.createElement('style');style.dataset.thermalPaper='';
     style.textContent=`html,body{height:auto!important;min-height:0!important;max-height:none!important;overflow:visible!important}html{margin:0!important;padding:0!important}body{box-sizing:border-box!important;width:${width}mm!important;margin:0!important;padding:2mm!important;box-shadow:none!important}*{box-sizing:border-box}@page{margin:0;@top-left{content:none}@top-center{content:none}@top-right{content:none}@bottom-left{content:none}@bottom-center{content:none}@bottom-right{content:none}}`;
-    doc.head.append(style);await (doc.fonts?.ready||Promise.resolve());
+    doc.head.append(style);
+    await Promise.race([doc.fonts?.ready||Promise.resolve(),new Promise(resolve=>setTimeout(resolve,700))]);
     doc.querySelectorAll('.size-name').forEach(size=>{
       const block=size.closest('.kitchen-item,article')||size.parentElement;
       const otherSizes=[...block.querySelectorAll('*')].filter(node=>!node.closest('.size-name'))
@@ -19,8 +19,8 @@
       const largest=Math.max(parseFloat(target.getComputedStyle(block).fontSize)||0,...otherSizes);
       size.style.setProperty('font-size',`${largest+2}px`,'important');
     });
-    await Promise.all([...doc.images].map(img=>img.decode?.().catch(()=>{})));
-    await new Promise(resolve=>target.requestAnimationFrame(()=>resolve()));
+    await Promise.race([Promise.all([...doc.images].map(img=>img.decode?.().catch(()=>{}))),new Promise(resolve=>setTimeout(resolve,700))]);
+    await Promise.race([new Promise(resolve=>target.requestAnimationFrame(()=>resolve())),new Promise(resolve=>setTimeout(resolve,120))]);
     // body height is content height. scrollHeight of html includes the viewport
     // and would make a short receipt as long as the popup's entire screen.
     const height=Math.max(20,Math.ceil(doc.body.getBoundingClientRect().height*25.4/96)+1);
@@ -64,17 +64,22 @@
     return {pdf,width:paper.width,height:paper.height};
   }
   async function print(target,width=80){
-    const result=await createPdf(target,width),doc=target.document;
-    result.pdf.autoPrint();
-    const url=URL.createObjectURL(result.pdf.output('blob'));
-    const previous=activeUrls.get(target);if(previous)URL.revokeObjectURL(previous);activeUrls.set(target,url);
-    const viewer=doc.createElement('iframe');viewer.dataset.thermalPdfViewer='';viewer.title='Impresión del comprobante PDF';
-    viewer.style.cssText='position:fixed;inset:0;width:100%;height:100%;border:0;background:white;z-index:2147483647';
-    viewer.src=url;doc.body.append(viewer);doc.body.dataset.thermalPdfReady='1';
-    // Keep the URL valid while the preview/print dialog is open. Closing its host
-    // releases it; a cancelled print can still be retried in the PDF viewer.
-    target.addEventListener('unload',()=>{URL.revokeObjectURL(url);if(activeUrls.get(target)===url)activeUrls.delete(target);},{once:true});
-    target.focus();return result;
+    const doc=target.document;target.focus();
+    const paper=await prepare(target,width);
+    const control=doc.createElement('div');control.dataset.thermalPrintControl='';
+    const readyLabel=/factura|comprobante|recibo/i.test(doc.title||'')?'Comprobante listo para imprimir':'Comanda lista para imprimir';
+    control.innerHTML='<span>'+readyLabel+'</span><button type="button">Imprimir</button>';
+    const style=doc.createElement('style');style.textContent='[data-thermal-print-control]{position:sticky;top:0;z-index:2147483646;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;background:#17191f;color:#fff;font:600 16px Arial,sans-serif}[data-thermal-print-control] button{border:0;border-radius:8px;padding:12px 24px;background:#e7b84b;color:#17191f;font:800 16px Arial,sans-serif;cursor:pointer}@media print{[data-thermal-print-control]{display:none!important}}';
+    doc.head.append(style);doc.body.prepend(control);doc.body.dataset.thermalPrintReady='1';target.focus();
+    return new Promise((resolve,reject)=>{
+      let finished=false;
+      const finish=()=>{if(finished)return;finished=true;resolve(paper);};
+      target.addEventListener('beforeunload',finish,{once:true});
+      control.querySelector('button').addEventListener('click',()=>{
+        const button=control.querySelector('button');button.disabled=true;button.textContent='Abriendo impresión…';
+        try{target.focus();target.print();finish();}catch(error){button.disabled=false;button.textContent='Imprimir';reject(error);}
+      });
+    });
   }
   window.DonPierosThermal={prepare,createPdf,print,sizeOption,sizeStyle};
 })();

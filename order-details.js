@@ -74,11 +74,18 @@
     doc.querySelectorAll('.fulfillment,p').forEach(node=>{if(/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))underline(node);});
     doc.querySelectorAll(selector).forEach((block,index)=>{
       const item=items?.[index]||{},packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+      const heading=block.querySelector('h3,div>strong,strong'),lineNotes=[...block.querySelectorAll('.line-notes')];
+      if(heading&&lineNotes.length){
+        const observation=[...new Set(lineNotes.map(node=>node.textContent.trim()).filter(Boolean))].join('\n').toLocaleUpperCase('es-CO');
+        lineNotes.forEach(node=>node.remove());
+        if(observation){const note=doc.createElement('p');note.className='line-notes';note.textContent=observation;heading.insertAdjacentElement('afterend',note);}
+      }
       const fulfillment=item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||packing?.fulfillment;
       if(fulfillment==='delivery'){
         const line=[...block.querySelectorAll('p')].find(node=>/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))||doc.createElement('p');
         if(!line.textContent){line.textContent='Domicilio';underline(line);}
-        block.querySelector('h3,div>strong,strong')?.after(line);
+        const heading=block.querySelector('h3,div>strong,strong'),observation=block.querySelector('.line-notes');
+        if(observation)observation.after(line);else heading?.after(line);
       }
     });
     if(info.time){const line=doc.createElement('p');line.className='estimated-print';line.textContent='Tiempo estimado: '+info.time;doc.querySelector('header,.fulfillment,h2')?.after(line);}

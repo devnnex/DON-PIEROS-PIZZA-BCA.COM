@@ -54,8 +54,9 @@
   function orderWhatsAppUrl(order, orderId, confirmedTotal, queuePosition, ordersAhead) {
     const productLines = order.items.flatMap(item => {
       const lines = [`${item.quantity}x ${item.name} — *${money(item.unitPrice * item.quantity)}*`];
+      if(item.notes)lines.push(`   OBSERVACIÓN: ${String(item.notes).trim().toLocaleUpperCase('es-CO')}`);
       window.DonPierosOrderLabels.compact(item.selections || []).forEach(selection => lines.push(`   ➕ ${selection}`));
-      if(item.packagingUnitFee)lines.push(`   Caja ${item.packagingSize}: ${item.quantity} × ${money(item.packagingUnitFee)} = ${money(item.quantity*item.packagingUnitFee)}`);
+      if(item.packagingUnitFee)lines.push(`   ANEXO: CAJA ${item.packagingSize}: ${item.quantity} × ${money(item.packagingUnitFee)} = ${money(item.quantity*item.packagingUnitFee)}`);
       lines.push('');
       return lines;
     });

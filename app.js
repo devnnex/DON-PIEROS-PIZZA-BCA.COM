@@ -10077,6 +10077,8 @@ const App = (() => {
         .items { display: grid; gap: 2mm; }
         .item { display: grid; gap: 2mm; }
         .item small { display: block; font-weight: 800; }
+        .item .item-observation { text-transform: uppercase; white-space: pre-wrap; }
+        .item .item-addon { font-weight: 900; }
         strong { font-weight: 900; }
         .meta > *, .totals > *, .item > * { min-width: 0; overflow-wrap: anywhere; }
         .meta, .totals, .item { margin-right: 6mm; }
@@ -10109,7 +10111,7 @@ const App = (() => {
         </div>
         <div class="rule"></div>
         <div class="items">
-          ${items.flatMap(item=>{const box=globalThis.DonPierosPackaging?.read(item.notes);const price=Number(item.unit_price)-(box?.fee||0);return [`<div class="item"><span>${Number(item.quantity||0)} x ${escapeHTML(item.item_name)}<small>${money(price)} c/u</small>${box?.notes?`<small>${escapeHTML(box.notes)}</small>`:""}</span><strong>${money(price*Number(item.quantity))}</strong></div>`,...(box?.fee?[`<div class="item"><span>${Number(item.quantity)} x Caja ${escapeHTML(globalThis.DonPierosPackaging.sizes[box.size])}<small>Para llevar</small></span><strong>${money(box.fee*Number(item.quantity))}</strong></div>`]:[])];}).join("") || "<div class=\"center\">Sin consumos</div>"}
+          ${items.map(item=>{const packing=globalThis.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);const fee=packing?.fee||0,price=Number(item.unit_price)-fee,quantity=Number(item.quantity||0),observation=String(packing?.notes||'').trim();return `<div class="item"><span>${quantity} x ${escapeHTML(item.item_name)}<small>${money(price)} c/u</small>${observation?`<small class="item-observation">${escapeHTML(observation.toLocaleUpperCase('es-CO'))}</small>`:''}${fee?`<small class="item-addon">ANEXO: CAJA ${escapeHTML(globalThis.DonPierosPackaging.sizes[packing.size])} · ${money(fee)} c/u</small>`:''}</span><strong>${money((price+fee)*quantity)}</strong></div>`;}).join("") || "<div class=\"center\">Sin consumos</div>"}
         </div>
         <div class="rule"></div>
         <div class="totals">
@@ -10265,7 +10267,7 @@ const App = (() => {
     if (paymentLines) paymentLines.innerHTML = activeItems.length
       ? activeItems.map((item) => `<div class="${quickSale && state.individualProductFlashes?.get(item) > Date.now() ? "consumption-just-added" : ""}"><span>${Number(item.quantity || 0)} &times; ${escapeHTML(item.item_name)}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong>${manualSale?`<button class="ghost small" type="button" data-edit-individual-line="${escapeHTML(item.id)}">Editar</button>`:''}</div>`).join("")
       : '<p class="payment-empty-sale">Agrega el producto para continuar con el cobro.</p>';
-    paymentLines?.querySelectorAll(':scope > div').forEach((row,index)=>{const note=activeItems[index]?.notes;if(note){const text=document.createElement('p');text.className='individual-line-notes';text.textContent=window.DonPierosOrderDetails?.readTime(note).notes||note;row.append(text);}});
+    paymentLines?.querySelectorAll(':scope > div').forEach((row,index)=>{const note=activeItems[index]?.notes;if(note){const text=document.createElement('p');text.className='individual-line-notes';text.textContent=(window.DonPierosOrderDetails?.readTime(note).notes||note).trim().toLocaleUpperCase('es-CO');row.append(text);}});
     const addItemButton = $("#paymentAddItem");
     if (addItemButton) {
       addItemButton.hidden = !quickSale||!!session.web_order_id;
@@ -10334,12 +10336,15 @@ const App = (() => {
     const kitchenLines=kitchenItems.map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const articles=kitchenLines.map(line=>{
       const labels=window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean));
-      const flavors=labels.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
-      const others=labels.filter(note=>!flavors.includes(note));
+      const knownLabels=window.DonPierosOrderLabels.compact(line.waiter_options?.labels||[]),known=new Set(knownLabels);
+      const observation=labels.filter(note=>!known.has(note)&&!/^Domicilio$|^Para llevar$|^En el local$|^Para comer en el local$/i.test(note)).join('\n');
+      const selections=labels.filter(note=>known.has(note)),flavors=selections.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
+      const others=selections.filter(note=>!flavors.includes(note));
       const noteHtml=note=>{const option=window.DonPierosThermal.sizeOption(note);return '<p class="'+(option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes')+'">'+option.html+'</p>';};
       const fulfillment=line.waiter_options?.fulfillment||line.packing.fulfillment||session.fulfillment||'';
       const delivery=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';
-      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+'</article>';
+      const box=line.packing.packagingUnitFee?'<p class="packing-line">ANEXO: CAJA '+escapeHTML(line.packing.packagingSize)+' · '+money(line.packing.packagingUnitFee)+' c/u · '+money(line.packing.packagingTotal)+'</p>':'';
+      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(observation?'<p class="line-notes">'+escapeHTML(observation.toLocaleUpperCase('es-CO'))+'</p>':'')+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+box+'</article>';
     }).join('');
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
@@ -10351,7 +10356,7 @@ const App = (() => {
     popup.document.querySelectorAll('article').forEach(article=>{
       const flavors=article.querySelector('.flavor-options');if(flavors)article.querySelector(':scope>strong')?.after(flavors);
     });
-    void window.DonPierosThermal.print(popup,width).catch(error=>toast(String(error.message||error),'error'));
+    return window.DonPierosThermal.print(popup,width).catch(error=>{toast(String(error.message||error),'error');throw error;});
   };
 
   const paymentFromForm = (form) => {
@@ -12910,7 +12915,7 @@ const App = (() => {
       if (target.id === "newWalkInSale" || target.hasAttribute('data-new-individual')) {if(isManager())await createWalkInSale();}
       if (target.dataset.openIndividual && isManager()) openPaymentDialog(target.dataset.openIndividual);
       if (target.id === 'holdIndividualSale' && isManager()) holdIndividualSale();
-      if (target.id === 'printIndividualSale' && isManager()) printIndividualSale();
+      if (target.id === 'printIndividualSale' && isManager()) void printIndividualSale().catch(()=>{});
       if (target.dataset.editIndividualLine && isManager()) {const sessionId=$("#paymentForm").session_id.value;$("#paymentDialog").close();editConsumption(sessionId,target.dataset.editIndividualLine);}
       if (target.id === 'discardIndividualSale' && isManager() && !state.paymentProcessing && !checkoutSubmissionBusy) {
         const sessionId=$("#paymentForm").session_id.value;
@@ -14061,7 +14066,7 @@ const App = (() => {
         const sync=individualSync();
         if(!sync)throw Error('No se pudo iniciar la conexión compartida. Actualiza la página.');
         void sync.flush(sessionId).catch(()=>{});
-        printIndividualSale(sessionId,popup);return true;
+        return await printIndividualSale(sessionId,popup);
       }catch(error){popup?.close();throw error;}
     },
     leaveIndividualCatalog: sessionId => {
