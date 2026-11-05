@@ -14060,7 +14060,7 @@ const App = (() => {
       try{
         const sync=individualSync();
         if(!sync)throw Error('No se pudo iniciar la conexión compartida. Actualiza la página.');
-        await sync.flush(sessionId);
+        void sync.flush(sessionId).catch(()=>{});
         printIndividualSale(sessionId,popup);return true;
       }catch(error){popup?.close();throw error;}
     },
