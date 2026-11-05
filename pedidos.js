@@ -324,7 +324,7 @@
   function refreshDetailTotal() {
     const box=selectedBox(),fee=state.fulfillment==='dinein'?0:box.fee;
     $('#detail-total').textContent = money((selectedUnitPrice()+fee) * state.quantity);
-    $('#detail-packaging').textContent=fee?'Incluye caja '+window.DonPierosPackaging.sizes[box.size]+': '+money(fee)+' por unidad. Sin cobro de caja al comer en el local.':'Al recoger o pedir domicilio, las pizzas incluyen caja según el tamaño: Mini, Mediana y Pizzeta $2.000; Maxi y Super maxi $4.000.';
+    $('#detail-packaging').textContent=fee?'Incluye caja '+window.DonPierosPackaging.sizes[box.size]+': '+money(fee)+' por unidad. Sin cobro de caja al comer en el local.':state.fulfillment==='dinein'?'Sin cobro de empaque al comer en el local.':window.DonPierosPackaging.choices(state.active).length?'Empaque por unidad para llevar o domicilio: porciones $500; lasañas y panzerottis $1.500; pizzetas, Mini y Mediana $2.000; Maxi y Super maxi $4.000.':'Este producto no lleva cobro de empaque.';
     $('[data-quantity="detail"] b').textContent = state.quantity;
     (state.active?.modifiers || []).forEach(modifier => {
       const field = $(`.modifier[data-modifier="${CSS.escape(modifier.id)}"]`);

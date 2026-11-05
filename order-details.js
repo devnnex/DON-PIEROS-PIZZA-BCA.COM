@@ -57,7 +57,7 @@
       const name=block.querySelector('h3,div>strong,strong');if(!name)return;
       const options=[...block.querySelectorAll('.size-option')];
       for(const option of options){const line=doc.createElement('p');line.className='size-option';line.innerHTML=option.innerHTML;const list=option.parentElement;option.remove();name.before(line);if(list.tagName==='UL'&&!list.children.length)list.remove();}
-      if(!options.length){const item=items[index]||{},fallback=item.packagingSize||(/pizzeta/i.test(item.name||item.item_name||'')?'Pizzeta':'');if(fallback){const line=doc.createElement('p'),size=doc.createElement('b');line.className='size-option';size.className='size-name';size.textContent=fallback;line.append('Tamaño: ',size);name.before(line);}}
+      if(!options.length){const item=items[index]||{},saved=item.packagingSize||(/pizzeta/i.test(item.name||item.item_name||'')?'Pizzeta':''),fallback=/^(Mini|Mediana|Maxi|Super maxi|Pizzeta)$/i.test(saved)?saved:'';if(fallback){const line=doc.createElement('p'),size=doc.createElement('b');line.className='size-option';size.className='size-name';size.textContent=fallback;line.append('Tamaño: ',size);name.before(line);}}
     });
   }
   function prepareComanda(doc,selector,items,notes){

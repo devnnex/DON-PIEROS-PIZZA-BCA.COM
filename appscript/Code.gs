@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.18.0-donpieros",
+  version: "3.19.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1974,16 +1974,24 @@ function dpDeleteCatalog_(payload,user) {
   });
 }
 
+var DP_PACKAGING_FEES={'Mini':2000,'Mediana':2000,'Maxi':4000,'Super maxi':4000,'Pizzeta':2000,'Porción':500,'Lasaña':1500,'Panzerotti':1500};
 function dpBox_(product,labels) {
   var text=normalizeSearch_((labels||[]).length?labels.join(' '):product.name),name=normalizeSearch_(product.name+' '+product.category),size='';
-  if(!/pizza|pizzeta/.test(name))return {size:'',fee:0};
-  if(/pizzeta/.test(name))size='Pizzeta';
+  var productName=normalizeSearch_(product.name),category=normalizeSearch_(product.category);
+  if(/porcion/.test(productName))size='Porción';
+  else if(/panzer|pancer|panzar/.test(productName))size='Panzerotti';
+  else if(/lasan|lasagn|bolones/.test(productName))size='Lasaña';
+  else if(/pizzeta/.test(productName))size='Pizzeta';
+  else if(/porcion/.test(category))size='Porción';
+  else if(/lasan|lasagn|panzer|pancer|panzar/.test(category))size='Lasaña';
+  else if(/pizzeta/.test(category))size='Pizzeta';
+  else if(!/pizza/.test(name))return {size:'',fee:0};
   else if(/\bpizzeta\b/.test(text))size='Pizzeta';
   else if(/super\s*maxi/.test(text))size='Super maxi';
   else if(/\bmaxi\b/.test(text))size='Maxi';
   else if(/\bmediana\b/.test(text))size='Mediana';
   else if(/\bmini\b/.test(text))size='Mini';
-  return {size:size,fee:size==='Maxi'||size==='Super maxi'?4000:size?2000:0};
+  return {size:size,fee:DP_PACKAGING_FEES[size]||0};
 }
 function dpPriceOrderItems_(lines,catalog,fulfillment,managerPrices) {
   if(!Array.isArray(lines)||!lines.length||lines.length>60)throw new Error('La orden debe contener entre 1 y 60 productos.');
@@ -2329,12 +2337,13 @@ function dpEditOrder_(payload,user,clientSignals) {
     var found=dpWebSaleOrder_({webOrderId:dpText_(payload.id,100)}),order=found.order;
     if(['nueva','atendiendo','lista'].indexOf(order.status)<0)throw new Error('Solo puedes editar pedidos pendientes de cobrar y entregar.');
     if(!Array.isArray(payload.lines)||payload.lines.length!==order.items.length)throw new Error('Los productos del pedido cambiaron. Actualiza la comanda.');
-    var sizes={'':0,'Mini':2000,'Mediana':2000,'Pizzeta':2000,'Maxi':4000,'Super maxi':4000};
+    var sizes=Object.assign({'':0},DP_PACKAGING_FEES);
     var items=order.items.map(function(item,index){
       var edit=payload.lines[index]||{},price=Number(edit.unitPrice),size=String(edit.packagingSize||'');
       if(!edit||edit.productId!==item.productId||typeof edit.unitPrice!=='number'||!Number.isSafeInteger(price)||price<0||price>100000000||!Object.prototype.hasOwnProperty.call(sizes,size))throw new Error('Revisa el precio y la caja de cada producto.');
-      if(size&&!/pizza|pizzeta/.test(normalizeSearch_(item.catalogName||item.name)))throw new Error('Este producto no lleva caja de pizza.');
-      return Object.assign({},item,{unitPrice:price,packagingSize:size,packagingUnitFee:sizes[size]});
+      var box=dpBox_({name:item.catalogName||item.name},[]),fixed=['Porción','Lasaña','Panzerotti','Pizzeta'];
+      if(size&&(!box.fee&&!/pizza/.test(normalizeSearch_(item.catalogName||item.name))||fixed.indexOf(box.size)>=0&&size!==box.size||fixed.indexOf(box.size)<0&&['Porción','Lasaña','Panzerotti'].indexOf(size)>=0))throw new Error('Selecciona el empaque correspondiente al producto.');
+      return Object.assign({},item,{unitPrice:price,packagingSize:size,packagingUnitFee:(item.fulfillment||order.fulfillment)==='dinein'?0:sizes[size]});
     });
     var unchanged=JSON.stringify(items)===JSON.stringify(order.items);
     if(unchanged)return {ok:true,duplicate:true,order:order};

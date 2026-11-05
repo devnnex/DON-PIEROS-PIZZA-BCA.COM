@@ -1,5 +1,7 @@
 # Don Pieros Pizza
 
+**Actualización v59:** empaque por unidad para llevar y domicilio en todos los flujos: porciones **$500**, lasañas y panzerottis **$1.500**, pizzetas **$2.000**. Mini y Mediana conservan $2.000; Maxi y Super maxi $4.000. En el local no se cobra empaque. Las comandas que envía el mesero aparecen en Inicio → Ventas individuales pendientes, separadas de los pedidos web y con el nombre del mesero. Actualiza Apps Script a **3.19.0-donpieros** conservando `/exec` y publica la web v59; no requiere SQL. Pasos en [ACTUALIZACION-V59.md](ACTUALIZACION-V59.md).
+
 **Actualización v58:** ventas individuales compartidas en Google Sheets mediante Apps Script **3.18.0**, con cola local, reintentos y protección frente a cobros simultáneos. Nueva venta abre la carta; **Enviar e imprimir comanda** confirma y prepara la impresión desde el producto. Comanda compacta con logo PNG, cliente en mayúsculas, sabores bajo el producto e importes solo al final. Menos sondeos a Supabase con Realtime conectado e imágenes nuevas comprimidas. Publica la nueva versión de `Code.gs` conservando `/exec`; no requiere SQL. Pasos en [ACTUALIZACION-V58.md](ACTUALIZACION-V58.md).
 
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.

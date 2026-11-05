@@ -68,3 +68,49 @@ test('el historial devuelve la caja de la venta para reimprimir en otro equipo',
  assert.equal(report.records[0].items[0].notes,note);assert.equal(report.records[0].items[0].unitPrice,82000);
  assert.equal(report.totals.income,164000);assert.equal(boxes.read(report.records[0].items[0].notes).fee,4000);
 });
+
+test('porciones, lasañas, panzerottis y pizzetas cobran por unidad en carta y meseros; en local no cobran',()=>{
+ const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog');
+ const products=catalog.products.filter(product=>/Porciones|Lasañas|Pizzetas/.test(product.category));assert.ok(products.length>20);
+ for(const product of products)for(const fulfillment of ['pickup','delivery','dinein']){
+  const expected=product.category==='Porciones'?500:product.category==='Pizzetas'?2000:1500;
+  const box=boxes.forProduct(product);assert.equal(box.fee,expected,product.name);
+  const quantity=2,line={productId:product.id,quantity,unitPrice:product.price,selectionIds:{},notes:'Salsa aparte',fulfillment};
+  const order=h.order(product,{fulfillment,address:'Carrera 10 #20-30',neighborhood:'Barrio nuevo',items:[line]});
+  for(const action of ['createOrder','dp_create_staff_order']){
+   const raw=action==='createOrder'?order:{requestId:require('node:crypto').randomUUID(),customerName:'Laura',items:[line],notes:''};
+   const result=h.call(action,{order:raw},action==='createOrder'?'boss':'waiter');assert.equal(result.ok,true,product.name+': '+result.error);
+   const fee=fulfillment==='dinein'?0:expected;
+   assert.equal(result.packagingFee,quantity*fee,product.name);assert.equal(result.total,quantity*(product.price+fee));
+   const saved=h.call('dp_get_order',{id:result.orderId}).order.items[0];assert.equal(saved.packagingUnitFee,fee);
+   assert.equal(h.call(action,{order:raw},action==='createOrder'?'boss':'waiter').total,result.total,'El reintento no repite empaques.');
+  }
+ }
+});
+
+test('caja manual, notas y reimpresión conservan tarifas nuevas al editar y cambiar entrega',()=>{
+ for(const [name,kind,expected] of [['Porción de pizza Maxi','porcion',500],['Lasaña marinera','lasana',1500],['Boloñesa','lasana',1500],['Panzerotti especial','panzerotti',1500],['Panceroti de pollo','panzerotti',1500],['Pizzeta hawaiana','pizzeta',2000]]){
+  assert.equal(boxes.forProduct({name}).size,kind);
+  const fields={packing_mode:{value:'delivery'},packing_size:{value:'maxi'}};
+  const form={elements:{namedItem:name=>fields[name]}};
+  const draft=boxes.draft(form,name,20000,'Salsa aparte');assert.equal(draft.unitPrice,20000+expected);
+  const packing=boxes.read(draft.notes);assert.equal(packing.size,kind);assert.equal(packing.fee,expected);assert.equal(packing.fulfillment,'delivery');
+  assert.equal(boxes.note(draft.notes,kind,'pickup').split('Caja').length,2,'La edición no duplica el empaque.');
+  const printed=boxes.breakdown({quantity:3,unit_price:draft.unitPrice,notes:draft.notes});assert.equal(printed.products,60000);assert.equal(printed.packagingTotal,3*expected);
+  fields.packing_mode.value='local';assert.deepEqual(boxes.draft(form,name,20000,draft.notes),{unitPrice:20000,notes:'Salsa aparte'});
+  assert.equal(boxes.note(draft.notes,kind,'dinein'),'Salsa aparte');
+ }
+ assert.deepEqual(boxes.choices({name:'Porción hawaiana'}),['porcion']);assert.deepEqual(boxes.choices({name:'Gaseosa'}),[]);
+});
+
+test('el editor de precios web conserva el empaque correcto y rechaza cajas de otra familia',()=>{
+ const h=harness({seedMenu:true}),catalog=h.call('dp_get_catalog');
+ for(const name of ['Porción hawaiana','Lasaña marinera','Panzerotti hawaiano','Pizzeta hawaiana']){
+  const product=catalog.products.find(product=>product.name===name),box=boxes.forProduct(product);
+  const receipt=h.call('createOrder',{order:h.order(product,{items:[{productId:product.id,quantity:2,unitPrice:product.price,selectionIds:{}}]})});
+  let order=h.call('dp_get_order',{id:receipt.orderId}).order;
+  const result=h.call('dp_edit_order',{id:order.id,version:order.version,lines:[{productId:product.id,unitPrice:product.price+1000,packagingSize:boxes.sizes[box.size]}]});
+  assert.equal(result.ok,true,result.error);assert.equal(result.order.packagingFee,2*box.fee);assert.equal(result.order.total,2*(product.price+1000+box.fee));
+  assert.equal(h.call('dp_edit_order',{id:order.id,version:result.order.version,lines:[{productId:product.id,unitPrice:product.price,packagingSize:'Super maxi'}]}).ok,false);
+ }
+});
