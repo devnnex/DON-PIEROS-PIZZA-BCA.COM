@@ -61,3 +61,17 @@ test('tiempo y observaciones web se guardan con permisos, versiÃ³n y sin cambiar
  assert.equal(h.call('dp_order_time',{...payload,estimatedTime:'x'.repeat(81)}).ok,false);
  assert.equal(h.call('dp_order_time',{...payload,estimatedTime:'25\nminutos'}).ok,false);
 });
+
+test('agrupa productos repetidos y respeta observaciones, opciones y entrega',()=>{
+ const lines=[
+  {id:'a',item_name:'Pizza Hawaiana',quantity:1,unit_price:43000,waiter_options:{labels:['Tamaño: Mediana'],fulfillment:'pickup'},notes:''},
+  {id:'b',item_name:'Pizza Hawaiana',quantity:2,unit_price:43000,waiter_options:{labels:['Tamaño: Mediana','Para llevar'],fulfillment:'pickup'},notes:''},
+  {id:'c',item_name:'Pizza Carnes',quantity:1,unit_price:46000,notes:''}
+ ];
+ const grouped=details.groupComandaItems(lines);
+ assert.deepEqual(grouped.map(line=>[line.item_name,line.quantity]),[['Pizza Hawaiana',3],['Pizza Carnes',1]]);
+ const observed=details.groupComandaItems([...lines.slice(0,2),{...lines[1],id:'d',notes:'Salsa aparte'}]);
+ assert.deepEqual(observed.map(line=>[line.id,line.quantity]),[['a',1],['b',2],['d',2]]);
+ const different=details.groupComandaItems([lines[0],{...lines[0],id:'e',waiter_options:{labels:['Tamaño: Maxi'],fulfillment:'pickup'}}]);
+ assert.equal(different.length,2);
+});

@@ -55,6 +55,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   await page.locator('#dw-add-product').click();
   assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.open),true,'La entrega es obligatoria.');
   await page.locator('#dw-fulfillment').selectOption('delivery');
+  assert.equal(await page.locator('#dw-product-address').isVisible(),true,'Domicilio muestra la direcciÃ³n debajo de Entrega.');
+  await page.locator('#dw-product-address').fill('Calle 10 # 20-30');
   assert.match(await page.locator('#dw-packaging-summary').innerText(),/2\.000/);
   assert.match(await page.locator('#dw-product-price').innerText(),/22\.000/);
   await page.locator('#dw-add-product').click();
@@ -66,6 +68,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   assert.equal(await page.locator('#dw-product-time').inputValue(),'25 minutos');
   assert.equal(await page.locator('#dw-product-observations').inputValue(),'Entregar en porterÃ­a.\nSalsa aparte.');
   await page.locator('#dw-fulfillment').selectOption('delivery');
+  assert.equal(await page.locator('#dw-product-address').inputValue(),'Calle 10 # 20-30','La direcciÃ³n se conserva al agregar productos a la misma venta.');
   assert.match(await page.locator('#dw-product-price').innerText(),/4\.000/,'La bebida no cobra caja.');
   assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
@@ -81,9 +84,9 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   const saved=await page.evaluate(()=>{
    saleTest.loadWalkInDrafts();
    const session=saleTest.state.sessions.find(row=>row.id==='walk-in-test');
-   return {count:session.session_items.length,total:session.session_items.reduce((sum,line)=>sum+line.unit_price*line.quantity,0),info:DonPierosOrderDetails.readTime(session.order_notes),packing:DonPierosPackaging.read(session.session_items[0].notes)};
+   return {count:session.session_items.length,total:session.session_items.reduce((sum,line)=>sum+line.unit_price*line.quantity,0),info:DonPierosOrderDetails.readTime(session.order_notes),packing:DonPierosPackaging.read(session.session_items[0].notes),address:session.delivery_address};
   });
-  assert.equal(saved.count,2);assert.equal(saved.total,26000);assert.equal(saved.info.time,'25 minutos');assert.equal(saved.packing.fulfillment,'delivery');assert.equal(saved.packing.fee,2000);
+  assert.equal(saved.count,2);assert.equal(saved.total,26000);assert.equal(saved.info.time,'25 minutos');assert.equal(saved.packing.fulfillment,'delivery');assert.equal(saved.packing.fee,2000);assert.equal(saved.address,'Calle 10 # 20-30');
   await page.evaluate(()=>{
    window.printTarget=window.open('','_blank');window.open=()=>printTarget;
    DonPierosThermal.print=async target=>{window.printReady=target.document.body.innerHTML;};

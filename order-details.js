@@ -89,6 +89,27 @@
     if(!sizes.length&&fallback)sizes.push('Tamaño: '+fallback);
     return {sizes,others};
   }
+  function groupComandaItems(items=[]){
+    const nameKey=value=>String(value||'').trim().toLocaleLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    const rows=(items||[]).map(item=>{
+      const packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes??item.packing?.notes)||{notes:item.waiter_line_notes??item.notes??item.packing?.notes??''};
+      const name=String(item.item_name||item.name||item.product||'Producto').trim();
+      const labels=(item.waiter_options?.labels||item.options?.labels||item.selections||[]).filter(label=>!['Para llevar','Domicilio','En el local','Para comer en el local'].includes(String(label)));
+      const fulfillment=item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||packing.fulfillment||'';
+      const signature=JSON.stringify([nameKey(name),labels,fulfillment,item.packagingSize||packing.size||'',Number(item.unit_price??item.unitPrice)||0]);
+      return {item,name,notes:String(packing.notes||''),signature};
+    });
+    const namesWithNotes=new Set(rows.filter(row=>row.notes).map(row=>nameKey(row.name)));
+    const grouped=[],bySignature=new Map();
+    rows.forEach(row=>{
+      const key=nameKey(row.name);
+      if(row.notes||namesWithNotes.has(key)){grouped.push(row.item);return;}
+      const existing=bySignature.get(row.signature);
+      if(existing)existing.quantity=(Number(existing.quantity)||0)+(Number(row.item.quantity)||0);
+      else{const copy={...row.item};grouped.push(copy);bySignature.set(row.signature,copy);}
+    });
+    return grouped;
+  }
   function completeTableItems(session,comandas=[]){
     if(!session||session.status!=='open')return [];
     const items=[...new Map((session.session_items||[]).filter(item=>item.status!=='cancelled'&&Number(item.quantity)>0).map(item=>[item.id,{...item,pending:false}])).values()];
@@ -99,5 +120,5 @@
     }
     return items;
   }
-  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda,completeTableItems};
+  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda,groupComandaItems,completeTableItems};
 });

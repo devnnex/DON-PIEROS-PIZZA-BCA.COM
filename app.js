@@ -10330,17 +10330,23 @@ const App = (() => {
     const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-    const articles=lines.map(line=>{
+    const kitchenItems=window.DonPierosOrderDetails?.groupComandaItems(session.session_items.filter(line=>line.status!=='cancelled'))||session.session_items.filter(line=>line.status!=='cancelled');
+    const kitchenLines=kitchenItems.map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
+    const articles=kitchenLines.map(line=>{
       const labels=window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean));
       const flavors=labels.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
       const others=labels.filter(note=>!flavors.includes(note));
       const noteHtml=note=>{const option=window.DonPierosThermal.sizeOption(note);return '<p class="'+(option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes')+'">'+option.html+'</p>';};
-      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+'</article>';
+      const fulfillment=line.waiter_options?.fulfillment||line.packing.fulfillment||session.fulfillment||'';
+      const delivery=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';
+      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+'</article>';
     }).join('');
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
-    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:16mm;height:16mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
-    window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
+    const hasDelivery=session.session_items.some(line=>(line.waiter_options?.fulfillment||window.DonPierosPackaging.read(line.notes).fulfillment)==='delivery');
+    const deliveryAddress=hasDelivery&&session.delivery_address?'<p class="fulfillment">Dirección: '+escapeHTML(session.delivery_address)+'</p>':'';
+    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+deliveryAddress+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
+    window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes);
     popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
     popup.document.querySelectorAll('article').forEach(article=>{
       const flavors=article.querySelector('.flavor-options');if(flavors)article.querySelector(':scope>strong')?.after(flavors);
@@ -14066,13 +14072,15 @@ const App = (() => {
     },
     getIndividualDetails: sessionId => {
       const session=state.sessions.find(row=>row.id===sessionId);
-      return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};
+      return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',address:session?.delivery_address||'',fulfillment:session?.fulfillment||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};
     },
     updateIndividualDetails: (sessionId,values) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
       if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)return;
       const details=window.DonPierosOrderDetails,old=details.readTime(session.order_notes);
       session.payer_name=values.customerName||'Cliente individual';
+      session.delivery_address=String(values.address||'').trim().slice(0,300);
+      if(values.fulfillment)session.fulfillment=values.fulfillment;
       session.order_notes=details.withTime(details.withTime(values.notes,old.time,old.startedAt),values.time);
       session.updated_at=new Date().toISOString();
       state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});persistWalkInDrafts();
@@ -14085,6 +14093,7 @@ const App = (() => {
       if(!line.name||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99||!Number.isSafeInteger(line.unit_price)||line.unit_price<0||notes.length>500)throw Error('Revisa los datos del producto.');
       const now=new Date().toISOString(),matched=state.items.find(item=>item.id===line.product_id);
       session.session_items.push({id:line.id,session_id:sessionId,table_id:null,menu_item_id:matched?.id||null,web_product_id:line.product_id,item_name:line.name,quantity:line.quantity,unit_price:line.unit_price,notes,waiter_options:line.options,status:'served',created_at:now,updated_at:now});
+      if(line.options?.fulfillment)session.fulfillment=line.options.fulfillment;
       session.updated_at=now;state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
       persistWalkInDrafts();renderAdminLive();
     },
