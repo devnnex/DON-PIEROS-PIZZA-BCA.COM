@@ -188,7 +188,7 @@ create or replace function public.dp_save_waiter_comanda(
 ) returns jsonb language plpgsql security definer set search_path=public,extensions as $$
 declare actor public.app_users;account public.table_sessions;c public.waiter_comandas;receipt public.waiter_comanda_operations;
   item jsonb;line_id uuid;product_id uuid;unit_value numeric;units integer;options jsonb;line_notes text;detail text;
-  line_ids uuid[]:='{}';clean_items jsonb:='[]'::jsonb;fingerprint text;result jsonb;is_new boolean;can_manage boolean;
+  line_ids uuid[]:='{}';clean_items jsonb:='[]'::jsonb;fingerprint text;result jsonb;is_new boolean;can_manage boolean;effective_table_id uuid;
 begin
   actor:=public.require_app_user(public.request_header('x-app-token'));
   can_manage:=actor.role in ('boss','admin') and(public.app_can_access_section('dashboard') or public.app_can_access_section('service'));
@@ -204,27 +204,36 @@ begin
     return coalesce(result,receipt.result)||jsonb_build_object('duplicate',true,'closed',not exists(select 1 from public.table_sessions where id=(receipt.result->'session'->>'id')::uuid and status='open'));
   end if;
   perform 1 from public.service_requests where id=p_comanda_id for update;
-  perform 1 from public.restaurant_tables where id=p_table_id and is_active for update;
-  if not found then raise exception 'La mesa ya no está disponible.';end if;
   select * into c from public.waiter_comandas where id=p_comanda_id for update;is_new:=c.id is null;
+  if not is_new then
+    if p_session_id is not null and c.session_id<>p_session_id then raise exception 'La comanda ya no pertenece a esta cuenta.';end if;
+    select * into account from public.table_sessions where id=c.session_id for update;
+    if account.id is null or account.status<>'open' then raise exception 'Esta cuenta ya se cerró. Vuelve a las mesas.';end if;
+    effective_table_id:=account.table_id;
+  else
+    effective_table_id:=p_table_id;
+  end if;
+  perform 1 from public.restaurant_tables where id=effective_table_id and is_active for update;
+  if not found then raise exception 'La mesa ya no está disponible.';end if;
+  -- The open account determines the current table; the comanda may still contain its previous table ID.
   if p_session_id is not null then
     select * into account from public.table_sessions where id=p_session_id for update;
-    if account.id is not null and account.table_id<>p_table_id then raise exception 'La cuenta no pertenece a esta mesa.';end if;
+    if account.id is not null and account.table_id<>effective_table_id then raise exception 'La cuenta cambió de mesa. Actualiza la comanda e intenta de nuevo.';end if;
     if account.id is null or account.status<>'open' then
       -- A new comanda can outlive the previous customer's account in a local
       -- draft. Resolve it under the table lock without reopening paid accounts.
       if not is_new or coalesce(p_expected_version,0)<>0 then raise exception 'Esta cuenta ya se cerró. Vuelve a las mesas.';end if;
-      select * into account from public.table_sessions where table_id=p_table_id and status='open' order by opened_at desc limit 1 for update;
+      select * into account from public.table_sessions where table_id=effective_table_id and status='open' order by opened_at desc limit 1 for update;
       if account.id is not null then raise exception 'La mesa tiene otra cuenta abierta. Revisa el consumo actual antes de enviar.';end if;
-      insert into public.table_sessions(table_id,status,assigned_waiter_id) values(p_table_id,'open',actor.id) returning * into account;
+      insert into public.table_sessions(table_id,status,assigned_waiter_id) values(effective_table_id,'open',actor.id) returning * into account;
     end if;
   elsif not is_new then
     -- Editing a historical comanda must never move it to the next customer.
-    select * into account from public.table_sessions where id=c.session_id and table_id=p_table_id for update;
+    select * into account from public.table_sessions where id=c.session_id and table_id=effective_table_id for update;
     if account.id is null or account.status<>'open' then raise exception 'Esta cuenta ya se cerró. Vuelve a las mesas.';end if;
   else
-    select * into account from public.table_sessions where table_id=p_table_id and status='open' order by opened_at desc limit 1 for update;
-    if account.id is null then insert into public.table_sessions(table_id,status,assigned_waiter_id) values(p_table_id,'open',actor.id) returning * into account;end if;
+    select * into account from public.table_sessions where table_id=effective_table_id and status='open' order by opened_at desc limit 1 for update;
+    if account.id is null then insert into public.table_sessions(table_id,status,assigned_waiter_id) values(effective_table_id,'open',actor.id) returning * into account;end if;
   end if;
   if is_new then
     if actor.role='waiter' and not exists(select 1 from public.app_users where id=account.assigned_waiter_id and role='waiter') then
@@ -232,9 +241,9 @@ begin
     end if;
     if exists(select 1 from public.service_requests where id=p_comanda_id) then raise exception 'El identificador pertenece a otra solicitud.';end if;
     if coalesce(p_expected_version,0)<>0 or jsonb_array_length(p_items)=0 then raise exception 'Agrega al menos un producto.';end if;
-    insert into public.waiter_comandas(id,table_id,session_id,created_by_user_id,notes) values(p_comanda_id,p_table_id,account.id,actor.id,coalesce(p_notes,'')) returning * into c;
+    insert into public.waiter_comandas(id,table_id,session_id,created_by_user_id,notes) values(p_comanda_id,effective_table_id,account.id,actor.id,coalesce(p_notes,'')) returning * into c;
   else
-    if (not can_manage and c.created_by_user_id is distinct from actor.id) or c.session_id<>account.id or c.table_id<>p_table_id then raise exception 'Solo puedes editar tus propias comandas de esta mesa.';end if;
+    if (not can_manage and c.created_by_user_id is distinct from actor.id) or c.session_id<>account.id then raise exception 'Solo puedes editar tus propias comandas de esta mesa.';end if;
     if c.version is distinct from p_expected_version then raise exception 'La comanda cambió en otro equipo. Actualiza antes de editar.';end if;
   end if;
   for item in select value from jsonb_array_elements(p_items) loop
@@ -251,7 +260,7 @@ begin
     clean_items:=clean_items||jsonb_build_array(jsonb_build_object('id',line_id,'product_id',product_id,'name',trim(item->>'name'),
       'quantity',units,'unit_price',unit_value,'notes',line_notes,'options',options||jsonb_build_object('labels',coalesce(options->'labels','[]'::jsonb))));
   end loop;
-  update public.waiter_comandas set items=clean_items,notes=coalesce(p_notes,''),version=case when is_new then version else version+1 end,updated_at=now()
+  update public.waiter_comandas set table_id=effective_table_id,items=clean_items,notes=coalesce(p_notes,''),version=case when is_new then version else version+1 end,updated_at=now()
     where id=p_comanda_id returning * into c;
   -- Administration adds directly to the account. Waiter orders still require
   -- explicit acceptance. Both paths apply the same stable line IDs atomically.
@@ -263,9 +272,9 @@ begin
     into detail from jsonb_array_elements(clean_items);
   detail:=coalesce(detail,'Comanda retirada.');if coalesce(p_notes,'')<>'' then detail:=detail||E'\nNotas: '||p_notes;end if;
   insert into public.service_requests(id,table_id,session_id,request_type,message,request_source,requested_by_user_id,requested_by_name)
-    values(p_comanda_id,p_table_id,account.id,'other',left(detail,1000),'waiter',c.created_by_user_id,
+    values(p_comanda_id,effective_table_id,account.id,'other',left(detail,1000),'waiter',c.created_by_user_id,
       left(coalesce((select coalesce(nullif(full_name,''),username) from public.app_users where id=c.created_by_user_id),'Mesero'),80))
-    on conflict(id) do update set message=excluded.message,updated_at=now(),
+    on conflict(id) do update set table_id=excluded.table_id,session_id=excluded.session_id,message=excluded.message,updated_at=now(),
       status=case when jsonb_array_length(clean_items)=0 then 'resolved' when c.accepted_at is not null then 'acknowledged' else 'pending' end;
   if jsonb_array_length(clean_items)=0 then update public.service_requests set status='resolved' where id=p_comanda_id;end if;
   if c.accepted_at is not null and jsonb_array_length(clean_items)>0 then
