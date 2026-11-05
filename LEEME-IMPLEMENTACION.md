@@ -1,5 +1,7 @@
 # Don Pieros Pizza · activación
 
+**Activar v58:** actualiza la implementación existente de `appscript/Code.gs` a **3.18.0-donpieros**, conservando `/exec`, y publica la web v58. Las ventas individuales se comparten desde Google Sheets sin SQL adicional. Nueva venta abre la carta; el botón verde permite enviar e imprimir desde el producto. Se reducen consultas de respaldo e imágenes nuevas en Supabase. Sigue los pasos de [ACTUALIZACION-V58.md](ACTUALIZACION-V58.md); el push de GitHub no actualiza Apps Script automáticamente.
+
 **Activar v53:** publica los archivos web y `appscript/Code.gs` **3.16.0-donpieros** conservando `/exec`. No requiere SQL adicional. Al enviar una venta individual, el nombre del cliente es obligatorio (mínimo dos caracteres); si falta, el formulario enfoca el campo y hace parpadear el borde y «Obligatorio» en rojo. Los sabores de la combinada aparecen en una sola línea. Al editar un producto se puede cambiar entre local y para llevar, con recálculo de cajas y del total.
 
 Los avisos se muestran también fuera de Inicio y conservan la sección actual hasta pulsar **Ver comanda**: entonces llevan a Inicio y abren su modal, sin aceptar el pedido. Los pedidos web tienen borde negro, las comandas de mesa verde y las ventas individuales azul. Las individuales enviadas por meseros permanecen en la recepción compartida hasta cobrarse.

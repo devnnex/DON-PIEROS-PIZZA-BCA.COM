@@ -199,6 +199,11 @@
     if(individualPick||draft?.individual&&!webPick){
       const data=individualPick?api().getIndividualDetails(individualPick.sessionId):{customerName:draft.customerName||'',...details().readTime(draft.notes)};
       $('#dw-product-body .dw-dialog-head').insertAdjacentHTML('afterend',`<fieldset class="dw-comanda-fields"><legend>Datos de la comanda</legend><label class="dw-custom-field">Nombre del cliente <small>Obligatorio</small><input id="dw-product-customer" type="text" required minlength="2" maxlength="120" placeholder="Cliente individual" value="${esc(data.customerName)}"></label><label class="dw-custom-field">Tiempo estimado <input id="dw-product-time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(data.time)}"><small>Puedes asignar o cambiar el tiempo antes del cobro.</small></label><label class="dw-custom-field dw-comanda-observations">Observaciones de la comanda <textarea id="dw-product-observations" maxlength="500" rows="2" placeholder="Indicaciones para este pedido…">${esc(data.notes)}</textarea></label></fieldset>`);
+      if(individualPick){
+        const add=$('#dw-add-product'),actions=document.createElement('div');actions.className='dw-individual-actions';
+        add.before(actions);actions.append(add);add.childNodes[0].textContent='Agregar otro producto · ';
+        actions.insertAdjacentHTML('beforeend','<button type="submit" class="dw-send-print" id="dw-send-print">▤ Enviar e imprimir comanda</button>');
+      }
     }
     if(webPick){$('#dw-product-dialog').dataset.webPicker='1';if(!existing)$('#dw-fulfillment').value=webPick.fulfillment||'pickup';}
     if($('#dw-fulfillment').value){$('#dw-fulfillment').closest('label').classList.add('is-complete');$('#dw-fulfillment-status').textContent='Seleccionado';}
@@ -242,7 +247,20 @@
     if([...(line.options.labels||[]),line.notes].join(' · ').length>500){$('#dw-product-error').textContent='Acorta un poco las notas de este producto.';return;}
     if(webPick){void saveWebProduct(line);return;}
     if(individualPick){
-      try{api().addIndividualProduct(individualPick.sessionId,line);$('#dw-product-dialog').close();api().notify('Producto agregado al pedido.');}
+      try{
+        const sessionId=individualPick.sessionId;api().addIndividualProduct(sessionId,line);
+        if(event.submitter?.id==='dw-send-print'){
+          // Abrir desde el clic mantiene la impresión habilitada en móviles.
+          const popup=window.open('','_blank','width=420,height=720');
+          if(!popup){api().notify('Permite ventanas emergentes para imprimir. El producto quedó agregado.','error');$('#dw-product-dialog').close();return;}
+          popup.document.body.textContent='Enviando comanda…';
+          busy=true;$('#dw-send-print').disabled=true;$('#dw-add-product').disabled=true;
+          void api().finishIndividualSale(sessionId,popup).then(sent=>{
+            if(sent){$('#dw-product-dialog').close();$('#dw-catalog-dialog').close();api().notify('Comanda enviada. Lista para imprimir.');}
+          }).catch(error=>{$('#dw-product-error').textContent=errorText(error);$('#dw-product-dialog').close();api().notify(errorText(error),'error');})
+            .finally(()=>{busy=false;$('#dw-send-print').disabled=false;$('#dw-add-product').disabled=false;});
+        }else{$('#dw-product-dialog').close();api().notify('Producto agregado al pedido.');}
+      }
       catch(error){$('#dw-product-error').textContent=errorText(error);}
       return;
     }
@@ -660,7 +678,7 @@
   $('#dw-review-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!draft.pending&&!busy&&!$('#dw-product-dialog').open&&!$('#dw-catalog-dialog').open){draft=null;selectedTable='';}});
   $('#dw-catalog-dialog').addEventListener('close',()=>{
     if($('#dw-catalog-dialog').dataset.webPicker){delete $('#dw-catalog-dialog').dataset.webPicker;const pick=webPick;webPick=null;pick?.onClose();return;}
-    if($('#dw-catalog-dialog').dataset.individualPicker){delete $('#dw-catalog-dialog').dataset.individualPicker;const sessionId=individualPick?.sessionId;individualPick=null;if(sessionId)api().openIndividualSale(sessionId);return;}
+    if($('#dw-catalog-dialog').dataset.individualPicker){delete $('#dw-catalog-dialog').dataset.individualPicker;const sessionId=individualPick?.sessionId;individualPick=null;if(sessionId)api().leaveIndividualCatalog?.(sessionId);return;}
     if(draft?.managerMode&&!$('#dw-review-dialog').open&&!$('#dw-product-dialog').open){
       persist();replacingLine='';draft=null;selectedTable='';
     }

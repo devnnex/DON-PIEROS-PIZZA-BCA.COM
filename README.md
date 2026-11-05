@@ -1,5 +1,7 @@
 # Don Pieros Pizza
 
+**Actualización v58:** ventas individuales compartidas en Google Sheets mediante Apps Script **3.18.0**, con cola local, reintentos y protección frente a cobros simultáneos. Nueva venta abre la carta; **Enviar e imprimir comanda** confirma y prepara la impresión desde el producto. Comanda compacta con logo PNG, cliente en mayúsculas, sabores bajo el producto e importes solo al final. Menos sondeos a Supabase con Realtime conectado e imágenes nuevas comprimidas. Publica la nueva versión de `Code.gs` conservando `/exec`; no requiere SQL. Pasos en [ACTUALIZACION-V58.md](ACTUALIZACION-V58.md).
+
 Carta digital, pedidos en línea y atención de mesas para Don Pieros Pizza.
 
 **Actualización v53:** nombre del cliente obligatorio con foco y aviso rojo al enviar la venta individual. Los dos sabores se muestran juntos y la entrega puede corregirse al editar, recalculando cajas. Los avisos aparecen desde cualquier sección: «Ver comanda» abre Inicio y el detalle; negro para web, verde para mesas y azul para individuales. El cobro web retira el pedido tras proteger el intento y confirma/reintenta en segundo plano sin errores de conexión ni botones manuales; no vuelve a registrar ventas confirmadas. Publica Apps Script **3.16.0** y los archivos web v53; no requiere SQL adicional. Se conservan las cajas y el domicilio **Por confirmar**.

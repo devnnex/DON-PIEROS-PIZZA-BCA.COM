@@ -2,7 +2,7 @@
 
 Pega únicamente el contenido completo de Code.gs en el proyecto nuevo de Apps Script. Ya incorpora el servicio original de caja y la extensión de menú/pedidos.
 
-Versión actual: **3.17.0-donpieros**. Acepta **Domicilio** como entrega por producto en las comandas individuales y al agregar o editar productos, calculando las cajas por tamaño y cantidad. Conserva las entregas y notas al reeditar. Publica el contenido completo de **Code.gs** como una nueva versión de la implementación existente, conservando `/exec`, junto con los archivos web **v57**. El push de los archivos web no actualiza por sí solo Apps Script. No requiere SQL adicional.
+Versión actual: **3.18.0-donpieros**. Comparte las ventas individuales de caja en la pestaña automática `Ventas_Individuales_Pendientes`, con versiones, reintentos y protección frente a cierres simultáneos. La consulta de recepción incluye estos datos solo cuando cambia su revisión. Conserva las entregas, cajas y notas existentes. Publica el contenido completo de **Code.gs** como una nueva versión de la implementación existente, conservando `/exec`, junto con los archivos web **v58**. El push de los archivos web no actualiza por sí solo Apps Script. No requiere SQL adicional. Consulta [ACTUALIZACION-V58.md](../ACTUALIZACION-V58.md).
 
 En la venta individual, el modal del producto incluye nombre del cliente, tiempo estimado y observaciones de la comanda; estos datos se conservan al seguir agregando productos. Al agregar un producto se regresa al catálogo y al cerrarlo se vuelve a la comanda. Las impresiones colocan las observaciones antes del primer producto y subrayan en verde las observaciones y la entrega a domicilio, conservando la letra negra en negrita.
 

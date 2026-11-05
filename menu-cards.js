@@ -145,20 +145,21 @@ window.MenuCards = (() => {
       for (const file of files) hashes.push(await validateFile(file));
       for (let i=0;i<files.length;i++) {
         const file=files[i],hash=hashes[i];
+        const blob=await window.DonPierosPerformance?.compressImage?.(file,2400)||file;
         // El contenido identifica los reintentos. Si su carta original fue
         // reemplazada, una carga posterior puede volver a publicar esa imagen.
-        if (!replacing && cards.some(c=>c.image_path.endsWith(`/${hash}.${types[file.type]}`))) { completed++; continue; }
+        if (!replacing && cards.some(c=>c.image_path.endsWith(`/${hash}.${types[blob.type]}`))) { completed++; continue; }
         let id=replacing?.id || uuidForHash(hash),attempt=0;
         while(!replacing && cards.some(c=>c.id===id)) {
           const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(`${hash}:${++attempt}`));
           id=uuidForHash([...new Uint8Array(digest)].map(n=>n.toString(16).padStart(2,'0')).join(''));
         }
-        const path = `cards/${id}/${hash}.${types[file.type]}`;
+        const path = `cards/${id}/${hash}.${types[blob.type]}`;
         status(`Subiendo ${i+1} de ${files.length}… No cierres esta ventana.`);
         const previewUrl=URL.createObjectURL(file);
         const preview=$('#menuCardsPending'); preview.src=previewUrl;preview.hidden=false;
         try {
-          const {error} = await storage().upload(path,file,{upsert:false,contentType:file.type,cacheControl:'300'});
+          const {error} = await storage().upload(path,blob,{upsert:false,contentType:blob.type,cacheControl:'31536000'});
           if (error && !['409','Duplicate'].includes(String(error.statusCode || error.error))) throw new Error(error.message || 'No se pudo subir la imagen.');
           // Verifica que Storage puede devolver el objeto antes de publicar sus metadatos.
           const remote = new Image(); remote.src = await signedImage(path); await remote.decode();

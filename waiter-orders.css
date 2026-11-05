@@ -85,3 +85,8 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 .dw-comanda-fields .dw-custom-field:has(#dw-product-customer)>input{grid-row:2}
 .dw-comanda-fields .dw-custom-field:has(#dw-product-customer)>small{grid-row:3}
 @media(max-width:600px){.dw-comanda-fields{grid-template-columns:minmax(0,1fr);padding:12px;gap:14px}}
+.dw-individual-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;position:sticky;bottom:0;padding:12px 0;background:#fffdf7}
+.dw-individual-actions #dw-add-product{margin:0;background:#fff9e9;color:#4d3918;border:1px solid #d8c49f}
+.dw-send-print{border:0;border-radius:14px;background:#167c44;color:#fff;font:inherit;font-weight:800;padding:17px 14px;cursor:pointer;box-shadow:0 5px 16px #167c4430}
+.dw-send-print:hover{background:#106333}.dw-send-print:disabled{opacity:.6;cursor:wait}
+@media(max-width:480px){.dw-individual-actions{gap:8px}.dw-individual-actions button{font-size:14px!important;padding:13px 9px!important}}

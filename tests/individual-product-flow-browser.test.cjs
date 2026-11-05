@@ -1,22 +1,24 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),http=require('node:http');
 const {chromium}=require('playwright-core');
+const {harness}=require('./helpers/don-pieros-gas.cjs');
 const root=path.resolve(__dirname,'..');
-const instrument=source=>source.replace('  return { init };','  return { init, state, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption, holdIndividualSale };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
+const instrument=source=>source.replace('  return { init };','  return { init, state, createWalkInSale, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption, holdIndividualSale };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
 
 test('venta individual: datos persistentes, domicilio con caja y retorno al catálogo; comanda con observaciones primero y subrayado',async()=>{
  const server=http.createServer((req,res)=>{
   const name=new URL(req.url,'http://local').pathname.slice(1);
   if(name==='admin.html'){res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fs.readFileSync(path.join(root,name),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,'').replace('</head>','<link rel="stylesheet" href="/style.css"></head>'));}
-  else if(name.endsWith('.css')){res.setHeader('Content-Type','text/css');res.end(fs.readFileSync(path.join(root,name)));}
+  else if(name.endsWith('.css')||name==='images/don-pieros-logo.png'){res.setHeader('Content-Type',name.endsWith('.png')?'image/png':'text/css');res.end(fs.readFileSync(path.join(root,name)));}
   else{res.writeHead(404);res.end();}
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  try{for(const width of [1440,390]){
-  const context=await browser.newContext({viewport:{width,height:1000}}),page=await context.newPage(),errors=[];
+  const backend=harness(),context=await browser.newContext({viewport:{width,height:1000}}),page=await context.newPage(),errors=[];
+  await page.exposeFunction('backendCall',(action,payload)=>backend.call(action,payload));
   page.on('pageerror',error=>errors.push(error.message));page.setDefaultTimeout(10000);
   await page.goto(`http://127.0.0.1:${server.address().port}/admin.html`);
-  for(const file of ['sales-shift.js','order-labels.js','order-details.js','packaging.js','thermal-print.js','vendor/jspdf.umd.min.js'])await page.addScriptTag({path:path.join(root,file)});
+  for(const file of ['individual-sales-sync.js','sales-shift.js','order-labels.js','order-details.js','packaging.js','thermal-print.js','vendor/jspdf.umd.min.js'])await page.addScriptTag({path:path.join(root,file)});
   await page.addScriptTag({content:instrument(fs.readFileSync(path.join(root,'app.js'),'utf8'))});
   await page.evaluate(()=>{
    document.body.classList.add('admin-authenticated');
@@ -29,14 +31,17 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
    window.DonPierosImages={resolve:()=> 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'};
    window.DonPierosLanguage={message:error=>error?.message||String(error)};
    window.DonPierosDates={dateTime:value=>String(value)};
+   window.DON_PIEROS_CONFIG={appsScriptUrl:'https://script.google.com/macros/s/fixture/exec'};
    window.fetch=async(_url,options={})=>{
-    const action=options.body?JSON.parse(options.body).action:'';
+    const {action='',payload={}}=options.body?JSON.parse(options.body):{};
+    if(action==='dp_save_individual_sale')return new Response(JSON.stringify(await backendCall(action,payload)),{status:200});
     return new Response(JSON.stringify(action.includes('catalog')?{ok:true,...testCatalog}:{ok:true,items:[],orders:[],shifts:[],everInitialized:true}),{status:200});
    };
   });
   await page.addStyleTag({path:path.join(root,'waiter-orders.css')});
   await page.addScriptTag({path:path.join(root,'waiter-orders.js')});
-  await page.evaluate(()=>DonPierosWaiter.chooseIndividualProduct('walk-in-test'));
+  await page.evaluate(()=>saleTest.createWalkInSale());
+  assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Nueva venta abre la carta directamente.');
   await page.locator('[data-dw-product="pizza"]').click();
   await page.locator('#dw-product-customer').fill('Laura');
   await page.locator('#dw-product-time').fill('25 minutos');
@@ -68,7 +73,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   await page.locator('#dw-add-product').click();
   await page.waitForFunction(()=>!document.querySelector('#dw-product-dialog').open);
   await page.locator('#dw-catalog-dialog [data-dw-close]').click();
-  await page.waitForFunction(()=>document.querySelector('#paymentDialog').open);
+  assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Cerrar la carta no abre el cobro.');
+  await page.evaluate(()=>saleTest.openPaymentDialog('walk-in-test'));
   assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'Laura');
   assert.equal(await page.locator('#paymentSaleLines>div').count(),2);
@@ -113,6 +119,32 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   });
   assert.equal(edited.packing.fulfillment,'dinein');assert.equal(edited.packing.fee,0);assert.equal(edited.fulfillment,'dinein');assert.equal(edited.total,24000,'Cambiar a local retira la caja sin alterar la bebida.');
   assert.equal(await page.evaluate(()=>saleTest.holdIndividualSale()),true,'Guardar pendiente usa los datos del producto sin depender de inputs eliminados.');
+  await page.evaluate(()=>{
+   const session=saleTest.state.sessions[0];session.payer_name='lily silva';session.session_items=[{...session.session_items[0],item_name:'Pizza combinada',unit_price:100000,
+    notes:DonPierosPackaging.note('Tamaño: Super maxi · 54 × 54 cm\nSabores (mitad y mitad): Don Pieros / Hawaiana','supermaxi','delivery'),waiter_options:{labels:['Tamaño: Super maxi · 54 × 54 cm','Sabores (mitad y mitad): Don Pieros / Hawaiana'],fulfillment:'delivery'}}];
+   localStorage.setItem('don_pieros_order_paper',String(innerWidth===390?58:80));
+   saleTest.printIndividualSale();
+  });
+  await printPage.waitForSelector('.flavor-options');
+  const compact=await printPage.evaluate(()=>({text:document.body.innerText,flavors:document.querySelector('article>strong').nextElementSibling.className,logo:document.querySelector('header img').getAttribute('src'),size:document.querySelector('.size-option').textContent}));
+  assert.equal(compact.flavors,'flavor-options');assert.match(compact.text,/LILY SILVA/);assert.match(compact.size,/54 × 54 cm/);
+  assert.match(compact.logo,/don-pieros-logo.png/);assert.doesNotMatch(compact.text,/c\/u|Total de la línea|Caja Super maxi:/);
+  assert.equal((compact.text.match(/Productos:/g)||[]).length,1);assert.match(compact.text,/96\.000/);assert.match(compact.text,/4\.000/);
+  const compactPdf=await page.evaluate(async paperWidth=>{const result=await DonPierosThermal.createPdf(printTarget,paperWidth);return {data:result.pdf.output('datauristring').split(',')[1],width:result.width};},paperWidth);
+  assert.equal(compactPdf.width,paperWidth);fs.writeFileSync(path.join(root,`artifacts/venta-combinada-${paperWidth}mm.pdf`),Buffer.from(compactPdf.data,'base64'));
+  assert.equal(await printPage.evaluate(()=>document.body.scrollWidth<=Math.ceil(document.body.getBoundingClientRect().width)+1),true);
+  await printPage.locator('body').screenshot({path:path.join(root,`artifacts/venta-combinada-${paperWidth}mm.png`)});
+  await page.evaluate(()=>DonPierosWaiter.chooseIndividualProduct('walk-in-test'));
+  await page.locator('[data-dw-product="drink"]').click();
+  await page.locator('#dw-fulfillment').selectOption('pickup');
+  assert.equal(await page.locator('#dw-send-print').isVisible(),true);
+  const actions=await page.locator('.dw-individual-actions').evaluate(node=>({overflow:node.scrollWidth>node.clientWidth+1,count:node.querySelectorAll('button').length}));
+  assert.equal(actions.overflow,false);assert.equal(actions.count,2);
+  await page.locator('#dw-send-print').click();
+  await page.waitForFunction(()=>!document.querySelector('#dw-catalog-dialog').open);
+  assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Enviar e imprimir no abre el formulario de cobro.');
+  const shared=backend.call('dp_get_orders',{includeIndividuals:true}).individualSales;
+  assert.equal(shared.length,1);assert.equal(shared[0].session.session_items.length,2,'Enviar agrega el producto una sola vez y guarda la comanda compartida.');
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

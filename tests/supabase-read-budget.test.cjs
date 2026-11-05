@@ -30,13 +30,22 @@ function adminHarness({healthy=true,hidden=false}={}){
  const advance=async ms=>{const end=now+ms;while(true){const due=[...timers].filter(([,t])=>t.due<=end).sort((a,b)=>a[1].due-b[1].due)[0];if(!due)break;now=due[1].due;if(due[1].delay)due[1].due+=due[1].delay;else timers.delete(due[0]);due[1].fn();await settle();}now=end;await settle();};
  return {state,calls,api:context.api,advance,setGate:value=>{gate=value;},context};
 }
-test('Realtime sano reduce snapshots y catálogo; solicitudes conservan su lector independiente cada segundo',async()=>{
+test('el respaldo de solicitudes usa 12 lecturas por minuto con Realtime sano y vuelve a consultar cada segundo si cae',async()=>{
+ let now=0,reads=0;
+ const state={authToken:'a',page:'admin',adminDataConnected:true,adminBroadcastConnected:true,requests:[],readBudget:factory()(()=>now),sb:{from:()=>({select(){return this;},eq(){return this;},order(){reads++;return Promise.resolve([]);}})}};
+ const context=vm.createContext({state,Date,navigator:{onLine:true},document:{hidden:false},readRealtimeData:async value=>await value,receiveAdminRequests(){}});
+ vm.runInContext(block('  let adminRequestPollBusy =','  let adminRefreshPending =')+';globalThis.poll=pollAdminRequests;',context);
+ for(now=0;now<60000;now+=1000)await context.poll({periodic:true});assert.equal(reads,12);
+ await context.poll();assert.equal(reads,13,'Un aviso no espera el intervalo de respaldo.');
+ state.adminDataConnected=false;for(now=61000;now<66000;now+=1000)await context.poll({periodic:true});assert.equal(reads,18);
+});
+test('Realtime sano reduce snapshots y catálogo; los eventos consultan de inmediato y la desconexión restaura el respaldo',async()=>{
  const h=adminHarness();h.api.startAdminPolling();await h.advance(60000);
- assert.equal(h.calls.requests,61);assert.equal(h.calls.snapshot,10);assert.equal(h.calls.core,4);assert.equal(h.calls.users,4);
+ assert.equal(h.calls.requests,61);assert.equal(h.calls.snapshot,4);assert.equal(h.calls.core,1);assert.equal(h.calls.users,1);
  const previous=h.calls.snapshot;await h.api.refreshAdminNow();assert.equal(h.calls.snapshot,previous+1,'un aviso o acción explícita no queda retenido');
  h.state.adminDataConnected=false;await h.advance(6000);assert.equal(h.calls.snapshot,previous+5,'la caída del canal de datos restaura el respaldo de 1,5 segundos');
  const background=adminHarness({hidden:true});background.api.startAdminPolling();await background.advance(60000);
- assert.equal(background.calls.requests,61);assert.equal(background.calls.snapshot,4);assert.equal(background.calls.core,1);
+ assert.equal(background.calls.requests,61);assert.equal(background.calls.snapshot,1);assert.equal(background.calls.core,0);
 });
 test('un sondeo lento no genera un bucle al terminar; un aviso recibido durante la lectura sí verifica otra vez',async()=>{
  const h=adminHarness({healthy:false});let release;h.setGate(new Promise(resolve=>{release=resolve;}));h.api.startAdminPolling();
@@ -51,8 +60,8 @@ test('dos temporizadores de chat comparten la ventana; los eventos, errores y ca
  vm.runInContext(block('  const chatReads =','  const persistChatMessage =')+';globalThis.read=loadChatMessages;',context);
  const periodic=()=>context.read(undefined,undefined,{periodic:true});
  for(now=0;now<60000;now+=300){if(now%1200===0||now%1500===0)await periodic();}
- assert.equal(count,50);await context.read();assert.equal(count,51);
- state.currentTable={id:'table-b',qr_code:'qr-b'};state.currentSession={id:'session-b'};await periodic();assert.equal(count,52);
+ assert.equal(count,20);await context.read();assert.equal(count,21);
+ state.currentTable={id:'table-b',qr_code:'qr-b'};state.currentSession={id:'session-b'};await periodic();assert.equal(count,22);
  context.document.hidden=true;const before=count;for(now=60000;now<70000;now+=1200)await periodic();assert.ok(count-before<=2);
 });
 test('el temporizador de reportes es único y no aplaza escrituras al reducir lecturas',async()=>{
@@ -62,7 +71,7 @@ test('el temporizador de reportes es único y no aplaza escrituras al reducir le
  vm.runInContext(section('startConfirmedReportSync','clientBillEnabled')+';globalThis.start=startConfirmedReportSync;',context);
  context.start();context.start();assert.equal(callbacks.size,1);
  for(now=1500;now<=60000;now+=1500)callbacks.values().next().value();
- assert.equal(writes,41);assert.equal(prepared,41);assert.equal(reads,11);
+ assert.equal(writes,41);assert.equal(prepared,41);assert.equal(reads,3);
 });
 test('las firmas de Carta se comparten hasta cuatro minutos y se invalidan al cambiar credenciales o QR',async()=>{
  let now=0,requests=0,token='a',table={id:'table',qr_code:'one'},fail=false;
@@ -78,7 +87,7 @@ test('las firmas de Carta se comparten hasta cuatro minutos y se invalidan al ca
 test('los refrescos de Marca conservan nombre, subtítulo y color pendientes',()=>{
  const state={businessFormDirty:true,business:{business_name:'Remoto',subtitle:'Remoto',accent_color:'#ffffff'},tipSettings:{percentage:10}};
  const field=value=>({value,closest:()=>null}),form={business_name:field('Mi borrador'),subtitle:field('Mi texto'),accent_color:field('#123456'),currency:field('COP'),tips_enabled:{},qr_regeneration_enabled:{},tip_percentage:field('10')};
- const context=vm.createContext({state,$:selector=>selector==='#businessForm'?form:null,DEFAULT_CURRENCY:'COP',clientBillEnabled:()=>true,tipsEnabled:()=>false,qrRegenerationEnabled:()=>false,renderBrandAssetFields(){},renderOutdoorTableConfigurator(){}});
+ const context=vm.createContext({state,CLIENT_ACTION_FIELDS:{},$:selector=>selector==='#businessForm'?form:null,DEFAULT_CURRENCY:'COP',clientBillEnabled:()=>true,tipsEnabled:()=>false,qrRegenerationEnabled:()=>false,renderBrandAssetFields(){},renderOutdoorTableConfigurator(){}});
  vm.runInContext(section('renderBusinessForm','visibleManagerTables')+';globalThis.render=renderBusinessForm;',context);context.render();
  assert.equal(form.business_name.value,'Mi borrador');assert.equal(form.subtitle.value,'Mi texto');assert.equal(form.accent_color.value,'#123456');
  state.businessFormDirty=false;context.render();assert.equal(form.business_name.value,'Remoto');
@@ -89,7 +98,7 @@ test('Marca actualiza todos los logos y conserva el nodo de imagen cuando su con
  const nodes=Array.from({length:2},()=>({dataset:{},set innerHTML(value){writes++;this.markup=value;}}));
  const state={business:{business_name:'Local',logo_url:'https://fixture.test/logo.png'}};
  const context=vm.createContext({state,$$:selector=>selector==='.js-brand-logo'?nodes:[],$:()=>null,
-  syncClientBillVisibility(){},escapeHTML:value=>value,icon:()=>'',syncPwaBranding(){}});
+  syncClientActions(){},syncClientBillVisibility(){},escapeHTML:value=>value,icon:()=>'',syncPwaBranding(){}});
  vm.runInContext(section('renderBrand','renderTablePicker')+';globalThis.render=renderBrand;',context);
  context.render();assert.equal(writes,2);
  context.render();assert.equal(writes,2);

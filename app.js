@@ -2223,11 +2223,39 @@ const App = (() => {
       .filter((session) => isLocalWalkInSession(session) && session.status === "open");
     try {
       localStorage.setItem(WALK_IN_DRAFTS_STORAGE_KEY, JSON.stringify(drafts));
+      if (state.authToken && isManager()) drafts.filter(session=>!session.web_order_id).forEach(session=>individualSync()?.queue(session));
       return true;
     } catch (error) {
       toast("No se pudo conservar el borrador de la venta individual en este equipo.", "error", "walk-in-storage-failed");
       return false;
     }
+  };
+
+  let individualSyncClient = null;
+  let individualSyncToken = '';
+  const individualSync = () => {
+    if (!state.authToken || !window.DonPierosIndividualSync) return null;
+    if (individualSyncClient && individualSyncToken === state.authToken) return individualSyncClient;
+    individualSyncToken = state.authToken;
+    const token=state.authToken;
+    individualSyncClient = window.DonPierosIndividualSync.create({
+      storage:localStorage,key:`donpieros_individual_outbox_v1:${SUPABASE_CONFIG.url}:${state.currentUser?.id}`,
+      rpc:async(name,payload)=>({data:await appsScriptRequest(name,payload)}),canSync:()=>navigator.onLine&&state.authToken===token&&isManager(),
+      notify:message=>toast(message,'error','individual-sync'),
+      changed:(id,result,sent)=>{
+        if(state.authToken!==token)return;
+        const session=state.sessions.find(row=>row.id===id);
+        if(session&&result.status==='open'){
+          session.shared_version=result.version;session.individual_number=result.number;
+          const overlay=state.optimisticSessionStates.get(id);
+          if(overlay&&!individualSyncClient.hasPending(id))state.optimisticSessionStates.delete(id);
+        }
+        localStorage.setItem(WALK_IN_DRAFTS_STORAGE_KEY,JSON.stringify(state.sessions.filter(isLocalWalkInSession)));
+        window.dispatchEvent(new Event('donpieros-individual-saved'));
+        renderIndividualSales();
+      }
+    });
+    return individualSyncClient;
   };
 
   const persistInventoryStore = () => persistDurableJson(INVENTORY_STORAGE_KEY, state.inventoryMeta);
@@ -2666,7 +2694,7 @@ const App = (() => {
       }
       const batchRequest = action === "sync_sales_batch";
       const acceptResult = async (action, payload, result, operationId) => {
-        if(action==='checkout_web_order'||action==='dp_create_staff_order')return;
+        if(action==='checkout_web_order'||action.startsWith('dp_'))return;
         if (result?.ok && ["upsert_inventory", "sync_inventory", "adjust_inventory", "set_inventory_stock", "delete_inventory", "clear_inventory", "update_inventory_movement_cost", "record_sale", "edit_sale", "delete_sale", "clear_inventory_movements", "clear_income"].includes(action)) {
           window.setTimeout(() => void refreshBackgroundReports({ force: true }), 0);
         }
@@ -3764,7 +3792,7 @@ const App = (() => {
     const key = `${state.page}:${table?.id || ""}:${sessionId}`;
     const scope = state.authToken || table?.qr_code || "";
     const connected = state.page === "client" ? state.clientRealtimeConnected : state.adminChats.get(String(sessionId))?.connected;
-    const interval = connected && document.hidden ? 5000 : CHAT_SYNC_INTERVAL_MS;
+    const interval = connected ? (document.hidden ? 15000 : 3000) : CHAT_SYNC_INTERVAL_MS;
     if (periodic && state.readBudget?.due("chat:"+key,interval,scope) === false) return Promise.resolve(false);
     const active = chatReads.get(key);
     if (active) { if (!periodic) active.pending = true; return active.promise; }
@@ -4402,7 +4430,7 @@ const App = (() => {
       if (state.currentTable?.id !== tableId || !state.currentSession) return;
       void loadChatMessages(undefined,undefined,{periodic});
       const scope = state.authToken || state.currentTable?.qr_code || "";
-      const interval = state.clientRealtimeConnected && document.hidden ? 5000 : SYNC_INTERVAL_MS;
+      const interval = state.clientRealtimeConnected ? (document.hidden ? 30000 : 5000) : SYNC_INTERVAL_MS;
       if (periodic && state.readBudget?.due("client-snapshot:"+tableId,interval,scope) === false) return;
       if (state.clientSyncBusy) { if (!periodic) refreshPending = true; return; }
       state.clientSyncBusy = true;
@@ -4963,14 +4991,19 @@ const App = (() => {
   };
 
   let adminRequestPollBusy = false;
-  const pollAdminRequests = async () => {
+  const pollAdminRequests = async ({periodic=false} = {}) => {
     if (!state.authToken || state.page !== "admin" || adminRequestPollBusy || !navigator.onLine) return false;
+    const healthy=state.adminDataConnected===true&&state.adminBroadcastConnected===true;
+    const interval=healthy?(document.hidden?30000:5000):1000;
+    if(periodic&&state.readBudget?.due('admin-requests',interval,state.authToken)===false)return false;
+    state.readBudget?.touch('admin-requests',state.authToken);
     adminRequestPollBusy = true;
     const token = state.authToken;
     const knownPending = state.requests.filter(row => row.status === "pending").map(row => row.id);
     try {
       const rows = await readRealtimeData(state.sb.from("service_requests").select("*")
         .eq("status", "pending").order("created_at", { ascending: true }), 2500);
+      state.readBudget?.settled('admin-requests',Array.isArray(rows),token);
       if (state.authToken !== token || !Array.isArray(rows)) return false;
       receiveAdminRequests(rows);
       const returned = new Set(rows.map(row => row.id));
@@ -4999,16 +5032,16 @@ const App = (() => {
   const startAdminPolling = () => {
     clearInterval(state.adminRequestPollTimer);
     void pollAdminRequests();
-    state.adminRequestPollTimer = setInterval(() => void pollAdminRequests(), 1000);
+    state.adminRequestPollTimer = setInterval(() => void pollAdminRequests({periodic:true}), 1000);
     clearInterval(state.adminPollTimer);
     state.adminPollTimer = setInterval(() => {
       const healthy = state.adminDataConnected === true && state.adminBroadcastConnected === true;
       const scope = state.authToken || "";
-      const snapshotInterval = healthy ? (document.hidden ? 15000 : 5000) : SYNC_INTERVAL_MS;
+      const snapshotInterval = healthy ? (document.hidden ? 60000 : 15000) : SYNC_INTERVAL_MS;
       if (navigator.onLine && state.readBudget?.due("admin-snapshot",snapshotInterval,scope) !== false) {
         void refreshAdminNow({periodic:true});
       }
-      const coreInterval = healthy ? (document.hidden ? 60000 : 15000) : 5000;
+      const coreInterval = healthy ? (document.hidden ? 300000 : 60000) : 5000;
       if (navigator.onLine && Date.now()-Number(state.coreRefreshedAt || 0) >= coreInterval
           && state.readBudget?.due("core",coreInterval,scope) !== false) {
         void refreshCoreNow({periodic:true});
@@ -5095,6 +5128,8 @@ const App = (() => {
     const requests = mergeOptimisticRequests(merged);
     const inFlightPending = merged.filter((request) => request.status === "pending" && state.optimisticRequestStates.has(request.id));
     persistPendingAdminRequests([...requests, ...inFlightPending]);
+    // Las ventas individuales se consultan en Code.gs junto a la recepción.
+    if(typeof isLocalWalkInSession==='function')snapshot.sessions=[...snapshot.sessions,...state.sessions.filter(isLocalWalkInSession)];
     const sessions = mergeOptimisticSessions(snapshot.sessions || [], { readStartedAt });
     const signature = JSON.stringify([requests,sessions]);
     if (signature === state.adminSnapshotSignature) return false;
@@ -6069,7 +6104,7 @@ const App = (() => {
     try {
       const existing = state.sessions.find((session) => isLocalWalkInSession(session) && !session.web_order_id && session.status === "open" && !sessionHasConsumption(session));
       if (existing) {
-        openPaymentDialog(existing.id);
+        window.DonPierosWaiter?.chooseIndividualProduct(existing.id);
         return;
       }
       const openedAt = new Date().toISOString();
@@ -6094,7 +6129,7 @@ const App = (() => {
       state.sessions = [session, ...state.sessions.filter((entry) => entry.id !== session.id)];
       state.optimisticSessionStates.set(session.id, { mode: "upsert", localOnly: true, session });
       persistWalkInDrafts();
-      openPaymentDialog(session.id);
+      window.DonPierosWaiter?.chooseIndividualProduct(session.id);
       window.setTimeout(renderAdminLive, 0);
     } finally {
       if (button) button.disabled = false;
@@ -6703,7 +6738,7 @@ const App = (() => {
     if (state.confirmedReportTimer) return;
     const tick = () => {
       void queueReadyCheckoutReports(); void flushConfirmedReportChanges();
-      const interval = state.adminBroadcastConnected ? (document.hidden ? 15000 : 5000) : SYNC_INTERVAL_MS;
+      const interval = state.adminBroadcastConnected ? (document.hidden ? 120000 : 30000) : SYNC_INTERVAL_MS;
       if (state.readBudget?.due("reports",interval,state.authToken) !== false) void syncConfirmedReports({periodic:true});
     };
     tick();
@@ -9622,9 +9657,10 @@ const App = (() => {
     const form = $("#businessForm");
     if (form) renderBrandAssetFields(form);
     try {
-      const extension = file.name.split(".").pop() || "jpg";
+      const blob=await globalThis.DonPierosPerformance?.compressImage?.(file,1200)||file;
+      const extension = blob.type==='image/webp'?'webp':file.name.split(".").pop() || "jpg";
       const path = `brand/${fieldName}-${uid()}.${extension}`;
-      const { error } = await state.sb.storage.from("brand-assets").upload(path, file, { upsert: true });
+      const { error } = await state.sb.storage.from("brand-assets").upload(path, blob, { upsert: true,contentType:blob.type,cacheControl:'31536000' });
       if (error) throw new Error(error.message);
       const { data } = state.sb.storage.from("brand-assets").getPublicUrl(path);
       if (!data?.publicUrl) throw new Error("No se recibio la direccion de la imagen.");
@@ -9947,6 +9983,10 @@ const App = (() => {
     }
     if (isLocalWalkInSession(session)) {
       const closedAt = checkout?.closedAt || new Date().toISOString();
+      if(!session.web_order_id){
+        try{const sync=individualSync();if(!sync)throw Error('Actualiza la página para confirmar el cobro compartido.');await sync.close(session,checkout?.operationId||uid());}
+        catch(error){toast(error.message,'error','individual-close');return null;}
+      }
       const saved = {
         ...session,
         status: "closed",
@@ -10181,6 +10221,15 @@ const App = (() => {
   };
 
   const openPaymentDialog = (sessionId) => {
+    if(individualSyncClient?.getConflict(sessionId)){
+      void askForConfirmation({title:'Esta venta cambió en otro equipo',message:'Conservamos tu borrador. Puedes usar la comanda actual del negocio para revisar y cobrar; esto reemplazará tus cambios pendientes de esta venta.',accept:'Usar comanda actual',cancel:'Conservar borrador'}).then(accept=>{
+        if(!accept)return;
+        const remote=individualSyncClient.resolveConflict(sessionId);
+        state.sessions=state.sessions.filter(row=>row.id!==sessionId);state.optimisticSessionStates.delete(sessionId);
+        if(remote)state.sessions.push(remote);
+        persistWalkInDrafts();renderAdminLive();if(remote)openPaymentDialog(sessionId);
+      });return;
+    }
     if (state.paymentProcessing || checkoutSubmissionBusy) {
       toast("El cobro anterior sigue en proceso. Puedes continuar usando las demás secciones.", "ok", "payment-busy");
       return;
@@ -10236,6 +10285,7 @@ const App = (() => {
   const discardLocalWalkInSession = (sessionId) => {
     const session = state.sessions.find((entry) => entry.id === sessionId);
     if (!isLocalWalkInSession(session)) return;
+    if(!session.web_order_id)individualSync()?.queue(session,'discard');
     state.sessions = state.sessions.filter((entry) => entry.id !== session.id);
     state.optimisticSessionStates.delete(session.id);
     persistWalkInDrafts();
@@ -10256,9 +10306,9 @@ const App = (() => {
     $("#paymentDialog")?.close();
   };
 
-  const holdIndividualSale = () => {
+  const holdIndividualSale = (sessionId = $('#paymentForm')?.session_id?.value) => {
     if(state.paymentProcessing||checkoutSubmissionBusy)return false;
-    const form=$("#paymentForm"),session=state.sessions.find(row=>row.id===form.session_id.value);
+    const session=state.sessions.find(row=>row.id===sessionId);
     if(!isLocalWalkInSession(session)||session.web_order_id||!sessionHasConsumption(session)){toast('Agrega productos antes de guardar la venta.','error');return false;}
     const customerName=String(session.payer_name||'').trim();
     if(customerName.length<2||customerName==='Cliente individual'){
@@ -10272,16 +10322,29 @@ const App = (() => {
     $("#paymentDialog").close();renderAdminLive();renderIndividualSales();return true;
   };
 
-  const printIndividualSale = () => {
-    const session=state.sessions.find(row=>row.id===$("#paymentForm").session_id.value);
+  const printIndividualSale = (sessionId = $('#paymentForm')?.session_id?.value, preparedPopup = null) => {
+    const session=state.sessions.find(row=>row.id===sessionId);
     if(!session||!sessionHasConsumption(session))return;
     persistWalkInDrafts();
-    const popup=window.open('','_blank','width=420,height=720');if(!popup)return toast('Permite ventanas emergentes para imprimir.','error');
+    const popup=preparedPopup||window.open('','_blank','width=420,height=720');if(!popup)return toast('Permite ventanas emergentes para imprimir.','error');
     const lines=session.session_items.filter(line=>line.status!=='cancelled').map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
     const products=lines.reduce((sum,line)=>sum+line.packing.products,0),boxes=lines.reduce((sum,line)=>sum+line.packing.packagingTotal,0);
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:${width-6}mm;margin:0;font:15px/1.4 Arial}h1{font-size:20px}article{border-top:1px dashed #000;padding:10px 0}p{white-space:pre-wrap;overflow-wrap:anywhere}</style></head><body><h1>DON PIEROS PIZZA</h1><h2>Comanda · ${escapeHTML(individualSaleTitle(session))}</h2><p>${escapeHTML(session.payer_name)}<br>${escapeHTML(prettyDateTime(session.opened_at))}</p>${lines.map(line=>`<article><strong>${line.quantity} × ${escapeHTML(line.item_name)}</strong><p>Productos: ${money(line.packing.unitPrice)} c/u · ${money(line.packing.products)}</p>${line.packing.packagingTotal?`<p class="packing-line">Caja ${escapeHTML(line.packing.packagingSize)}: ${line.quantity} × ${money(line.packing.packagingUnitFee)} = ${money(line.packing.packagingTotal)}</p>`:line.packing.fulfillment==='pickup'?'<p>Para llevar · Sin caja</p>':''}<p>Total de la línea: ${money(line.packing.total)}</p>${window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean)).map(note=>{const option=window.DonPierosThermal.sizeOption(note);return `<p class="${option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes'}">${option.html}</p>`;}).join('')}</article>`).join('')}<p>Productos: ${money(products)}</p>${boxes?`<p>Cajas para llevar: ${money(boxes)}</p>`:''}<h2>Total: ${money(sessionTotal(session))}</h2><p>PENDIENTE DE COBRO</p></body></html>`);popup.document.close();
+    const articles=lines.map(line=>{
+      const labels=window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean));
+      const flavors=labels.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
+      const others=labels.filter(note=>!flavors.includes(note));
+      const noteHtml=note=>{const option=window.DonPierosThermal.sizeOption(note);return '<p class="'+(option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes')+'">'+option.html+'</p>';};
+      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+'</article>';
+    }).join('');
+    const logo=new URL('images/don-pieros-logo.png',location.href).href;
+    popup.document.open();
+    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:16mm;height:16mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',session.session_items.filter(line=>line.status!=='cancelled'),session.order_notes);
+    popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
+    popup.document.querySelectorAll('article').forEach(article=>{
+      const flavors=article.querySelector('.flavor-options');if(flavors)article.querySelector(':scope>strong')?.after(flavors);
+    });
     void window.DonPierosThermal.print(popup,width).catch(error=>toast(String(error.message||error),'error'));
   };
 
@@ -10555,7 +10618,7 @@ const App = (() => {
         toast("La cuenta cambió durante el cobro. El intento sigue protegido para revisión.", "error", "checkout-changed");
         return false;
       }
-      const closed = await closeSession(session.id, { paid, totals: sessionTotals(session), session, closedAt: invoice.createdAt });
+      const closed = await closeSession(session.id, { paid, totals: sessionTotals(session), session, closedAt: invoice.createdAt, operationId: invoice.checkoutId || invoice.id });
       if (!closed) return false;
       await saveCheckoutIntent(invoice, session, paid, "closed");
     }
@@ -10736,6 +10799,7 @@ const App = (() => {
       payerName: session.payer_name || "",
       waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
       cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
+      checkoutId:uid(),
       ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,deliveryFeePending:!!session.delivery_fee_pending,fulfillment:session.fulfillment,orderSource:session.order_source,checkoutId:uid()}:{}),
       paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
       payments: aggregateAccountPayments(session, payment.payments),
@@ -13835,6 +13899,7 @@ const App = (() => {
     initRemoteStorage();
     void refreshBackgroundReports({ force: true });
     window.addEventListener("online", () => {
+      void individualSync()?.flush().catch(()=>{});
       void flushRequestOutbox();
       if (state.page === "admin") void recoverPendingCheckouts();
       if (!isWaiter()) void flushAppsScriptOutbox();
@@ -13975,6 +14040,30 @@ const App = (() => {
       return result;
     },
     openIndividualSale: openPaymentDialog,
+    applySharedIndividualSales: (entries,options={}) => {
+      if(!Array.isArray(entries))return;
+      const local=state.sessions.filter(session=>isLocalWalkInSession(session)&&!session.web_order_id);
+      const shared=individualSync()?.reconcile(entries,local,options)||[];
+      for(const session of local)if(!individualSync()?.hasPending(session.id))state.optimisticSessionStates.delete(session.id);
+      state.sessions=[...state.sessions.filter(session=>!isLocalWalkInSession(session)||session.web_order_id),...shared];
+      localStorage.setItem(WALK_IN_DRAFTS_STORAGE_KEY,JSON.stringify(state.sessions.filter(isLocalWalkInSession)));
+      renderIndividualSales();
+    },
+    finishIndividualSale: async (sessionId,popup) => {
+      if(!holdIndividualSale(sessionId)){popup?.close();return false;}
+      try{
+        const sync=individualSync();
+        if(!sync)throw Error('No se pudo iniciar la conexión compartida. Actualiza la página.');
+        await sync.flush(sessionId);
+        printIndividualSale(sessionId,popup);return true;
+      }catch(error){popup?.close();throw error;}
+    },
+    leaveIndividualCatalog: sessionId => {
+      const session=state.sessions.find(row=>row.id===sessionId);
+      if(!session)return;
+      if(!sessionHasConsumption(session))discardLocalWalkInSession(sessionId);
+      else {persistWalkInDrafts();renderIndividualSales();}
+    },
     getIndividualDetails: sessionId => {
       const session=state.sessions.find(row=>row.id===sessionId);
       return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};

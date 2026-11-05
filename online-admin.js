@@ -75,6 +75,7 @@
     searchJobs.set(status,job);renderOrders();renderDashboard(dashboardOrders,$('#dp-nav-count').textContent||0);return job;
   }
   let paperWidth=80;
+  let individualRevision='',individualKnownSignature='';
   try{if(localStorage.getItem('don_pieros_order_paper')==='58')paperWidth=58;}catch(_){}
   function paperControl(){return `<label class="dp-paper-control">Papel<select data-dp-paper aria-label="Ancho del papel de la comanda"><option value="80" ${paperWidth===80?'selected':''}>80 mm</option><option value="58" ${paperWidth===58?'selected':''}>58 mm</option></select></label>`;}
   function findOrder(id){
@@ -197,7 +198,7 @@
     if(!canOrders()||!window.DON_PIEROS_CONFIG.appsScriptUrl)return;
     if(!urgent&&[...orderWrites.values()].some(write=>write.pending))return;
     if(busy){if(!urgent){if(force)ordersReloadRequested=true;return;}ordersController?.abort();}
-    const controller=new AbortController(),token=api().getToken(),readEpoch=orderEpoch;ordersController=controller;
+    const controller=new AbortController(),token=api().getToken(),readEpoch=orderEpoch,readStartedAt=Date.now();ordersController=controller;
     ordersReloadRequested=false;
     busy=true;
     if(force)$('#dp-orders-status').textContent='Actualizando pedidos…';
@@ -205,11 +206,14 @@
       const filter=$('#dp-order-filter').value;
       const pageOffset=offset;
       const view=filter+':'+pageOffset;
+      const individualKnownIds=(api().getOperations?.().sessions||[]).filter(row=>row.sale_channel==='walk_in'&&!row.web_order_id).map(row=>row.id).sort();
+      const knownSignature=JSON.stringify(individualKnownIds);if(knownSignature!==individualKnownSignature)individualRevision='';
       // The same request checks the revision and returns changed orders. Avoid
       // paying for a separate status round trip before every changed list.
-      const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60,...(!force&&revision&&ordersView===view?{revision}:{})},15000,controller.signal),
+      const [result,activeResult]=await Promise.all([request('dp_get_orders',{status:filter,offset:pageOffset,limit:60,includeIndividuals:true,individualRevision,individualKnownIds,...(!force&&revision&&ordersView===view?{revision}:{})},15000,controller.signal),
         filter==='active'&&pageOffset===0?Promise.resolve(null):request('dp_get_orders',{status:'active',offset:0,limit:20,...(!force&&dashboardRevision?{revision:dashboardRevision}:{})},15000,controller.signal)]);
       if(controller!==ordersController||controller.signal.aborted||token!==api().getToken())return;
+      if(Array.isArray(result.individualSales)){api().applySharedIndividualSales?.(result.individualSales,{readStartedAt});individualRevision=result.individualRevision;individualKnownSignature=knownSignature;}
       if(readEpoch!==orderEpoch){ordersReloadRequested=true;return;}
       if(filter!==$('#dp-order-filter').value||pageOffset!==offset){ordersReloadRequested=true;return;}
       if(result.changed!==false&&pageOffset>0&&pageOffset>=result.total){offset=Math.max(0,Math.floor((result.total-1)/60)*60);revision='';ordersReloadRequested=true;return;}
@@ -567,7 +571,7 @@
     const image=new Image(),url=URL.createObjectURL(file);let blob=file;
     try{image.src=url;await image.decode();const ratio=Math.min(1,1400/Math.max(image.width,image.height));const canvas=document.createElement('canvas');canvas.width=Math.round(image.width*ratio);canvas.height=Math.round(image.height*ratio);canvas.getContext('2d').drawImage(image,0,0,canvas.width,canvas.height);const compressed=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',.86));if(compressed)blob=compressed;}finally{URL.revokeObjectURL(url);}
     const extension=blob.type==='image/webp'?'webp':blob.type==='image/png'?'png':'jpg',path='products/'+crypto.randomUUID()+'.'+extension;
-    const bucket=api().db.storage.from('product-images'),{error}=await bucket.upload(path,blob,{contentType:blob.type,upsert:false});if(error)throw error;
+    const bucket=api().db.storage.from('product-images'),{error}=await bucket.upload(path,blob,{contentType:blob.type,upsert:false,cacheControl:'31536000'});if(error)throw error;
     return {path,url:bucket.getPublicUrl(path).data.publicUrl};
   }
   async function saveItem(event){
@@ -676,7 +680,8 @@
     const token=api()?.getToken();if(!token||!api()?.getUser()||document.hidden)return;
     if(connectedToken!==token){if(connectedToken)window.DonPierosReception?.reset();connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;newestOrderSequence=0;orderEpoch++;activeCount=0;orderWrites.clear();catalogWrites.clear();pendingAvailability.clear();seenOrderIds.clear();receivedOrderSignals.clear();searchEpoch++;searchCache.clear();searchJobs.clear();
       if(channel)void api().db.removeChannel(channel);
-      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).on('broadcast',{event:'catalog-changed'},()=>{if(canMenu())void loadCatalog();window.dispatchEvent(new Event('donpieros-catalog-change'));}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
+      individualRevision='';individualKnownSignature='';
+      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'individual-changed'},()=>{individualRevision='';void loadOrders(false,true);}).on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).on('broadcast',{event:'catalog-changed'},()=>{if(canMenu())void loadCatalog();window.dispatchEvent(new Event('donpieros-catalog-change'));}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
       if(canMenu())void loadCatalog();
     }
     if(canOrders())void loadOrders();
@@ -709,6 +714,7 @@
       catalogEpoch++;renderCatalog();if(record.state==='done')signal('catalog-changed');
     }
   });
+  window.addEventListener('donpieros-individual-saved',()=>{individualRevision='';signal('individual-changed');if(busy)ordersReloadRequested=true;else void loadOrders();});
   mount();setInterval(tick,3000);void tick();
   window.addEventListener('donpieros-session-change',()=>void tick());
   window.addEventListener('storage',event=>{if(event.key!=='don_pieros_order_signal_v1'||!event.newValue)return;try{const notice=JSON.parse(event.newValue);if(Math.abs(Date.now()-notice.at)<15000)receiveOrderSignal(notice);}catch(_){}});

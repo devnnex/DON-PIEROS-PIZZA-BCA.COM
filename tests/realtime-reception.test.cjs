@@ -207,10 +207,10 @@ function device(server, page = 'client') {
   assert.doesNotMatch(first.queueBox.innerHTML, /Te estamos atendiendo/);
 
   first.state.clientChannel.active = false;
+  originalChannel.status('CHANNEL_ERROR');
   server.messages.push({ id: 'fallback', session_id: 'session-a', sender_type: 'staff', body: 'Recibido sin WebSocket', created_at: '2026-10-08T18:01:00Z' });
   await first.advance(1200);
   assert.ok(first.state.chatMessages.some(row => row.id === 'fallback'), 'El respaldo de 1,2 segundos entrega mensajes cuando se pierde el canal.');
-  originalChannel.status('CHANNEL_ERROR');
   await first.advance(3000);
   assert.notEqual(first.state.clientChannel, originalChannel, 'El canal fallido se reconstruye automáticamente.');
   assert.equal(first.state.clientRealtimeNeedsReconnect, false);

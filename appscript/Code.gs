@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.17.0-donpieros",
+  version: "3.18.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -118,7 +118,7 @@ function doGet() {
       service: "DON PIEROS PIZZA",
       version: APP.version,
       configured: isConfigured_(),
-      capabilities: { onlineOrders: true, webCheckout:true,orderDeletion: true, fastOrderReception: true, catalog: true, queue: true, receipts: false, liveLocation: false },
+      capabilities: { sharedIndividualSales:true,onlineOrders: true, webCheckout:true,orderDeletion: true, fastOrderReception: true, catalog: true, queue: true, receipts: false, liveLocation: false },
       spreadsheetId: APP.spreadsheetId
     });
   } catch (error) {
@@ -1799,6 +1799,10 @@ function dpDispatch_(request) {
   if (action === 'dp_get_catalog') return dpCatalog_(false);
   if (action === 'createOrder') return dpCreateOrder_(request.order || payload.order,null,request.clientSignals===true);
   var user = validateSupabaseUser_(request.authToken);
+  if(action==='dp_save_individual_sale'){
+    requireManager_(user);dpRequireOrders_(user);validateOrigin_(request.origin);
+    return dpSaveIndividualSale_(payload,user);
+  }
   if(action==='dp_create_staff_order'){
     dpRequireOrders_(user);
     validateOrigin_(request.origin);
@@ -1807,7 +1811,7 @@ function dpDispatch_(request) {
   if (['dp_get_orders','dp_get_order','dp_order_status','dp_update_order','dp_delete_order','dp_edit_order','dp_order_time','dp_add_order_product','dp_edit_order_product'].indexOf(action)>=0) {
     dpRequireOrders_(user);
     if (action === 'dp_order_status') return {ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_ORDERS_REVISION') || '0'};
-    if (action === 'dp_get_orders') return dpOrders_(payload);
+    if (action === 'dp_get_orders') return Object.assign(dpOrders_(payload),payload.includeIndividuals?dpIndividualSnapshot_(payload.individualRevision,payload.individualKnownIds):{});
     if (action === 'dp_get_order') return Object.assign(dpGetOrder_(payload),{checkoutAvailable:true});
     if (action === 'dp_delete_order') return dpDeleteOrder_(payload,user,request.clientSignals===true);
     if (action === 'dp_edit_order') return dpEditOrder_(payload,user,request.clientSignals===true);
@@ -2115,6 +2119,73 @@ function dpCreateOrder_(raw,staffUser,clientSignals) {
   });
   dpSignalOrder_('order-created',result.orderId,clientSignals);
   return result;
+}
+
+// Ventas individuales de caja: Google Sheets es la copia compartida y durable.
+// Se crea la pestaña al usarla; no añade tablas ni almacenamiento a Supabase.
+function dpIndividualSheet_(){
+  var book=getSpreadsheet_(),sheet=book.getSheetByName('Ventas_Individuales_Pendientes');
+  return sheet||ensureSheet_(book,'Ventas_Individuales_Pendientes',['id','numero','estado','version','operacion_id','usuario_id','sesion_json','actualizado_en','operaciones_json']);
+}
+function dpIndividualSnapshot_(knownRevision,knownIds){
+  var revision=PropertiesService.getScriptProperties().getProperty('DP_INDIVIDUAL_REVISION')||'0';
+  if(knownRevision===revision)return {individualRevision:revision};
+  var known={};(Array.isArray(knownIds)?knownIds:[]).slice(0,2000).forEach(function(id){known[String(id)]=true;});
+  var visible=function(rows){return rows.filter(function(row){return row.status==='open'||known[row.id];});};
+  var cache=CacheService.getScriptCache(),key='DP_INDIVIDUAL:'+revision,cached=cache.get(key);
+  if(cached)return {individualRevision:revision,individualSales:visible(JSON.parse(cached))};
+  var sheet=dpIndividualSheet_(),last=sheet.getLastRow(),meta=last>1?sheet.getRange(2,1,last-1,4).getValues():[];
+  var rows=meta.map(function(row,index){
+    return {id:String(row[0]),number:Number(row[1]),status:String(row[2]),version:Number(row[3]),row:index+2};
+  });
+  // Leer los JSON solo de cuentas abiertas; las cerradas son tombstones pequeños.
+  var active=rows.filter(function(row){return row.status==='open';});
+  for(var i=0;i<active.length;){
+    var start=active[i].row,end=start,first=i;i++;
+    while(i<active.length&&active[i].row===end+1){end=active[i].row;i++;}
+    var cells=sheet.getRange(start,7,end-start+1,1).getValues();
+    for(var j=first;j<i;j++)active[j].session=JSON.parse(cells[active[j].row-start][0]);
+  }
+  rows.forEach(function(row){delete row.row;});
+  var text=JSON.stringify(rows);if(text.length<90000)try{cache.put(key,text,120);}catch(_){}
+  return {individualRevision:revision,individualSales:visible(rows)};
+}
+function dpSaveIndividualSale_(payload,user){
+  var id=dpText_(payload.p_id,100),operation=dpText_(payload.p_operation_id,100),action=payload.p_action;
+  if(!/^[a-zA-Z0-9-]{1,100}$/.test(id)||!operation||['save','close','discard'].indexOf(action)<0
+    ||!Number.isInteger(payload.p_version)||payload.p_version<0)throw new Error('Operación de venta inválida.');
+  var session=payload.p_session;
+  if(action==='save'){
+    if(!session||session.id!==id||session.sale_channel!=='walk_in'||session.web_order_id||!Array.isArray(session.session_items)
+      ||!session.session_items.length||session.session_items.length>200||JSON.stringify(session).length>45000)throw new Error('Comanda inválida.');
+    session.session_items.forEach(function(line){
+      if(!dpText_(line.item_name,160)||!Number.isInteger(line.quantity)||line.quantity<1||line.quantity>99
+        ||!Number.isSafeInteger(line.unit_price)||line.unit_price<0||line.unit_price>10000000)throw new Error('Producto inválido.');
+    });
+  }
+  return dpWithLock_(function(){
+    var sheet=dpIndividualSheet_(),last=sheet.getLastRow(),found=last>1?sheet.getRange(2,1,last-1,1).createTextFinder(id).matchEntireCell(true).findNext():null;
+    var row=found?sheet.getRange(found.getRow(),1,1,9).getValues()[0]:null;
+    var receipts=row?JSON.parse(row[8]||'[]'):[],previous=receipts.filter(function(receipt){return receipt.id===operation;})[0];
+    if(previous){if(previous.actor!==user.id)throw new Error('Operación no autorizada.');return previous.result;}
+    if(row&&(row[2]!=='open'||Number(row[3])!==payload.p_version)||!row&&payload.p_version!==0)
+      return {ok:false,conflict:true,retryable:false,error:'Esta venta cambió o ya fue cobrada en otro equipo. Revisa la comanda.',current:row?{id:id,number:Number(row[1]),version:Number(row[3]),status:row[2],session:row[2]==='open'?JSON.parse(row[6]):null}:null};
+    var props=PropertiesService.getScriptProperties(),number=row?Number(row[1]):Number(props.getProperty('DP_NEXT_INDIVIDUAL')||1);
+    if(!row&&last>1)number=sheet.getRange(2,2,last-1,1).getValues().reduce(function(next,cells){return Math.max(next,(Number(cells[0])||0)+1);},number);
+    var version=row?Number(row[3])+1:1,status=action==='save'?'open':action==='close'?'closed':'discarded';
+    var result={ok:true,version:version,number:number,status:status};
+    receipts.push({id:operation,actor:user.id,result:result});
+    // La última operación incluye el cierre y permite repetirlo tras perder la respuesta.
+    receipts=receipts.slice(-30);
+    var stored=action==='save'?session:row?JSON.parse(row[6]):session;
+    if(action==='save'){stored.individual_number=number;stored.local_only=true;delete stored.shared_version;}
+    try{
+      sheet.getRange(found?found.getRow():last+1,1,1,9).setValues([[id,number,status,version,operation,user.id,JSON.stringify(stored),new Date().toISOString(),JSON.stringify(receipts)]]);
+      if(!row)props.setProperty('DP_NEXT_INDIVIDUAL',String(number+1));
+      SpreadsheetApp.flush();
+    }finally{props.setProperty('DP_INDIVIDUAL_REVISION',Utilities.getUuid());}
+    return result;
+  });
 }
 
 function dpOrders_(payload) {

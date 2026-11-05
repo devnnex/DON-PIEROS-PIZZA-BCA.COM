@@ -4,9 +4,9 @@
   function sizeOption(value){
     const text=String(value??''),escape=text=>text.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const match=text.match(/^((?:Elige\s+el\s+)?Tama[ñn]o\s*:\s*)(Super\s+maxi|Maxi|Mediana|Mini|Pizzeta)\b(.*)$/i);
-    return {isSize:!!match,html:match?escape(match[1])+`<b class="size-name">${escape(match[2])}</b>`+escape(match[3]):escape(text)};
+    return {isSize:!!match,html:match?escape(match[1])+`<b class="size-name">${escape(match[2])}</b>`+escape(match[3]).replace(/(\d+\s*[x×]\s*\d+\s*cm)/gi,'<span class="size-dimensions">$1</span>'):escape(text)};
   }
-  const sizeStyle='.size-option{margin-left:-4px!important}.size-option .size-name{font-size:calc(1em + 2px);font-weight:900!important}';
+  const sizeStyle='.size-option{margin-left:-4px!important}.size-option .size-name{font-size:calc(1em + 2px);font-weight:900!important}.size-dimensions{white-space:nowrap;display:inline-block}';
   async function prepare(target,width=80){
     const doc=target.document;width=width===58?58:80;
     const style=doc.createElement('style');style.dataset.thermalPaper='';
@@ -32,6 +32,13 @@
     const PDF=window.jspdf?.jsPDF;
     if(!PDF)throw new Error('No se pudo cargar el generador de impresión. Actualiza la página.');
     const body=doc.body.cloneNode(true);
+    // Incrustar el PNG evita perder el logo al convertir el recibo a PDF.
+    const originals=[...doc.body.querySelectorAll('img')];
+    body.querySelectorAll('img').forEach((img,index)=>{
+      const source=originals[index];if(!source?.naturalWidth)return;
+      try{const canvas=doc.createElement('canvas');canvas.width=source.naturalWidth;canvas.height=source.naturalHeight;
+        canvas.getContext('2d').drawImage(source,0,0);img.src=canvas.toDataURL('image/png');}catch(_){}
+    });
     body.querySelectorAll('[data-thermal-pdf-viewer]').forEach(node=>node.remove());
     const css=[...doc.querySelectorAll('style')].map(node=>node.textContent).join('\n');
     const styles=doc.createElement('style');styles.textContent=css;body.prepend(styles);
