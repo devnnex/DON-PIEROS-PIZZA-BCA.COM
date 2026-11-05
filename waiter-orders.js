@@ -190,7 +190,7 @@
       const override=existing?.product_id===id&&(existing.options?.manualUnitPrice!=null||basePrice!==catalogPrice)?basePrice:'';
       $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Precio por unidad <small>Opcional · déjalo vacío para usar el precio de la carta</small><input id="dw-unit-price" type="number" min="0" max="10000000" step="1" inputmode="numeric" value="${override}" placeholder="${esc(money(catalogPrice))}"></label>`);
     }
-    const savedDelivery=existing?.options?.fulfillment||(existing?savedPacking.fulfillment:'');
+    const savedDelivery=existing?.options?.fulfillment||(existing?savedPacking.fulfillment:((individualPick||webPick||draft?.individual)?'':'dinein'));
     $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field dw-fulfillment-field">Entrega <small id="dw-fulfillment-status">Obligatorio</small><select id="dw-fulfillment" required aria-required="true" aria-describedby="dw-fulfillment-status dw-packaging-summary"><option value="">Selecciona la entrega</option><option value="dinein" ${savedDelivery==='dinein'?'selected':''}>Para comer en el local</option><option value="pickup" ${savedDelivery==='pickup'?'selected':''}>Para llevar</option><option value="delivery" ${savedDelivery==='delivery'?'selected':''}>Domicilio</option></select><small id="dw-packaging-summary" aria-live="polite"></small></label>`);
     $('#dw-line-notes').value=savedPacking.notes;
     // Stored prices include the box; the editable price always shows the food.
