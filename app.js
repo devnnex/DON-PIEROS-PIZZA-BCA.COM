@@ -10099,6 +10099,7 @@ const App = (() => {
         .devnex-contact svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
         @media screen { body { padding: 8mm 4mm; box-shadow: 0 0 22px #bbb; } }
       </style></head><body>
+        <div class="center">NIT. 91.443.312-5 No responsable de IVA</div>
         ${isPaid ? `<img class="invoice-logo" src="${escapeHTML(invoiceLogoUrl)}" alt="${escapeHTML(businessName)}">` : `<div class="logo">${escapeHTML(businessName)}</div>`}
         <div class="subtitle">FACTURA DE VENTA</div>
         <div class="rule"></div>
