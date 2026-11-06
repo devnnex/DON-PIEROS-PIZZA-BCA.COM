@@ -10,10 +10,11 @@ function setup(){
 }
 
 test('venta individual a domicilio conserva la entrega y calcula cajas sin duplicar productos',()=>{
- const {h,raw}=setup();raw.items[0].fulfillment='delivery';
+ const {h,raw}=setup();raw.items[0].fulfillment='delivery';raw.address='Carrera 10 # 20-30, barrio Centro, apartamento 402';
  const receipt=h.call('dp_create_staff_order',{order:raw},'waiter');assert.equal(receipt.ok,true,receipt.error);
  const order=h.call('dp_get_order',{id:receipt.orderId}).order;
  assert.equal(order.fulfillment,'delivery');assert.equal(order.items[0].fulfillment,'delivery');
+ assert.equal(order.address,raw.address,'La dirección que envía el mesero llega a la comanda de caja.');
  assert.equal(order.items[0].packagingUnitFee,4000);assert.equal(order.total,164000);
  assert.equal(h.call('dp_create_staff_order',{order:raw},'waiter').duplicate,true);
 });

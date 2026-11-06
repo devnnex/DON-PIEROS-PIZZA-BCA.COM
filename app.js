@@ -6145,7 +6145,7 @@ const App = (() => {
     if(state.invoiceHistory.some(invoice=>invoice.webOrderId===order.id))throw new Error('Este pedido ya fue cobrado. Revisa Ventas.');
     const now=new Date().toISOString();
     const session={id,local_only:true,table_id:null,status:'open',sale_channel:'walk_in',web_order_id:order.id,
-      web_delivery_fee:order.deliveryFeePending?0:deliveryFee,delivery_fee_pending:!!order.deliveryFeePending,fulfillment:order.fulfillment,payer_name:order.customerName,
+      web_delivery_fee:order.deliveryFeePending?0:deliveryFee,delivery_fee_pending:!!order.deliveryFeePending,fulfillment:order.fulfillment,payer_name:order.customerName,delivery_address:order.address||'',neighborhood:order.neighborhood||'',
       order_source:order.source||'web',waiter_name:order.waiterName||'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
       session_items:order.items.map((line,index)=>{
         const sameName=state.items.filter(item=>normalizeText(item.name)===normalizeText(line.name));
@@ -10063,6 +10063,8 @@ const App = (() => {
     const issuedAt = new Date(invoice?.createdAt || Date.now());
     const payments = invoice?.payments || [];
     const invoiceLogoUrl = new URL("images/don-pieros-invoice-logo.png", location.href).href;
+    const deliveryAddress = invoice?.deliveryAddress ?? session.delivery_address ?? '';
+    const neighborhood = invoice?.neighborhood ?? session.neighborhood ?? '';
     return `<!doctype html>
       <html lang="es"><head><meta charset="utf-8"><title>${isPaid ? "Factura" : "Pre-cuenta"} ${escapeHTML(receiptNumber)}</title>
       <style>
@@ -10105,6 +10107,8 @@ const App = (() => {
           <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
           <span>Entrega:</span><strong>${invoice?.fulfillment==='delivery'?'Domicilio':items.some(item=>globalThis.DonPierosPackaging?.read(item.notes).fulfillment==='pickup')?'Recoger en local':'Para comer en mesa'}</strong>
           ${invoice?.deliveryFeePending||session.delivery_fee_pending?'<span>Domicilio:</span><strong>Por confirmar</strong>':''}
+          ${neighborhood?`<span>Barrio:</span><strong style="white-space:pre-wrap">${escapeHTML(neighborhood)}</strong>`:''}
+          ${deliveryAddress?`<span>Dirección:</span><strong style="white-space:pre-wrap">${escapeHTML(deliveryAddress)}</strong>`:''}
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
           <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
@@ -10350,10 +10354,8 @@ const App = (() => {
     }).join('');
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
-    const hasDelivery=session.session_items.some(line=>(line.waiter_options?.fulfillment||window.DonPierosPackaging.read(line.notes).fulfillment)==='delivery');
-    const deliveryAddress=hasDelivery&&session.delivery_address?'<p class="fulfillment">Dirección: '+escapeHTML(session.delivery_address)+'</p>':'';
-    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+deliveryAddress+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
-    window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes);
+    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
+    window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes,session);
     popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
     popup.document.querySelectorAll('article').forEach(article=>{
       const flavors=article.querySelector('.flavor-options');if(flavors)article.querySelector(':scope>strong')?.after(flavors);
@@ -10479,7 +10481,7 @@ const App = (() => {
       createdAt: record.date,
       payerName: record.payer || "",
       waiterName: record.waiter || "",
-      cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',
+      cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',deliveryAddress:storedInvoice?.deliveryAddress||'',neighborhood:storedInvoice?.neighborhood||'',
       paymentMethod: record.isMixed || payments.length > 1 ? "mixed" : (payments[0]?.method || storedInvoice?.paymentMethod || "cash"),
       payments,
       reference: record.reference || "",
@@ -10813,6 +10815,7 @@ const App = (() => {
       waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
       cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
       checkoutId:uid(),
+      deliveryAddress:session.delivery_address||'',neighborhood:session.neighborhood||'',fulfillment:session.fulfillment||'',
       ...(session.web_order_id?{webOrderId:session.web_order_id,webDeliveryFee:session.web_delivery_fee,deliveryFeePending:!!session.delivery_fee_pending,fulfillment:session.fulfillment,orderSource:session.order_source,checkoutId:uid()}:{}),
       paymentMethod: aggregateAccountPayments(session, payment.payments).length > 1 ? "mixed" : (aggregateAccountPayments(session, payment.payments)[0]?.method || payment.method),
       payments: aggregateAccountPayments(session, payment.payments),

@@ -133,6 +133,12 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   await page.locator('[data-dw-print-order]').click();
   assert.match(await page.evaluate(()=>fixture.printed[0]),/Pizza mesero/);
   assert.equal(await page.evaluate(()=>fixture.accepted),0,'Imprimir no asigna el consumo.');
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'Terminar de preparar la impresión mantiene abierta la comanda pendiente.');
+  await page.locator('[data-dw-print-order]').click();
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'Reimprimir conserva el botón para agregar a la mesa.');
+  assert.equal(await page.evaluate(()=>fixture.accepted),0);
   await page.locator('[data-dw-accept-order]').click();await page.waitForFunction(()=>fixture.accepted===1);
   assert.equal(await page.locator('[data-dw-accept-order]').count(),0);
   await page.locator('#dw-kitchen-dialog').waitFor({state:'hidden'});

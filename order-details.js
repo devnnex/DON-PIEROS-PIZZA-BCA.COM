@@ -60,7 +60,14 @@
       if(!options.length){const item=items[index]||{},saved=item.packagingSize||(/pizzeta/i.test(item.name||item.item_name||'')?'Pizzeta':''),fallback=/^(Mini|Mediana|Maxi|Super maxi|Pizzeta)$/i.test(saved)?saved:'';if(fallback){const line=doc.createElement('p'),size=doc.createElement('b');line.className='size-option';size.className='size-name';size.textContent=fallback;line.append('Tamaño: ',size);name.before(line);}}
     });
   }
-  function prepareComanda(doc,selector,items,notes){
+  function prepareComanda(doc,selector,items,notes,delivery={}){
+    const address=String(delivery.address||delivery.delivery_address||'').trim();
+    const neighborhood=String(delivery.neighborhood||'').trim();
+    if(address||neighborhood){
+      const section=doc.createElement('section');section.className='delivery-address';
+      for(const [label,value] of [['Barrio',neighborhood],['Dirección',address]])if(value){const line=doc.createElement('p');line.style.whiteSpace='pre-wrap';line.style.overflowWrap='anywhere';line.textContent=label+': '+value;section.append(line);}
+      doc.querySelector('header,.customer,h2')?.after(section);
+    }
     sizeFirst(doc,selector,items);const info=readTime(notes),paragraph=doc.querySelector('.notes p');
     if(paragraph){paragraph.textContent=info.notes;if(!info.notes)paragraph.closest('.notes').remove();}
     else if(info.notes){const section=doc.createElement('section');section.className='notes';const title=doc.createElement('b'),text=doc.createElement('p');title.textContent='Observaciones';text.textContent=info.notes;section.append(title,text);doc.querySelector('header,.fulfillment,h2')?.after(section);}
@@ -74,6 +81,8 @@
     doc.querySelectorAll('.fulfillment,p').forEach(node=>{if(/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))underline(node);});
     doc.querySelectorAll(selector).forEach((block,index)=>{
       const item=items?.[index]||{},packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+      const itemAddress=String(item.waiter_options?.address||item.options?.address||'').trim();
+      if(itemAddress&&itemAddress!==address){const line=doc.createElement('p');line.className='delivery-address';line.textContent='Dirección: '+itemAddress;line.style.whiteSpace='pre-wrap';line.style.overflowWrap='anywhere';(block.querySelector(':scope > div')||block).append(line);}
       const heading=block.querySelector('h3,div>strong,strong'),lineNotes=[...block.querySelectorAll('.line-notes')];
       if(heading&&lineNotes.length){
         const observation=[...new Set(lineNotes.map(node=>node.textContent.trim()).filter(Boolean))].join('\n').toLocaleUpperCase('es-CO');
@@ -103,7 +112,7 @@
       const name=String(item.item_name||item.name||item.product||'Producto').trim();
       const labels=(item.waiter_options?.labels||item.options?.labels||item.selections||[]).filter(label=>!['Para llevar','Domicilio','En el local','Para comer en el local'].includes(String(label)));
       const fulfillment=item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||packing.fulfillment||'';
-      const signature=JSON.stringify([nameKey(name),labels,fulfillment,item.packagingSize||packing.size||'',Number(item.unit_price??item.unitPrice)||0]);
+      const signature=JSON.stringify([nameKey(name),labels,fulfillment,item.waiter_options?.address||item.options?.address||'',item.packagingSize||packing.size||'',Number(item.unit_price??item.unitPrice)||0]);
       return {item,name,notes:String(packing.notes||''),signature};
     });
     const namesWithNotes=new Set(rows.filter(row=>row.notes).map(row=>nameKey(row.name)));

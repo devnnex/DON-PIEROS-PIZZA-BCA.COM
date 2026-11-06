@@ -89,7 +89,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   assert.equal(saved.count,2);assert.equal(saved.total,26000);assert.equal(saved.info.time,'25 minutos');assert.equal(saved.packing.fulfillment,'delivery');assert.equal(saved.packing.fee,2000);assert.equal(saved.address,'Calle 10 # 20-30');
   await page.evaluate(()=>{
    window.printTarget=window.open('','_blank');window.open=()=>printTarget;
-   DonPierosThermal.print=async target=>{window.printReady=target.document.body.innerHTML;};
+   DonPierosThermal.print=async target=>{window.printReady=target.document.body.innerHTML;return {};};
    saleTest.printIndividualSale();
   });
   const printPage=context.pages().find(other=>other!==page);
@@ -101,6 +101,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
    styles:[...document.querySelectorAll('.notes .comanda-underline,article .comanda-underline')].map(node=>{const s=getComputedStyle(node);return {color:s.color,line:s.textDecorationLine,green:s.textDecorationColor,bold:Number(s.fontWeight)};})
   }));
   assert.equal(printCheck.before,true);assert.match(printCheck.notes,/Entregar en porterÃ­a/);assert.equal(printCheck.delivery,true);
+  assert.equal(await printPage.locator('.delivery-address').innerText(),'DirecciÃ³n: Calle 10 # 20-30');
   assert.ok(printCheck.styles.length>=3);for(const style of printCheck.styles){assert.equal(style.color,'rgb(0, 0, 0)');assert.equal(style.line,'underline');assert.equal(style.green,'rgb(33, 134, 83)');assert.ok(style.bold>=800);}
   const paperWidth=width===390?58:80;
   const pdf=await page.evaluate(async paperWidth=>{
@@ -131,7 +132,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   await printPage.waitForSelector('.flavor-options');
   const compact=await printPage.evaluate(()=>({text:document.body.innerText,flavors:document.querySelector('article>strong').nextElementSibling.className,logo:document.querySelector('header img').getAttribute('src'),size:document.querySelector('.size-option').textContent}));
   assert.equal(compact.flavors,'flavor-options');assert.match(compact.text,/LILY SILVA/);assert.match(compact.size,/54 Ã— 54 cm/);
-  assert.match(compact.logo,/don-pieros-logo.png/);assert.doesNotMatch(compact.text,/c\/u|Total de la lÃ­nea|Caja Super maxi:/);
+  assert.match(compact.logo,/don-pieros-logo.png/);assert.doesNotMatch(compact.text,/Total de la lÃ­nea|Caja Super maxi:/);
+  assert.match(compact.text,/ANEXO: CAJA Super maxi.*c\/u/);
   assert.equal((compact.text.match(/Productos:/g)||[]).length,1);assert.match(compact.text,/96\.000/);assert.match(compact.text,/4\.000/);
   const compactPdf=await page.evaluate(async paperWidth=>{const result=await DonPierosThermal.createPdf(printTarget,paperWidth);return {data:result.pdf.output('datauristring').split(',')[1],width:result.width};},paperWidth);
   assert.equal(compactPdf.width,paperWidth);fs.writeFileSync(path.join(root,`artifacts/venta-combinada-${paperWidth}mm.pdf`),Buffer.from(compactPdf.data,'base64'));
@@ -148,6 +150,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al catÃ
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Enviar e imprimir no abre el formulario de cobro.');
   const shared=backend.call('dp_get_orders',{includeIndividuals:true}).individualSales;
   assert.equal(shared.length,1);assert.equal(shared[0].session.session_items.length,2,'Enviar agrega el producto una sola vez y guarda la comanda compartida.');
+  assert.equal(shared[0].session.delivery_address,'Calle 10 # 20-30','La copia compartida conserva la direcciÃ³n incluso si el Ãºltimo producto es para llevar.');
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

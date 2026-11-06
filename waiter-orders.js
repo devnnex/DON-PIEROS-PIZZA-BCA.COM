@@ -195,7 +195,7 @@
       $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field">Precio por unidad <small>Opcional · déjalo vacío para usar el precio de la carta</small><input id="dw-unit-price" type="number" min="0" max="10000000" step="1" inputmode="numeric" value="${override}" placeholder="${esc(money(catalogPrice))}"></label>`);
     }
     const tableDineInDefault=Boolean(selectedTable&&selectedTable!==individualTable&&!individualPick&&!webPick&&!draft?.individual);
-    const savedDelivery=existing?.options?.fulfillment||savedPacking.fulfillment||(tableDineInDefault?'dinein':((individualPick||webPick||draft?.individual)?'':''));
+    const savedDelivery=existing?(existing.options?.fulfillment||savedPacking.fulfillment||''):(tableDineInDefault?'dinein':'');
     $('#dw-product-body .dw-quantity').insertAdjacentHTML('beforebegin',`<label class="dw-custom-field dw-fulfillment-field">Entrega <small id="dw-fulfillment-status">Obligatorio</small><select id="dw-fulfillment" required aria-required="true" aria-describedby="dw-fulfillment-status dw-packaging-summary"><option value="">Selecciona la entrega</option><option value="dinein" ${savedDelivery==='dinein'?'selected':''}>Para comer en el local</option><option value="pickup" ${savedDelivery==='pickup'?'selected':''}>Para llevar</option><option value="delivery" ${savedDelivery==='delivery'?'selected':''}>Domicilio</option></select><small id="dw-packaging-summary" aria-live="polite"></small></label>`);
     $('#dw-line-notes').value=savedPacking.notes;
     // Stored prices include the box; the editable price always shows the food.
@@ -203,7 +203,6 @@
     if(individualPick)$('#dw-product-dialog').dataset.individualPicker='1';
     if(individualPick||draft?.individual&&!webPick){
       const data=individualPick?api().getIndividualDetails(individualPick.sessionId):{customerName:draft.customerName||'',...details().readTime(draft.notes)};
-      if(individualPick){if(data.fulfillment&&(!existing||!savedDelivery))$('#dw-fulfillment').value=data.fulfillment;$('#dw-fulfillment').closest('.dw-fulfillment-field').insertAdjacentHTML('afterend',`<label class="dw-custom-field dw-delivery-address" ${$('#dw-fulfillment').value==='delivery'?'':'hidden'}>Dirección de domicilio <small>Obligatoria</small><textarea id="dw-product-address" maxlength="300" rows="2" placeholder="Dirección y datos para encontrar el domicilio">${esc(data.address||'')}</textarea></label>`);}
       $('#dw-product-body .dw-dialog-head').insertAdjacentHTML('afterend',`<fieldset class="dw-comanda-fields"><legend>Datos de la comanda</legend><label class="dw-custom-field">Nombre del cliente <small>Obligatorio</small><input id="dw-product-customer" type="text" required minlength="2" maxlength="120" placeholder="Cliente individual" value="${esc(data.customerName)}"></label><label class="dw-custom-field">Tiempo estimado <input id="dw-product-time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(data.time)}"><small>Puedes asignar o cambiar el tiempo antes del cobro.</small></label><label class="dw-custom-field dw-comanda-observations">Observaciones de la comanda <textarea id="dw-product-observations" maxlength="500" rows="2" placeholder="Indicaciones para este pedido…">${esc(data.notes)}</textarea></label></fieldset>`);
       if(individualPick){
         const add=$('#dw-add-product'),actions=document.createElement('div');actions.className='dw-individual-actions';
@@ -211,7 +210,11 @@
         actions.insertAdjacentHTML('beforeend','<button type="submit" class="dw-send-print" id="dw-send-print">▤ Enviar e imprimir comanda</button>');
       }
     }
-    if(webPick){$('#dw-product-dialog').dataset.webPicker='1';if(!existing)$('#dw-fulfillment').value=webPick.fulfillment||'pickup';}
+    if(!webPick&&!draft?.legacy){
+      const address=individualPick?api().getIndividualDetails(individualPick.sessionId).address:existing?.options?.address||draft?.address||'';
+      $('#dw-fulfillment').closest('.dw-fulfillment-field').insertAdjacentHTML('afterend',`<label class="dw-custom-field dw-delivery-address" ${$('#dw-fulfillment').value==='delivery'?'':'hidden'}>Dirección de domicilio <small>Obligatoria</small><textarea id="dw-product-address" maxlength="300" rows="2" placeholder="Calle, número, barrio, apartamento y referencias">${esc(address||'')}</textarea></label>`);
+    }
+    if(webPick)$('#dw-product-dialog').dataset.webPicker='1';
     if($('#dw-fulfillment').value){$('#dw-fulfillment').closest('label').classList.add('is-complete');$('#dw-fulfillment-status').textContent='Seleccionado';}
     updateProductOptions();$('#dw-product-dialog').showModal();$('#dw-product-dialog').scrollTop=0;
   }
@@ -249,8 +252,9 @@
     const selection=productSelection(true);
     if($('#dw-item-name')&&!$('#dw-item-name').value.trim()){$('#dw-item-name').setCustomValidity('Escribe el nombre del producto.');$('#dw-item-name').reportValidity();return;}
     if(!selection.valid){$('#dw-product-error').textContent=activeProduct.custom?'Escribe el nombre y un precio válido en pesos.':'Elige las opciones obligatorias para continuar.';$('#dw-product-body .is-invalid')?.scrollIntoView({block:'center',behavior:'smooth'});return;}
-    if(individualPick&&$('#dw-fulfillment').value==='delivery'&&!$('#dw-product-address').value.trim()){ $('#dw-product-address').setCustomValidity('Escribe la dirección del domicilio.');$('#dw-product-address').reportValidity();return; }
+    if(!webPick&&!draft?.legacy&&$('#dw-fulfillment').value==='delivery'&&!$('#dw-product-address').value.trim()){ $('#dw-product-address').setCustomValidity('Escribe la dirección del domicilio.');$('#dw-product-address').reportValidity();return; }
     const line={id:editingLine||crypto.randomUUID(),product_id:activeProduct.id,name:$('#dw-item-name')?$('#dw-item-name').value.trim():activeProduct.custom?$('#dw-custom-name').value.trim():activeProduct.name,quantity:Number($('#dw-product-quantity').value),unit_price:selection.unitPrice,options:selection.options,notes:window.DonPierosPackaging.note($('#dw-line-notes').value.trim(),selection.box.size,selection.options.fulfillment)};
+    if(!webPick&&!individualPick&&!draft?.legacy){const address=$('#dw-product-address').value.trim();if(draft?.individual)draft.address=address;else line.options.address=address;}
     if([...(line.options.labels||[]),line.notes].join(' · ').length>500){$('#dw-product-error').textContent='Acorta un poco las notas de este producto.';return;}
     if(webPick){void saveWebProduct(line);return;}
     if(individualPick){
@@ -433,7 +437,7 @@
         const input=$('#dw-individual-customer'),field=input.closest('label');input.setAttribute('aria-invalid','true');field.classList.remove('dw-required-flash');void field.offsetWidth;field.classList.add('is-invalid','dw-required-flash');
         input.scrollIntoView({block:'center',behavior:'smooth'});input.focus({preventScroll:true});$('#dw-send-error').textContent='Escribe el nombre del cliente (mínimo 2 caracteres).';return;
       }
-      draft.pending={requestId:draft.id,customerName:draft.customerName,notes:draft.notes,items:draft.items.map(line=>{
+      draft.pending={requestId:draft.id,customerName:draft.customerName,address:draft.address||'',notes:draft.notes,items:draft.items.map(line=>{
         const packing=window.DonPierosPackaging.read(line.notes);
         return {productId:line.product_id,name:line.name,quantity:line.quantity,unitPrice:line.unit_price-packing.fee,
           selectionIds:clone(line.options.selectionIds||{}),manualUnitPrice:line.options.manualUnitPrice,
@@ -570,15 +574,11 @@
     const popup=window.open('','_blank','width=480,height=720');
     if(!popup){api().notify('Permite las ventanas emergentes para imprimir la comanda.','error');return;}
     const printable=kitchenPrintItems.has(id)?{...order,items:kitchenPrintItems.get(id)}:order;
-    void renderKitchenPrint(popup,printable,printWidth).then(()=>finishPrintedTableOrder(id)).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
+    void renderKitchenPrint(popup,printable,printWidth).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
   }
   function finishTableOrderFlow(){
     ['dw-product-dialog','dw-review-dialog','dw-catalog-dialog','dw-kitchen-dialog'].forEach(dialogId=>{const dialog=$('#'+dialogId);if(dialog?.open)dialog.close();});
     managerOpen='';activeProduct=null;editingLine='';replacingLine='';directLineEdit=false;draft=null;selectedTable='';tab='menu';category='';query='';homeSignature='';renderHome();
-  }
-  function finishPrintedTableOrder(id){
-    if(managerOpen!==id)return;
-    kitchenPrintItems.delete(id);finishTableOrderFlow();
   }
   function renderKitchenPrint(popup,order,width,complete=false){
     const groupedItems=details().groupComandaItems(order.items);
@@ -586,7 +586,7 @@
     const productTotal=printItems.reduce((sum,item)=>sum+item.packing.products,0),boxTotal=printItems.reduce((sum,item)=>sum+item.packing.packagingTotal,0);
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(tableLabel(order.table))}</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}body{width:${width-6}mm;margin:0;font:16px/1.45 monospace;color:#000;background:#fff}header img{display:block;width:28mm;height:22mm;object-fit:contain;margin:0 auto}h1{text-align:center;font-size:22px;margin:8px 0}header,footer{text-align:center}article{display:flex;gap:8px;padding:10px 0;border-top:1px dashed #000}article>b{font-size:22px}article div{flex:1}article strong{font-size:19px}p{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-size:17px;text-decoration:underline;text-decoration-color:#218653}.notes{border:2px solid #000;padding:8px;margin:12px 0}footer{border-top:1px dashed #000;padding:12px 0}${window.DonPierosThermal.sizeStyle}</style></head><body><header><img src="${esc(logo)}" alt="Don Pieros Pizza"><h1>${esc(tableLabel(order.table))}</h1><p>${complete?'COMANDA COMPLETA DE LA MESA':'Comanda de mesa · v'+Number(order.version)}</p><p>${esc(order.waiter_name)}<br>${esc(window.DonPierosDates.dateTime(order.updated_at))}</p></header>${printItems.map(item=>{const fulfillment=item.waiter_options?.fulfillment||item.packing.fulfillment,label=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';const labels=(item.waiter_options?.labels||[]).filter(text=>!['Domicilio','Para llevar','En el local','Para comer en el local'].includes(text));return `<article><b>${Number(item.quantity)} ×</b><div><strong>${esc(item.item_name)}</strong>${item.packing.notes?`<p class="line-notes"><b>${esc(item.packing.notes.toLocaleUpperCase('es-CO'))}</b></p>`:''}${label?`<p class="fulfillment">${label}</p>`:''}${window.DonPierosOrderLabels.compact(labels).map(label=>{const option=window.DonPierosThermal.sizeOption(label);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}${complete&&item.pending?'<p>Pendiente de aceptar</p>':''}<p>Productos: ${money(item.packing.unitPrice)} c/u · ${money(item.packing.products)}</p>${item.packing.packagingTotal?`<p class="packing-line">ANEXO: CAJA ${esc(item.packing.packagingSize)}: ${item.quantity} × ${money(item.packing.packagingUnitFee)} = ${money(item.packing.packagingTotal)}</p>`:''}<p>Total de la línea: ${money(item.packing.total)}</p></div></article>`;}).join('')}${order.notes?`<section class="notes"><b>Indicaciones para cocina</b><p>${esc(order.notes)}</p></section>`:''}<footer>Productos: ${esc(money(productTotal))}${boxTotal?`<br>Cajas para llevar: ${esc(money(boxTotal))}`:''}<br>Total: ${esc(money(total(order.items)))}</footer></body></html>`);
-    popup.document.close();details().prepareComanda(popup.document,'article',groupedItems,order.notes);return window.DonPierosThermal.print(popup,width);
+    popup.document.close();details().prepareComanda(popup.document,'article',groupedItems,order.notes,order);return window.DonPierosThermal.print(popup,width);
   }
   async function beginCatalogChoice(replacement=''){
     replacingLine=replacement;$('#dw-review-dialog').close();category='';query='';
@@ -691,7 +691,8 @@
       field.classList.toggle('is-complete',complete);$('#dw-customer-status').textContent=complete?'Completo':'Obligatorio';
     }
     if(['dw-custom-name','dw-custom-price','dw-unit-price'].includes(event.target.id))updateProductOptions();
-    if(['dw-product-customer','dw-product-time','dw-product-observations','dw-product-address'].includes(event.target.id)){
+    if(event.target.id==='dw-product-address'&&draft?.individual&&!draft.pending){draft.address=event.target.value;persist();}
+    if(['dw-product-customer','dw-product-time','dw-product-observations','dw-product-address'].includes(event.target.id)&&$('#dw-product-customer')){
       const data={customerName:$('#dw-product-customer').value,time:$('#dw-product-time').value,notes:$('#dw-product-observations').value,address:$('#dw-product-address')?.value||'',fulfillment:$('#dw-fulfillment')?.value||''};
       if(individualPick)api().updateIndividualDetails(individualPick.sessionId,data);
       else if(draft?.individual&&!draft.pending){const old=details().readTime(draft.notes);draft.customerName=data.customerName;draft.notes=details().withTime(details().withTime(data.notes,old.time,old.startedAt),data.time);persist();}
@@ -729,6 +730,10 @@
     if(waiter()){newDraft();renderSelection();}else{draft=null;selectedTable='';}
   });
   $('#dw-review-dialog').addEventListener('cancel',event=>{if(busy)event.preventDefault();});
+  $('#dw-kitchen-dialog').addEventListener('close',()=>{
+    if($('#dw-kitchen-dialog').open)return;
+    kitchenPrintItems.delete(managerOpen);managerOpen='';
+  });
   $('#dw-review-dialog').addEventListener('close',()=>{if(draft?.managerMode&&!draft.pending&&!busy&&!$('#dw-product-dialog').open&&!$('#dw-catalog-dialog').open){draft=null;selectedTable='';}});
   $('#dw-catalog-dialog').addEventListener('close',()=>{
     if($('#dw-catalog-dialog').dataset.webPicker){delete $('#dw-catalog-dialog').dataset.webPicker;const pick=webPick;webPick=null;pick?.onClose();return;}

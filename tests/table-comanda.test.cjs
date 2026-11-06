@@ -1,4 +1,11 @@
-const test=require('node:test'),assert=require('node:assert/strict'),{completeTableItems}=require('../order-details.js');
+const test=require('node:test'),assert=require('node:assert/strict'),{completeTableItems,groupComandaItems}=require('../order-details.js');
+test('las comandas no agrupan productos destinados a direcciones diferentes',()=>{
+ const item={item_name:'Pizza',quantity:1,unit_price:20000,waiter_options:{fulfillment:'delivery',address:'Calle 1 # 2-3'}};
+ const other={...item,waiter_options:{...item.waiter_options,address:'Calle 9 # 8-7'}};
+ const grouped=groupComandaItems([item,{...item},other]);
+ assert.equal(grouped.length,2);assert.equal(grouped[0].quantity,2);assert.equal(grouped[1].quantity,1);
+ assert.deepEqual(completeTableItems({id:'s',table_id:'t',status:'open',session_items:[{...item,id:'accepted',status:'served'}]},[{id:'pending',session_id:'s',table_id:'t',items:[other]}]).map(row=>row.waiter_options.address),['Calle 1 # 2-3','Calle 9 # 8-7']);
+});
 test('la comanda completa incluye consumos anteriores y nuevas comandas pendientes una sola vez',()=>{
  const session={id:'session',table_id:'table',status:'open',session_items:[
   {id:'old',item_name:'Pizza anterior',quantity:2,status:'served',waiter_comanda_id:'accepted'},
