@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 const {chromium}=require('playwright-core');
 const {harness}=require('./helpers/don-pieros-gas.cjs');
 const root=path.resolve(__dirname,'..');
-const instrument=source=>source.replace('  return { init };','  return { init, state, createWalkInSale, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption, holdIndividualSale };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
+const instrument=source=>source.replace('  return { init };','  return { init, state, createWalkInSale, openPaymentDialog, printIndividualSale, loadWalkInDrafts, editConsumption, addManualConsumption, holdIndividualSale, openConsumptionDialog };').replace('document.addEventListener("DOMContentLoaded", App.init);','window.saleTest=App;');
 
 test('venta individual: datos persistentes, domicilio con caja y retorno al catálogo; comanda con observaciones primero y subrayado',async()=>{
  const server=http.createServer((req,res)=>{
@@ -60,11 +60,21 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.match(await page.locator('#dw-packaging-summary').innerText(),/2\.000/);
   assert.match(await page.locator('#dw-product-price').innerText(),/22\.000/);
   await page.locator('#dw-add-product').click();
+  assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.open),true,'El teléfono es obligatorio antes de agregar productos.');
+  assert.equal(await page.locator('#dw-product-phone').isVisible(),true);
+  await page.locator('#dw-product-phone').fill('123');
+  assert.equal(await page.locator('#dw-product-phone').evaluate(node=>node.checkValidity()),false);
+  await page.locator('#dw-product-phone').fill('300 123 4567');
+  await page.locator('#dw-add-product').click();
   await page.waitForFunction(()=>!document.querySelector('#dw-product-dialog').open);
   assert.equal(await page.locator('#dw-catalog-dialog').evaluate(node=>node.open),true);
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false);
   await page.locator('[data-dw-product="drink"]').click();
   assert.equal(await page.locator('#dw-product-customer').inputValue(),'Laura');
+  assert.equal(await page.locator('#dw-product-phone').inputValue(),'3001234567','El teléfono se conserva al agregar otro producto.');
+  await page.locator('#dw-product-phone').fill('');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567','Editar otro producto no borra el teléfono válido ya guardado.');
+  await page.locator('#dw-product-phone').fill('3001234567');
   assert.equal(await page.locator('#dw-product-time').inputValue(),'25 minutos');
   assert.equal(await page.locator('#dw-product-observations').inputValue(),'Entregar en portería.\nSalsa aparte.');
   await page.locator('#dw-fulfillment').selectOption('delivery');
@@ -72,6 +82,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.match(await page.locator('#dw-product-price').innerText(),/4\.000/,'La bebida no cobra caja.');
   assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
+  await page.locator('.dw-comanda-fields').screenshot({path:path.join(root,`artifacts/venta-datos-cliente-${width}.png`)});
   await page.locator('#dw-product-dialog').screenshot({path:path.join(root,`artifacts/venta-producto-${width}.png`)});
   await page.locator('#dw-add-product').click();
   await page.waitForFunction(()=>!document.querySelector('#dw-product-dialog').open);
@@ -80,6 +91,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   await page.evaluate(()=>saleTest.openPaymentDialog('walk-in-test'));
   assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'Laura');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567');
   assert.equal(await page.locator('#paymentSaleLines>div').count(),2);
   const saved=await page.evaluate(()=>{
    saleTest.loadWalkInDrafts();
@@ -102,6 +114,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   }));
   assert.equal(printCheck.before,true);assert.match(printCheck.notes,/Entregar en portería/);assert.equal(printCheck.delivery,true);
   assert.equal(await printPage.locator('.delivery-address').innerText(),'Dirección: Calle 10 # 20-30');
+  assert.match(await printPage.locator('body').innerText(),/Teléfono: 3001234567/);
   assert.ok(printCheck.styles.length>=3);for(const style of printCheck.styles){assert.equal(style.color,'rgb(0, 0, 0)');assert.equal(style.line,'underline');assert.equal(style.green,'rgb(33, 134, 83)');assert.ok(style.bold>=800);}
   const paperWidth=width===390?58:80;
   const pdf=await page.evaluate(async paperWidth=>{
@@ -122,6 +135,14 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
    return {packing:DonPierosPackaging.read(line.notes),fulfillment:line.waiter_options.fulfillment,total:session.session_items.reduce((sum,line)=>sum+line.quantity*line.unit_price,0)};
   });
   assert.equal(edited.packing.fulfillment,'dinein');assert.equal(edited.packing.fee,0);assert.equal(edited.fulfillment,'dinein');assert.equal(edited.total,24000,'Cambiar a local retira la caja sin alterar la bebida.');
+  await page.evaluate(()=>{
+   document.querySelector('#consumptionDialog').close();
+   saleTest.state.tables.push({id:'mesa-test',table_number:1,is_active:true});
+   saleTest.state.sessions.push({id:'table-account',table_id:'mesa-test',status:'open',session_items:[]});
+   saleTest.openConsumptionDialog('table-account');
+  });
+  assert.equal(await page.locator('[name="individual_edit_phone"]').isDisabled(),true,'Editar una venta individual no bloquea después el consumo de una mesa con un campo oculto obligatorio.');
+  await page.evaluate(()=>document.querySelector('#consumptionDialog').close());
   assert.equal(await page.evaluate(()=>saleTest.holdIndividualSale()),true,'Guardar pendiente usa los datos del producto sin depender de inputs eliminados.');
   await page.evaluate(()=>{
    const session=saleTest.state.sessions[0];session.payer_name='lily silva';session.session_items=[{...session.session_items[0],item_name:'Pizza combinada',unit_price:100000,
@@ -151,6 +172,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   const shared=backend.call('dp_get_orders',{includeIndividuals:true}).individualSales;
   assert.equal(shared.length,1);assert.equal(shared[0].session.session_items.length,2,'Enviar agrega el producto una sola vez y guarda la comanda compartida.');
   assert.equal(shared[0].session.delivery_address,'Calle 10 # 20-30','La copia compartida conserva la dirección incluso si el último producto es para llevar.');
+  assert.equal(shared[0].session.customer_phone,'3001234567','El teléfono se comparte entre los equipos.');
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

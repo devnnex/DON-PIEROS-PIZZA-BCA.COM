@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.19.0-donpieros",
+  version: "3.20.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -40,7 +40,7 @@ var HEADERS = {
   sales: [
     "sale_id", "factura", "session_id", "table_id", "mesa", "fecha", "responsable",
     "mesero", "subtotal", "descuento", "impuestos", "servicio", "total",
-    "forma_pago", "referencia_pago", "origen", "sincronizado_en", "cobrado_por", "cobrado_usuario_id", "pedido_web_id", "cobro_id", "entrega", "cobrado_rol", "domicilio_por_confirmar"
+    "forma_pago", "referencia_pago", "origen", "sincronizado_en", "cobrado_por", "cobrado_usuario_id", "pedido_web_id", "cobro_id", "entrega", "cobrado_rol", "domicilio_por_confirmar", "telefono_cliente"
   ],
   details: [
     "sale_id", "factura", "line_id", "menu_item_id", "producto", "cantidad",
@@ -719,6 +719,7 @@ function getIncomeReport_(filters) {
       table: String(row[4] || "Mesa"),
       date: String(row[5] instanceof Date ? row[5].toISOString() : row[5] || ""),
       payer: String(row[6] || ""),
+      customerPhone: String(row[24] || ""),
       waiter: String(row[7] || ""),
       cashier:String(row[17]||''),cashierId:String(row[18]||''),webOrderId:String(row[19]||''),fulfillment:String(row[21]||''),cashierRole:String(row[22]||''),deliveryFeePending:row[23]===true,
       subtotal: asNumber_(row[8]),
@@ -1097,6 +1098,7 @@ function dpValidateWebSale_(invoice){
     var conflict=new Error('El importe del pedido cambió. Revisa el pedido antes de cobrar.');conflict.retryable=false;conflict.code='CHECKOUT_CONFLICT';throw conflict;
   }
   invoice.orderSource=order.source||'web';
+  invoice.customerPhone=order.phone||invoice.customerPhone||'';
   invoice.deliveryFeePending=!!order.deliveryFeePending;
   invoice.webDeliveryFee=delivery;
   if(order.source==='staff_walk_in'){invoice.waiterName=order.waiterName;invoice.table='Venta individual';}
@@ -1150,7 +1152,7 @@ function recordSale_(invoice, user, authToken) {
       asNumber_(totals.subtotal), asNumber_(totals.discount), asNumber_(totals.tax),
       asNumber_(totals.serviceFee), asNumber_(totals.total), safeText_(invoice.paymentMethod),
       safeText_(invoice.reference), invoice.orderSource==='staff_walk_in'?'Venta individual/AppScript':invoice.webOrderId?'Pedido en linea/AppScript':invoice.saleChannel === "walk_in" ? "Venta individual/AppScript" : "Supabase/Panel", now,
-      safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role),invoice.deliveryFeePending===true
+      safeText_(invoice.cashierName||user.full_name||user.username),safeText_(invoice.cashierId||user.id),safeText_(invoice.webOrderId),safeText_(invoice.checkoutId),safeText_(invoice.fulfillment),safeText_(invoice.cashierRole||user.role),invoice.deliveryFeePending===true,safeText_(String(invoice.customerPhone||'').slice(0,25))
     ]];
 
     var inventoryTable = webWithoutInventory?{sheet:spreadsheet.getSheetByName(APP.sheets.inventory),rows:[]}:readInventoryTable_();
@@ -1329,6 +1331,7 @@ function editSale_(invoice, user, operationId) {
     sale[13] = safeText_(invoice.paymentMethod);
     sale[14] = safeText_(invoice.reference);
     sale[16] = new Date().toISOString();
+    if(invoice.customerPhone!==undefined)sale[24]=safeText_(String(invoice.customerPhone||'').slice(0,25));
     sales[saleIndex] = sale;
 
 

@@ -31,7 +31,7 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
       ${section('thermalReceiptHtml', 'printThermalReceipt')}
       window.receipt=thermalReceiptHtml;
     ` });
-    const session = { id: 'account', session_items: [{ item_name: 'Pizza', quantity: 2, unit_price: 25000 }, { item_name: 'Gaseosa', quantity: 2, unit_price: 4000 }] };
+    const session = { id: 'account', customer_phone: '3001234567', session_items: [{ item_name: 'Pizza', quantity: 2, unit_price: 25000 }, { item_name: 'Gaseosa', quantity: 2, unit_price: 4000 }] };
     const heights = new Map();
     for (const paid of [false, true]) for (const width of [80, 58]) for (const viewportHeight of [500, 1200]) {
       await page.setViewportSize({ width: 420, height: viewportHeight });
@@ -53,6 +53,7 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
       }, width);
       const label = `${paid ? 'factura' : 'precuenta'} ${width}mm / pantalla ${viewportHeight}`;
       assert.ok(result.logoReady, label + ': logo cargado antes de medir y crear el PDF');
+      assert.match(await popup.locator('.meta').first().innerText(),/Teléfono:\s*3001234567/,label+': teléfono impreso');
       assert.ok(result.nitGap >= -0.1 && result.nitGap <= 8, label + ': NIT inmediatamente debajo del negocio');
       assert.ok(result.titleGap >= 0 && result.titleGap <= 8, label + ': título junto al NIT');
       assert.equal(result.pages, 1, label + ': una sola tira');

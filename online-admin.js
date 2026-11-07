@@ -142,6 +142,7 @@
     });
     $('#dp-orders-refresh').onclick=()=>void loadOrders(true);
     document.addEventListener('input',event=>{
+      if(event.target.id==='individualSalesSearch'){renderDashboard(dashboardOrders,activeCount);if(event.target.value.trim())void ensureSearchRows('dashboard');return;}
       const scope=event.target.dataset.dpSearch;if(!searchState[scope])return;
       searchState[scope].query=event.target.value;scope==='list'?renderOrders():renderDashboard(dashboardOrders,$('#dp-nav-count').textContent||0);
       clearTimeout(searchTimer);searchTimer=setTimeout(()=>void ensureSearchRows(scope),180);
@@ -343,9 +344,9 @@
     const allActive=overlayOrders(searchCache.get('active')?.revision===dashboardRevision?searchCache.get('active').rows:rows).filter(order=>!deletions()?.hidden('web-order',order.id)&&['nueva','atendiendo','lista'].includes(order.status));
     const staffCount=allActive.filter(order=>order.source==='staff_walk_in').length;
     root.querySelector('.dp-count').textContent=Math.max(0,count-staffCount);
-    const individualRoot=$('#staffIndividualSalesGrid'),staff=source.filter(order=>order.source==='staff_walk_in');
+    const individualRoot=$('#staffIndividualSalesGrid'),staff=source.filter(order=>order.source==='staff_walk_in'&&(!api().matchesIndividualCustomer||api().matchesIndividualCustomer(order.customerName,order.phone)));
     if(individualRoot){individualRoot.hidden=!staff.length;individualRoot.innerHTML=staff.map(orderCard).join('');decorateTimes(individualRoot);}
-    api().setStaffIndividualCount?.(staffCount);
+    api().setStaffIndividualCount?.(staffCount,staff.length);
     $('#dp-dashboard-result').textContent=searching?`${visible.length} pedido${visible.length===1?'':'s'} encontrado${visible.length===1?'':'s'}${searchJobs.has(searchState.dashboard.status)?' · Buscando en los demás pedidos…':''}`:'';
     $('#dp-dashboard-order-list').innerHTML=visible.map(orderCard).join('')||'<p class="dp-muted">No hay pedidos que coincidan con esta búsqueda y estado.</p>';
     decorateTimes($('#dp-dashboard-order-list'));
@@ -517,7 +518,7 @@
   function renderCatalog(){
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
     let rows=(catalog[catalogKind]||[]).filter(item=>!deletions()?.hidden('catalog-'+catalogKind,item.id));
-    const select=$('#dp-menu-category'),selected=select.value,categories=[...new Set((catalog.products||[]).map(p=>p.category))];
+    const select=$('#dp-menu-category'),selected=select.value,categories=window.DonPierosMenuOrder?.categories(catalog.products||[])||[...new Set((catalog.products||[]).map(p=>p.category))];
     select.innerHTML='<option value="">Todas las categorías</option>'+categories.map(c=>`<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(c)}</option>`).join('');$('#dp-category-filter').hidden=catalogKind!=='products';
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);
     const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
@@ -537,7 +538,7 @@
   const field=(name,label,value='',type='text',extra='')=>`<label>${label}<input name="${name}" type="${type}" value="${esc(value)}" ${extra}></label>`;
   const productCategory=form=>form.category.value==='__other__'?form.new_category.value.trim():form.category.value;
   function categoryField(selected=''){
-    const categories=[...new Set((catalog.products||[]).map(product=>product.category).filter(Boolean))];
+    const categories=window.DonPierosMenuOrder?.categories(catalog.products||[])||[...new Set((catalog.products||[]).map(product=>product.category).filter(Boolean))];
     if(selected&&!categories.includes(selected))categories.push(selected);
     return `<label>Categoría<select name="category" required><option value="">Elige una categoría</option>${categories.map(name=>`<option value="${esc(name)}" ${name===selected?'selected':''}>${esc(name)}</option>`).join('')}<option value="__other__">Otra categoría…</option></select></label><label id="dp-new-category" hidden>Nombre de la nueva categoría<input name="new_category" type="text" maxlength="80" disabled placeholder="Ej.: Postres"></label>`;
   }

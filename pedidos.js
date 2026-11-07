@@ -243,7 +243,8 @@
       });
       if(pricesChanged){saveCart();toast('Precios actualizados','Revisa el total de tu pedido antes de confirmar.');}
       if (state.customer.neighborhood) setNeighborhood(state.customer.neighborhood);
-      categories = ['Todo el menú', ...new Set(products.map(product => product.category))];
+      products = window.DonPierosMenuOrder?.products(products) || products;
+      categories = ['Todo el menú', ...(window.DonPierosMenuOrder?.categories(products) || [...new Set(products.map(product => product.category))])];
       if (!categories.includes(state.category)) state.category = 'Todo el menú';
       if (!paymentMethods.some(method => method.id === state.payment)) state.payment = '';
       renderCategories(); renderProducts();

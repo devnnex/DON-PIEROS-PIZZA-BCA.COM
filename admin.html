@@ -2,7 +2,7 @@
 <html lang="es">
   <head>
     <meta charset="utf-8">
-    <meta name="app-version" content="20261106-v66">
+    <meta name="app-version" content="20261106-v67">
     <script defer src="./pwa-updates.js?v=1"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#050505" id="pwaThemeColor">
@@ -18,7 +18,7 @@
     <link rel="icon" href="./images/admin-icon-192.png?v=admin-v1" id="appFavicon" type="image/png" sizes="192x192">
     <link rel="apple-touch-icon" href="./images/admin-icon-512.png?v=admin-v1" id="appleTouchIcon" sizes="512x512">
     <script>
-      window.__APP_ASSET_VERSION__ = "donpieros-20261106-v66";
+      window.__APP_ASSET_VERSION__ = "donpieros-20261106-v67";
       document.write(`<link rel="stylesheet" href="style.css?v=${window.__APP_ASSET_VERSION__}-mobile-menu-v4">`);
     </script>
     <link rel="stylesheet" href="menu-cards.css?v=20261019-visual-details-v1">
@@ -32,11 +32,12 @@
   <script defer src="system-dialogs.js?v=1"></script>
   <link rel="stylesheet" href="online-admin.css?v=17">
   <link rel="stylesheet" href="reception-notices.css?v=4">
-  <link rel="stylesheet" href="waiter-orders.css?v=29">
+  <link rel="stylesheet" href="waiter-orders.css?v=30">
   <script defer src="product-images.js?v=donpieros-photos-v2"></script>
 <link rel="stylesheet" href="packaging.css?v=1">
 <script defer src="packaging.js?v=5"></script>
 <script defer src="order-labels.js?v=1"></script>
+<script defer src="menu-order.js?v=1"></script>
 <script defer src="thermal-print.js?v=8"></script>
 <script defer src="order-details.js?v=8"></script>
 <script defer src="https://devnnex.github.io/DEVNEX-BLOQUEO.COM/js/project-guard.js?v=4" data-devnex-connector="v1" data-devnex-admin-only="true" data-project-id="DON-PIEROS-PIZZA-BCA.COM" data-devnex-repository="devnnex/DON-PIEROS-PIZZA-BCA.COM" data-devnex-connection="e290a3a8-ec05-41d6-b927-de4e06106a21" data-devnex-health="__DEVNEX_HEALTH__e290a3a8-ec05-41d6-b927-de4e06106a21"></script>
@@ -154,7 +155,7 @@
             </label>
           </div>
           <div class="tables-grid" id="tablesGrid"></div>
-          <section id="individualSalesPanel" data-manager-only><div class="section-head"><div><h3>Ventas individuales pendientes <span id="individualSalesCount">0</span></h3><small>Ventas de caja y meseros · sin ocupar mesas</small></div><button class="ghost" type="button" data-new-individual>Nueva venta</button></div><div id="individualSalesGrid" class="tables-grid compact-tables-grid"></div><div id="staffIndividualSalesGrid" class="dp-orders" aria-label="Ventas individuales enviadas por meseros" hidden></div></section>
+          <section id="individualSalesPanel" data-manager-only><div class="section-head"><div><h3>Ventas individuales pendientes <span id="individualSalesCount">0</span></h3><small>Ventas de caja y meseros · sin ocupar mesas</small></div><label class="individual-sales-search"><input id="individualSalesSearch" type="search" autocomplete="off" placeholder="Buscar cliente" aria-label="Buscar clientes de ventas individuales por nombre o teléfono"></label><button class="ghost" type="button" data-new-individual>Nueva venta</button></div><div id="individualSalesGrid" class="tables-grid compact-tables-grid"></div><div id="staffIndividualSalesGrid" class="dp-orders" aria-label="Ventas individuales enviadas por meseros" hidden></div></section>
         </div>
       </section>
 
@@ -682,6 +683,7 @@
             <label class="wide">Nota<textarea name="notes" rows="2" placeholder="Observaciones opcionales"></textarea></label>
             <fieldset class="individual-comanda-fields wide" id="individualComandaEditFields" hidden>
               <legend>Editar comanda individual</legend>
+              <label>Teléfono del cliente<input name="individual_edit_phone" type="tel" inputmode="tel" autocomplete="tel" required disabled pattern="(?: *[0-9]){10} *" maxlength="25" placeholder="Ej.: 300 123 4567"><small>Obligatorio · 10 dígitos</small></label>
               <label>Tiempo estimado<input name="individual_edit_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos o 30 min"><small>Este tiempo se aplica a toda la comanda.</small></label>
               <label>Observaciones de la comanda<textarea name="individual_edit_observations" rows="2" maxlength="500" placeholder="Indicaciones generales del pedido"></textarea></label>
             </fieldset>
@@ -980,8 +982,8 @@
     <script>document.write(`<script defer src="app.js?v=${window.__APP_ASSET_VERSION__}"><\/script>`);</script>
   <script defer src="pending-deletions.js?v=1"></script>
   <script defer src="reception-notices.js?v=4"></script>
-  <script defer src="online-admin.js?v=40"></script>
-  <script defer src="waiter-orders.js?v=33"></script>
+  <script defer src="online-admin.js?v=41"></script>
+  <script defer src="waiter-orders.js?v=34"></script>
   <script defer src="reception-board.js?v=3"></script>
   </body>
 </html>

@@ -5677,13 +5677,18 @@ const App = (() => {
   };
 
   const individualSaleTitle = session => `Venta ${session.individual_number || sessionReference(session)}`;
+  const matchesIndividualCustomer = (name,phone,query = $('#individualSalesSearch')?.value || '') => {
+    const text=normalizeText([name,phone].filter(Boolean).join(' '));
+    return normalizeText(query).trim().split(/\s+/).filter(Boolean).every(word=>text.includes(word));
+  };
   const renderIndividualSales = () => {
     const grid=$("#individualSalesGrid");if(!grid)return;
     const rows=state.sessions.filter(session=>isLocalWalkInSession(session)&&!session.web_order_id&&sessionHasConsumption(session));
     const board=window.DonPierosReceptionBoard;
-    const visible=rows.filter(session=>!board||board.matches('individual',session)).sort((a,b)=>board?board.compare(a,b):String(a.opened_at).localeCompare(String(b.opened_at)));
+    const visible=rows.filter(session=>(!board||board.matches('individual',session))&&matchesIndividualCustomer(session.payer_name,session.customer_phone)).sort((a,b)=>board?board.compare(a,b):String(a.opened_at).localeCompare(String(b.opened_at)));
     grid.innerHTML=visible.map(session=>`<button type="button" class="compact-table-tile occupied individual-sale-tile" data-open-individual="${escapeHTML(session.id)}"><span class="individual-sale-heading"><span class="individual-sale-icon" aria-hidden="true">▤</span><strong>${escapeHTML(individualSaleTitle(session))}</strong><span class="individual-sale-arrow" aria-hidden="true">↗</span></span><span class="individual-sale-customer">${escapeHTML(session.payer_name||'Cliente individual')}</span><b class="individual-sale-total">${money(sessionTotal(session))}</b><small class="individual-sale-date">${escapeHTML(prettyDateTime(session.opened_at))}</small><span class="individual-sale-footer"><em>Pendiente de cobro</em><span>Ver comanda →</span></span></button>`).join('')||(state.staffIndividualCount?'':'<p class="muted">No hay ventas individuales pendientes con este filtro.</p>');
     if($("#individualSalesCount"))$("#individualSalesCount").textContent=String(rows.length+Number(state.staffIndividualCount||0));
+    if(!visible.length&&$('#individualSalesSearch')?.value.trim()&&!state.staffIndividualVisibleCount)grid.innerHTML='<p class="muted">No hay ventas individuales pendientes con este cliente o teléfono.</p>';
     grid.querySelectorAll('[data-open-individual]').forEach(node=>{const session=rows.find(row=>row.id===node.dataset.openIndividual);if(session)window.DonPierosOrderDetails?.decorate(node,session.order_notes,session.opened_at);});
   };
 
@@ -6145,7 +6150,7 @@ const App = (() => {
     if(state.invoiceHistory.some(invoice=>invoice.webOrderId===order.id))throw new Error('Este pedido ya fue cobrado. Revisa Ventas.');
     const now=new Date().toISOString();
     const session={id,local_only:true,table_id:null,status:'open',sale_channel:'walk_in',web_order_id:order.id,
-      web_delivery_fee:order.deliveryFeePending?0:deliveryFee,delivery_fee_pending:!!order.deliveryFeePending,fulfillment:order.fulfillment,payer_name:order.customerName,delivery_address:order.address||'',neighborhood:order.neighborhood||'',
+      web_delivery_fee:order.deliveryFeePending?0:deliveryFee,delivery_fee_pending:!!order.deliveryFeePending,fulfillment:order.fulfillment,payer_name:order.customerName,customer_phone:order.phone||'',delivery_address:order.address||'',neighborhood:order.neighborhood||'',
       order_source:order.source||'web',waiter_name:order.waiterName||'Pedido web',assigned_waiter_id:null,assigned_waiter:null,restaurant_tables:null,opened_at:now,created_at:now,updated_at:now,
       session_items:order.items.map((line,index)=>{
         const sameName=state.items.filter(item=>normalizeText(item.name)===normalizeText(line.name));
@@ -6356,7 +6361,7 @@ const App = (() => {
         if (!snapshot?.ok || snapshot.stale || !Array.isArray(snapshot.records)) throw transientAppsScriptError("Falta conciliar la operacion rechazada.");
         const record = snapshot.records.find(row => String(row.saleId) === saleId);
         const invoice = record ? { id: record.saleId, sessionId: record.sessionId, number: record.invoice, table: record.table,
-          createdAt: record.date, payerName: record.payer, waiterName: record.waiter, cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||'',reference: record.reference,
+          createdAt: record.date, payerName: record.payer, customerPhone:record.customerPhone||'', waiterName: record.waiter, cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||'',reference: record.reference,
           payments: record.payments, paymentMethod: record.isMixed ? "mixed" : record.payments?.[0]?.method,
           totals: { total: record.total, subtotal: record.subtotal, discount: record.discount, tax: record.tax, serviceFee: record.service },
           items: (record.items || []).map(line => ({ id: line.lineId, menu_item_id: line.menuItemId, item_name: line.name,
@@ -8295,6 +8300,7 @@ const App = (() => {
         table: invoice.table || "Mesa",
         date: invoice.createdAt || new Date().toISOString(),
         payer: invoice.payerName || "",
+        customerPhone: invoice.customerPhone || "",
         waiter: invoice.waiterName || "",
         cashier:invoice.cashierName||'',cashierRole:invoice.cashierRole||'',webOrderId:invoice.webOrderId||'',deliveryFeePending:!!invoice.deliveryFeePending,fulfillment:invoice.fulfillment||'',
         subtotal: Number(invoice.totals?.subtotal || 0),
@@ -9226,6 +9232,7 @@ const App = (() => {
       table: form.table.value.trim(),
       createdAt: correctedDate.toISOString(),
       payerName: form.payer.value.trim(),
+      customerPhone: record.customerPhone || "",
       waiterName: form.waiter.value.trim(),
       cashierName:record.cashier||'',cashierRole:record.cashierRole||'',webOrderId:record.webOrderId||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||'',
       paymentMethod: selectedPaymentMethod,
@@ -10064,6 +10071,7 @@ const App = (() => {
     const payments = invoice?.payments || [];
     const invoiceLogoUrl = new URL("images/don-pieros-invoice-logo.png", location.href).href;
     const deliveryAddress = invoice?.deliveryAddress ?? session.delivery_address ?? '';
+    const customerPhone = invoice?.customerPhone || session.customer_phone || '';
     const neighborhood = invoice?.neighborhood ?? session.neighborhood ?? '';
     return `<!doctype html>
       <html lang="es"><head><meta charset="utf-8"><title>${isPaid ? "Factura" : "Pre-cuenta"} ${escapeHTML(receiptNumber)}</title>
@@ -10116,6 +10124,7 @@ const App = (() => {
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>
           <span>Hora:</span><strong>${window.DonPierosDates.time(issuedAt)}</strong>
           <span>Responsable:</span><strong>${escapeHTML(session.payer_name || "Consumidor final")}</strong>
+          ${customerPhone?`<span>Teléfono:</span><strong>${escapeHTML(customerPhone)}</strong>`:''}
           <span>Atendido por:</span><strong>${escapeHTML(invoice?.waiterName || session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "Equipo")}</strong>
           ${isPaid?`<span>Cobrado por:</span><strong>${escapeHTML(invoice.cashierName||'Sin registro')}${invoice.cashierRole?' · '+escapeHTML(roleLabel(invoice.cashierRole)):''}</strong>`:''}
         </div>
@@ -10328,6 +10337,11 @@ const App = (() => {
       editConsumption(session.id,session.session_items.find(item=>item.status!=='cancelled').id);
       $('#consumptionForm').payer_name.focus();return false;
     }
+    if(!/^[0-9]{10}$/.test(String(session.customer_phone||'').replace(/ /g,''))){
+      toast('Escribe el teléfono del cliente con 10 dígitos antes de enviar la comanda.','error');
+      editConsumption(session.id,session.session_items.find(item=>item.status!=='cancelled').id);
+      $('#consumptionForm').individual_edit_phone.focus();return false;
+    }
     session.payer_name=customerName;session.updated_at=new Date().toISOString();
     state.optimisticSessionStates.set(session.id,{mode:'upsert',localOnly:true,session});
     if(!persistWalkInDrafts())return false;
@@ -10359,6 +10373,7 @@ const App = (() => {
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
     popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
+    if(session.customer_phone)popup.document.querySelector('.customer')?.insertAdjacentHTML('beforeend','<br>Teléfono: '+escapeHTML(session.customer_phone));
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes,session);
     popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
     popup.document.querySelectorAll('article').forEach(article=>{
@@ -10484,6 +10499,7 @@ const App = (() => {
       table: tableName,
       createdAt: record.date,
       payerName: record.payer || "",
+      customerPhone: record.customerPhone || storedInvoice?.customerPhone || "",
       waiterName: record.waiter || "",
       cashierName:record.cashier||storedInvoice?.cashierName||'',cashierRole:record.cashierRole||storedInvoice?.cashierRole||'',deliveryFeePending:!!record.deliveryFeePending,fulfillment:record.fulfillment||storedInvoice?.fulfillment||'',webOrderId:record.webOrderId||'',deliveryAddress:storedInvoice?.deliveryAddress||'',neighborhood:storedInvoice?.neighborhood||'',
       paymentMethod: record.isMixed || payments.length > 1 ? "mixed" : (payments[0]?.method || storedInvoice?.paymentMethod || "cash"),
@@ -10816,6 +10832,7 @@ const App = (() => {
       soldByUserId: state.currentUser?.id || session.assigned_waiter_id || null,
       createdAt,
       payerName: session.payer_name || "",
+      customerPhone: session.customer_phone || "",
       waiterName: session.assigned_waiter?.full_name || session.waiter_name || state.currentUser?.full_name || "",
       cashierName:state.currentUser?.full_name||state.currentUser?.username||'',cashierId:state.currentUser?.id||'',cashierRole:state.currentUser?.role||'',
       checkoutId:uid(),
@@ -11429,6 +11446,7 @@ const App = (() => {
     form.reset();
     form.classList.remove("is-editing-consumption");
     delete form.dataset.individualComandaEdit;
+    if(form.individual_edit_phone)form.individual_edit_phone.disabled=true;
     if($("#individualComandaEditFields"))$("#individualComandaEditFields").hidden=true;
     form.session_id.value = sessionId;
     form.session_item_id.value = "";
@@ -11503,7 +11521,8 @@ const App = (() => {
     if(individualEditor){
       const manualSale=isLocalWalkInSession(session)&&!session.web_order_id;
       individualEditor.hidden=!manualSale;form.dataset.individualComandaEdit=manualSale?'1':'';
-      if(manualSale){const info=window.DonPierosOrderDetails.readTime(session.order_notes);form.individual_edit_time.value=info.time;form.individual_edit_observations.value=info.notes;}
+      form.individual_edit_phone.disabled=!manualSale;
+      if(manualSale){const info=window.DonPierosOrderDetails.readTime(session.order_notes);form.individual_edit_phone.value=session.customer_phone||'';form.individual_edit_time.value=info.time;form.individual_edit_observations.value=info.notes;}
     }
     // Put the editor in front, replacing the catalog instead of leaving it below.
     for (const id of ["dw-product-dialog", "dw-catalog-dialog", "dw-review-dialog", "accountDetailDialog"]) $("#" + id)?.close();
@@ -11644,6 +11663,9 @@ const App = (() => {
     const quantity = Number(quantityText);
     const itemId = form.session_item_id.value || "";
     const payerName = form.payer_name.value.trim();
+    const editingIndividual=isLocalWalkInSession(session)&&!session.web_order_id&&itemId&&form.dataset.individualComandaEdit==='1';
+    const customerPhone=editingIndividual?form.individual_edit_phone.value.replace(/ /g,''):null;
+    if(editingIndividual&&!/^[0-9]{10}$/.test(customerPhone)){toast('Escribe el teléfono del cliente con 10 dígitos.','error');form.individual_edit_phone.focus();return null;}
     const previousLine = itemId ? session?.session_items?.find((item) => item.id === itemId) : null;
     if (!name) {
       toast("El consumo necesita nombre o producto.", "error");
@@ -11717,8 +11739,9 @@ const App = (() => {
         })
       : entry);
     optimisticSession = clearPaymentsWithoutConsumption(optimisticSession);
-    if(isLocalWalkInSession(session)&&!session.web_order_id&&itemId&&form.dataset.individualComandaEdit==='1'){
+    if(editingIndividual){
       const details=window.DonPierosOrderDetails,info=details.readTime(session.order_notes);
+      optimisticSession.customer_phone=customerPhone;
       optimisticSession.order_notes=details.withTime(details.withTime(form.individual_edit_observations.value.trim(),info.time,info.startedAt),form.individual_edit_time.value);
     }
     state.sessions = state.sessions.map((entry) => entry.id === sessionId ? optimisticSession : entry);
@@ -12381,6 +12404,7 @@ const App = (() => {
       renderTables();
     });
     $("#dashboardTableSearch")?.addEventListener("input", renderTables);
+    $("#individualSalesSearch")?.addEventListener("input", renderIndividualSales);
     $("#categoryForm")?.addEventListener("submit", async (event) => {
       event.preventDefault();
       await saveCategory(event.currentTarget);
@@ -14089,13 +14113,14 @@ const App = (() => {
     },
     getIndividualDetails: sessionId => {
       const session=state.sessions.find(row=>row.id===sessionId);
-      return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',address:session?.delivery_address||'',fulfillment:session?.fulfillment||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};
+      return {customerName:session?.payer_name==='Cliente individual'?'':session?.payer_name||'',phone:session?.customer_phone||'',address:session?.delivery_address||'',fulfillment:session?.fulfillment||'',...window.DonPierosOrderDetails.readTime(session?.order_notes)};
     },
     updateIndividualDetails: (sessionId,values) => {
       const session=state.sessions.find(row=>row.id===sessionId&&row.status==='open');
       if(!isManager()||!isLocalWalkInSession(session)||session.web_order_id||state.paymentProcessing||checkoutSubmissionBusy)return;
       const details=window.DonPierosOrderDetails,old=details.readTime(session.order_notes);
       session.payer_name=values.customerName||'Cliente individual';
+      if(values.phone!==undefined){const phone=String(values.phone).replace(/ /g,'');if(/^[0-9]{10}$/.test(phone))session.customer_phone=phone;}
       session.delivery_address=String(values.address||'').trim().slice(0,300);
       if(values.fulfillment)session.fulfillment=values.fulfillment;
       session.order_notes=details.withTime(details.withTime(values.notes,old.time,old.startedAt),values.time);
@@ -14115,7 +14140,8 @@ const App = (() => {
       persistWalkInDrafts();renderAdminLive();
     },
     refreshReception: () => {renderIndividualSales();renderAlerts();},
-    setStaffIndividualCount: count => {const value=Math.max(0,Number(count)||0);if(state.staffIndividualCount!==value){state.staffIndividualCount=value;renderIndividualSales();}},
+    matchesIndividualCustomer,
+    setStaffIndividualCount: (count,visibleCount=count) => {const value=Math.max(0,Number(count)||0),visible=Math.max(0,Number(visibleCount)||0);if(state.staffIndividualCount!==value||state.staffIndividualVisibleCount!==visible){state.staffIndividualCount=value;state.staffIndividualVisibleCount=visible;renderIndividualSales();}},
     openWebOrderCheckout,
     editTableConsumption: editConsumption,
     saveLegacyTableLine: async (sessionId,itemId,line) => {

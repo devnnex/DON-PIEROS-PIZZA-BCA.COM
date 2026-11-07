@@ -5518,6 +5518,11 @@ button,a,[role="button"]{touch-action:manipulation}
 /* Editing starts with the selected product and fields, even on short screens. */
 #individualSalesPanel{padding:20px;border:1px solid #e0e7f0;border-radius:20px;background:#f7f9fc}
 #individualSalesPanel>.section-head{gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
+#individualSalesPanel>.section-head>div:first-child{flex:1 1 220px;min-width:0}
+.individual-sales-search{flex:1 1 160px;max-width:240px;min-width:160px;margin:0}
+#individualSalesPanel>.section-head>[data-new-individual]{flex-shrink:0}
+.individual-sales-search input{box-sizing:border-box;display:block;width:100%;min-width:0;min-height:44px;padding:10px 12px;border:1px solid #d9e2ef;border-radius:10px;background:#fff;color:#20324a;font:inherit;font-size:14px}
+.individual-sales-search input:focus{outline:2px solid #80aff3;outline-offset:2px}
 #individualSalesPanel h3{margin:0 0 5px;color:#20324a}
 #individualSalesPanel .section-head small{color:#65758a;font-size:12px}
 #individualSalesCount{display:inline-grid;place-items:center;min-width:26px;padding:3px 8px;margin-left:5px;border-radius:8px;background:#e4edff;color:#185ac2;font-size:13px}

@@ -78,6 +78,7 @@ body.dw-waiter-mode #service>.section-head,body.dw-waiter-mode #service>.service
 .dw-comanda-fields legend{padding:0 7px;color:#755019;font-weight:800;font-size:15px}
 .dw-comanda-fields .dw-custom-field{margin:0;align-content:start;color:#755d39}
 .dw-comanda-fields .dw-comanda-observations{grid-column:1/-1}
+.dw-comanda-fields .dw-comanda-phone{grid-column:1/-1}
 .dw-comanda-fields textarea{box-sizing:border-box;width:100%;min-width:0;resize:vertical;padding:13px;border:1px solid #e6d3a6;border-radius:13px;background:#fffef9;color:#111;font:inherit;font-size:16px;font-weight:800}
 .dw-comanda-fields input{background:#fffef9}
 .dw-comanda-observations textarea{color:#111;font-weight:800}
