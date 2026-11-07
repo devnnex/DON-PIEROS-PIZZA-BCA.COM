@@ -80,8 +80,8 @@ const root=path.resolve(__dirname,'..');
  assert.match(h.call('dp_get_catalog').products[0].image_url,/\/storage\/v1\/object\/public\/product-images\/products\//);
  await admin.screenshot({path:path.join(root,'artifacts/menu-admin-movil.png'),fullPage:true});
  await admin.setViewportSize({width:1440,height:1000});await admin.screenshot({path:path.join(root,'artifacts/menu-admin-desktop.png'),fullPage:true});
- assert.equal(await admin.locator('#dp-connection input').count(),0);
- await admin.locator('#dp-check-connection').click();await admin.locator('#dp-connection-status').filter({hasText:'Conexión activa'}).waitFor();
+ assert.equal(await admin.locator('#dp-connection,#dp-check-connection').count(),0);
+ assert.equal(await admin.locator('#webmenu>.section-head+.dp-toolbar').count(),1);
  const technical=/supabase|apps?\s*script|google\s*sheets|\bsheets\b|\bindexeddb\b|\bsql\b|\bstorage\b|\burl\b|https?:\/\//i;
  assert.doesNotMatch(await admin.locator('body').innerText(),technical);
  await admin.route('https://script.google.com/**',async route=>{

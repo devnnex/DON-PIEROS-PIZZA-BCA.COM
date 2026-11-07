@@ -112,7 +112,6 @@
       </section>
       <section class="panel dp-panel" id="webmenu" data-admin-section="webmenu">
         <div class="section-head"><div><span class="eyebrow">Carta del cliente</span><h2>Menú online</h2><p>Administra tus productos, precios y fotografías en un solo lugar.</p></div><a class="ghost" href="index.html" target="_blank" rel="noopener">Ver carta ↗</a></div>
-        <div class="dp-connection" id="dp-connection"><div><strong>Conexión del negocio</strong><p>Tu carta y tus pedidos se mantienen actualizados.</p></div><button class="ghost" type="button" id="dp-check-connection">Comprobar conexión</button><small id="dp-connection-status" role="status"></small></div>
         <div class="dp-toolbar"><div class="dp-tabs" id="dp-catalog-tabs"><button type="button" data-catalog="products" class="active">Productos</button><button type="button" data-catalog="toppings">Tamaños y opciones</button><button type="button" data-catalog="payments">Pagos</button><button type="button" data-catalog="neighborhoods">Barrios</button></div><div><button class="ghost" id="dp-menu-refresh" type="button">↻ Actualizar</button> <button class="primary" id="dp-add-item" type="button">＋ Agregar</button></div></div>
         <label class="dp-category-filter" id="dp-category-filter">Categoría<select id="dp-menu-category"><option value="">Todas las categorías</option></select></label><p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
       </section>`);
@@ -158,13 +157,6 @@
     $('#dp-menu-refresh').onclick=()=>void loadCatalog();$('#dp-add-item').onclick=()=>openItem();
     $('#dp-menu-category').onchange=renderCatalog;
     $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(!button)return;catalogKind=button.dataset.catalog;$$('[data-catalog]').forEach(b=>b.classList.toggle('active',b===button));renderCatalog();};
-    $('#dp-check-connection').onclick=async e=>{
-      const button=e.currentTarget;button.disabled=true;$('#dp-connection-status').textContent='Comprobando conexión…';
-      try{
-        await request('dp_admin_catalog');if(api().getUser()?.role==='boss')await api().bootstrap();$('#dp-connection-status').textContent='Conexión activa. Todo está listo para trabajar.';
-        await Promise.allSettled([loadCatalog(),loadOrders(true)]);
-      }catch(error){$('#dp-connection-status').textContent=friendly(error);notify(friendly(error),true);}finally{button.disabled=false;}
-    };
     $('#dp-item-form').onsubmit=saveItem;
     document.addEventListener('click',e=>{
       if(e.target.closest('[data-dp-close]'))e.target.closest('dialog')?.close();
@@ -518,6 +510,7 @@
   function renderCatalog(){
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
     let rows=(catalog[catalogKind]||[]).filter(item=>!deletions()?.hidden('catalog-'+catalogKind,item.id));
+    if(catalogKind==='products'&&window.DonPierosMenuOrder)rows=window.DonPierosMenuOrder.products(rows);
     const select=$('#dp-menu-category'),selected=select.value,categories=window.DonPierosMenuOrder?.categories(catalog.products||[])||[...new Set((catalog.products||[]).map(p=>p.category))];
     select.innerHTML='<option value="">Todas las categorías</option>'+categories.map(c=>`<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(c)}</option>`).join('');$('#dp-category-filter').hidden=catalogKind!=='products';
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);

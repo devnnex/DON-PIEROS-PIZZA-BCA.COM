@@ -4,7 +4,9 @@ const root=path.resolve(__dirname,'..');
 test('index y admin ordenan categorías y Todos; el buscador encuentra clientes de caja/mesero sin cambiar tarjetas',async()=>{
  const h=harness({seedMenu:true});
  for(const category of ['Pizzetas especiales','Pizzetas sencillas'])h.save('products',{name:category+' de prueba',category,price:5000,available:true,modifiers:[]});
+ for(const [index,name] of ['Zumo QA','Água QA','Bretaña QA'].entries())h.save('products',{name,category:'Bebidas',sort_order:-100+index,price:4000,available:true,modifiers:[]});
  const catalog=h.call('dp_get_catalog'),categoryById=Object.fromEntries(catalog.products.map(p=>[p.id,p.category]));
+ const drinkNames=catalog.products.filter(p=>p.category==='Bebidas').map(p=>p.name).sort(new Intl.Collator('es',{sensitivity:'base',numeric:true}).compare);
  const now=new Date().toISOString(),id=randomUUID(),local={id,local_only:true,sale_channel:'walk_in',status:'open',payer_name:'José Caja',customer_phone:'3001234567',opened_at:now,created_at:now,updated_at:now,session_items:[{id:randomUUID(),item_name:'Postre',quantity:1,unit_price:5000,status:'served'}]};
  assert.equal(h.call('dp_save_individual_sale',{p_id:id,p_operation_id:randomUUID(),p_version:0,p_action:'save',p_session:local}).ok,true);
  const staff=h.call('dp_create_staff_order',{order:{requestId:randomUUID(),customerName:'Ana Mesero',phone:'3117654321',items:[{productId:randomUUID(),custom:true,name:'Postre',quantity:1,unitPrice:5000,selectionIds:{},fulfillment:'dinein',notes:''}]}},'waiter');assert.equal(staff.ok,true,staff.error);
@@ -27,8 +29,9 @@ test('index y admin ordenan categorías y Todos; el buscador encuentra clientes 
   await page.goto(origin);await page.locator('#welcome-close').click();await page.locator('#categories [data-category="Bebidas"]').waitFor();
   const categories=await page.locator('#categories [data-category]').allTextContents();
   assert.deepEqual(categories.slice(1,6),['Pizzas especiales','Pizzas sencillas','Pizzetas especiales','Pizzetas','Pizzetas sencillas']);assert.equal(categories.at(-1),'Bebidas');
-  const assertBeveragesLast=async locator=>{const ids=await locator.evaluateAll(nodes=>nodes.map(node=>node.dataset.product||node.dataset.dwProduct));const names=ids.map(id=>categoryById[id]);const first=names.indexOf('Bebidas');assert.ok(first>0);assert.ok(names.slice(first).every(name=>name==='Bebidas'));};
+  const assertBeveragesLast=async locator=>{const ids=await locator.evaluateAll(nodes=>nodes.map(node=>node.dataset.product||node.dataset.dwProduct));const names=ids.map(id=>categoryById[id]);const first=names.indexOf('Bebidas');assert.ok(first>0);assert.ok(names.slice(first).every(name=>name==='Bebidas'));assert.deepEqual(ids.slice(first).map(id=>catalog.products.find(p=>p.id===id).name),drinkNames);};
   await assertBeveragesLast(page.locator('#products [data-product]'));
+  await page.locator('[data-category="Bebidas"]').click();assert.deepEqual(await page.locator('#products .product-copy h3').allTextContents(),drinkNames);
   await page.locator('[data-category="Pizzas sencillas"]').click();await page.locator('[data-category="Todo el menú"]').click();await assertBeveragesLast(page.locator('#products [data-product]'));
   await page.goto(origin+'/admin.html#dashboard');await page.locator('#staffIndividualSalesGrid [data-dp-order]').waitFor();await page.locator('#individualSalesGrid [data-open-individual]').waitFor();
   await page.evaluate(()=>document.querySelector('#salesShiftDialog')?.close());
@@ -41,11 +44,17 @@ test('index y admin ordenan categorías y Todos; el buscador encuentra clientes 
   assert.equal(await page.locator('#individualSalesPanel').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   if(width>1000){const layout=await page.evaluate(()=>{const search=document.querySelector('#individualSalesSearch').getBoundingClientRect(),button=document.querySelector('[data-new-individual]').getBoundingClientRect();return {gap:button.left-search.right,top:Math.abs(button.top-search.top)};});assert.ok(layout.gap>=0&&layout.top<5,'Buscador y Nueva venta comparten fila en escritorio.');}
   fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});await page.locator('#individualSalesPanel').screenshot({path:path.join(root,`artifacts/clientes-buscador-${width}.png`)});
-  await page.evaluate(()=>{document.querySelector('#webmenu').hidden=false;});await page.locator('#dp-menu-category option[value="Bebidas"]').waitFor({state:'attached'});
+  await page.evaluate(()=>{location.hash='webmenu';});await page.locator('#dp-menu-category').waitFor({state:'visible'});await page.locator('#dp-menu-category option[value="Bebidas"]').waitFor({state:'attached'});
   const options=await page.locator('#dp-menu-category option').allTextContents();assert.equal(options.at(-1),'Bebidas');assert.deepEqual(options.slice(1,6),categories.slice(1,6));
+  assert.equal(await page.locator('#dp-connection,#dp-check-connection').count(),0);
+  assert.equal(await page.locator('#webmenu>.section-head+.dp-toolbar').count(),1,'Los controles ocupan el espacio del bloque retirado.');
+  await page.locator('#dp-menu-category').selectOption('Bebidas');assert.deepEqual(await page.locator('#dp-catalog-list .dp-menu-card h3').allTextContents(),drinkNames);
+  await page.locator('#dp-menu-category').selectOption('');
+  await page.evaluate(()=>{location.hash='dashboard';});await page.locator('[data-new-individual]').waitFor({state:'visible'});
   await page.locator('[data-new-individual]').click();await page.locator('#dw-manager-products [data-dw-product]').first().waitFor();
   const managerCategories=await page.locator('#dw-manager-categories [data-dw-manager-category]').allTextContents();assert.equal(managerCategories.at(-1),'Bebidas');assert.deepEqual(managerCategories.slice(1,6),categories.slice(1,6));
   await assertBeveragesLast(page.locator('#dw-manager-products [data-dw-product]'));
+  await page.locator('[data-dw-manager-category="Bebidas"]').click();assert.deepEqual(await page.locator('#dw-manager-products [data-dw-product] strong').allTextContents(),drinkNames);
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });
