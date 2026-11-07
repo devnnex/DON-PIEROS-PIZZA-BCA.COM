@@ -33,3 +33,24 @@ test('aceptar entre las lecturas no duplica productos y reutilizar una mesa no m
  assert.deepEqual(completeTableItems({id:'second',table_id:'table',status:'open',session_items:[]},[pending]),[]);
  assert.deepEqual(completeTableItems(null,[pending]),[]);
 });
+
+test('imprimir la mesa espera la preparación y avisa si falla el logo, permitiendo reintentar',async()=>{
+ const fs=require('node:fs'),vm=require('node:vm'),path=require('node:path');
+ const source=fs.readFileSync(path.join(__dirname,'../waiter-orders.js'),'utf8');
+ const start=source.indexOf('  const tablePrints='),end=source.indexOf('  function printKitchen(',start);
+ const popup={closed:false,document:{body:{}},close(){this.closed=true;}},notices=[];
+ let failPrint;
+ const context=vm.createContext({Set,Date,waiter:()=>false,allowed:()=>true,isRemoved:()=>false,
+  window:{open:()=>popup,DonPierosPackaging:{read:()=>({notes:''}),sizes:{}}},
+  localStorage:{getItem:()=>null},errorText:error=>error.message,
+  api:()=>({getToken:()=> 'token',notify:message=>notices.push(message)}),
+  operations:()=>({tables:[{id:'table'}]}),details:()=>({completeTableItems:()=>[{id:'line',notes:''}]}),
+  rpc:async name=>({data:name==='dp_list_waiter_comandas'?{orders:[]}:{sessions:[{id:'session',table_id:'table',status:'open',session_items:[]}]}}),
+  renderKitchenPrint:()=>new Promise((_,reject)=>{failPrint=reject;})});
+ vm.runInContext(source.slice(start,end)+';globalThis.print=printCompleteTable;globalThis.pending=tablePrints;',context);
+ const printing=context.print('table');await new Promise(setImmediate);
+ assert.equal(context.pending.has('table'),true,'Conserva el bloqueo mientras prepara el PDF.');
+ failPrint(Error('No se cargó el logo'));await printing;
+ assert.equal(popup.closed,true);assert.deepEqual(notices,['No se cargó el logo']);
+ assert.equal(context.pending.has('table'),false,'Libera la mesa para volver a imprimir.');
+});

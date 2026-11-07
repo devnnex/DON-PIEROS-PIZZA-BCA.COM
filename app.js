@@ -10071,10 +10071,11 @@ const App = (() => {
         @page { size: 80mm auto; margin: 3mm; }
         * { box-sizing: border-box; color: #000; font-weight: 800; }
         body { width: 72mm; margin: 0 auto; color: #000; background: #fff; font: 800 12px/1.35 "Courier New", monospace; }
-        .logo { margin: 2mm 0 0; text-align: center; font: 900 22px/1 Arial, sans-serif; letter-spacing: .7px; }
+        .receipt-header { text-align: center; break-inside: avoid; }
+        .logo { margin: 0 0 1mm; text-align: center; font: 900 22px/1 Arial, sans-serif; letter-spacing: .7px; }
         .invoice-logo { display: block; width: 56mm; height: auto; max-height: 42mm; object-fit: contain; margin: 0 auto 1mm; }
         .subtitle, .center { text-align: center; }
-        .subtitle { margin: 1mm 0 3mm; font-weight: 700; }
+        .subtitle { margin: 1mm 0 0; font-weight: 700; }
         .rule { margin: 2.5mm 0; border-top: 1px dashed #000; }
         /* Keep values inside the printer's safe right edge, including PDF output. */
         .meta, .totals { display: grid; gap: 1mm 3mm; }
@@ -10099,9 +10100,11 @@ const App = (() => {
         .devnex-contact svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
         @media screen { body { padding: 8mm 4mm; box-shadow: 0 0 22px #bbb; } }
       </style></head><body>
-        <div class="center">NIT. 91.443.312-5 No responsable de IVA</div>
-        ${isPaid ? `<img class="invoice-logo" src="${escapeHTML(invoiceLogoUrl)}" alt="${escapeHTML(businessName)}">` : `<div class="logo">${escapeHTML(businessName)}</div>`}
-        <div class="subtitle">FACTURA DE VENTA</div>
+        <header class="receipt-header">
+          ${isPaid ? `<img class="invoice-logo" src="${escapeHTML(invoiceLogoUrl)}" alt="${escapeHTML(businessName)}">` : `<div class="logo">${escapeHTML(businessName)}</div>`}
+          <div class="center">NIT. 91.443.312-5 No responsable de IVA</div>
+          <div class="subtitle">FACTURA DE VENTA</div>
+        </header>
         <div class="rule"></div>
         <div class="meta">
           <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
@@ -11144,7 +11147,8 @@ const App = (() => {
 
     const payerName = [...drafts].reverse().find((draft) => draft.payerName)?.payerName || form.payer_name.value.trim() || session.payer_name || "";
     const optimisticItems = drafts.map((draft, index) => ({
-      id: `local-batch-${uid()}`,
+      // Keep the same UUID in the preview, INSERT and any retry of this selection.
+      id: draft.sessionItemId || (draft.sessionItemId = uid()),
       session_id: optimisticSessionId,
       table_id: session.table_id,
       menu_item_id: draft.menuItemId || null,
@@ -11243,7 +11247,8 @@ const App = (() => {
       return null;
     }
 
-    const payloads = drafts.map((draft) => ({
+    const payloads = drafts.map((draft, index) => ({
+      id: optimisticItems[index].id,
       session_id: persistedSessionId,
       table_id: session.table_id,
       menu_item_id: draft.menuItemId || null,
@@ -11281,7 +11286,8 @@ const App = (() => {
       return null;
     }
 
-    const temporaryIds = new Set(optimisticItems.map((item) => item.id));
+    // Realtime may already contain the saved rows when the INSERT resolves.
+    const temporaryIds = new Set([...optimisticItems, ...savedItems].map((item) => item.id));
     let confirmedSession = null;
     state.sessions = state.sessions.map((entry) => entry.id === persistedSessionId
       ? (confirmedSession = {

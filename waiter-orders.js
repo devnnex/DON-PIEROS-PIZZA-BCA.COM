@@ -563,7 +563,7 @@
       if(!items.length)throw Error('Esta mesa todavía no tiene productos para imprimir.');
       const notes=tableOrders.map(order=>{const info=details().readTime(order.notes);return [info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).length?`${order.waiter_name||'Comanda'}: `+[info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).join(' · '):'';}).filter(Boolean).join('\n');
       let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-      if(!popup.closed)renderKitchenPrint(popup,{table:operations().tables.find(table=>table.id===tableId)||session.restaurant_tables,items,notes,waiter_name:[...new Set(tableOrders.map(order=>order.waiter_name).filter(Boolean))].join(', ')||session.assigned_waiter?.full_name||'',updated_at:new Date().toISOString()},width,true);
+      if(!popup.closed)await renderKitchenPrint(popup,{table:operations().tables.find(table=>table.id===tableId)||session.restaurant_tables,items,notes,waiter_name:[...new Set(tableOrders.map(order=>order.waiter_name).filter(Boolean))].join(', ')||session.assigned_waiter?.full_name||'',updated_at:new Date().toISOString()},width,true);
     }catch(error){if(!popup.closed)popup.close();api().notify(errorText(error),'error');}
     finally{tablePrints.delete(tableId);}
   }

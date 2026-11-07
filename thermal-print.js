@@ -20,7 +20,13 @@
       const largest=Math.max(parseFloat(target.getComputedStyle(block).fontSize)||0,...otherSizes);
       size.style.setProperty('font-size',`${largest+2}px`,'important');
     });
-    await Promise.race([Promise.all([...doc.images].map(img=>img.decode?.().catch(()=>{}))),new Promise(resolve=>setTimeout(resolve,700))]);
+    // Measuring before a cold logo finishes loading changes both the header
+    // position and the paper length. Never print a partially loaded receipt.
+    const imagesReady=Promise.all([...doc.images].map(img=>img.decode()));
+    let imageTimer;
+    try{
+      await Promise.race([imagesReady,new Promise((_,reject)=>{imageTimer=setTimeout(()=>reject(new Error('No se terminó de cargar el logo del comprobante. Intenta imprimir de nuevo.')),5000);})]);
+    }finally{clearTimeout(imageTimer);}
     await Promise.race([new Promise(resolve=>target.requestAnimationFrame(()=>resolve())),new Promise(resolve=>setTimeout(resolve,120))]);
     // body height is content height. scrollHeight of html includes the viewport
     // and would make a short receipt as long as the popup's entire screen.
