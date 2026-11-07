@@ -18,7 +18,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   await page.exposeFunction('backendCall',(action,payload)=>backend.call(action,payload));
   page.on('pageerror',error=>errors.push(error.message));page.setDefaultTimeout(10000);
   await page.goto(`http://127.0.0.1:${server.address().port}/admin.html`);
-  for(const file of ['individual-sales-sync.js','sales-shift.js','order-labels.js','order-details.js','packaging.js','thermal-print.js','vendor/jspdf.umd.min.js'])await page.addScriptTag({path:path.join(root,file)});
+  for(const file of ['admin-customer-inputs.js','individual-sales-sync.js','sales-shift.js','order-labels.js','order-details.js','packaging.js','thermal-print.js','vendor/jspdf.umd.min.js'])await page.addScriptTag({path:path.join(root,file)});
   await page.addScriptTag({content:instrument(fs.readFileSync(path.join(root,'app.js'),'utf8'))});
   await page.evaluate(()=>{
    document.body.classList.add('admin-authenticated');
@@ -44,6 +44,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Nueva venta abre la carta directamente.');
   await page.locator('[data-dw-product="pizza"]').click();
   await page.locator('#dw-product-customer').fill('Laura');
+  assert.equal(await page.locator('#dw-product-customer').inputValue(),'LAURA','El nombre escrito se convierte realmente a mayúsculas.');
   await page.locator('#dw-product-time').fill('25 minutos');
   await page.locator('#dw-product-observations').fill('Entregar en portería.\nSalsa aparte.');
   assert.equal(await page.locator('#dw-product-observations').evaluate(node=>getComputedStyle(node).textDecorationLine),'none','El subrayado se reserva para la impresión.');
@@ -70,15 +71,15 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.equal(await page.locator('#dw-catalog-dialog').evaluate(node=>node.open),true);
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false);
   await page.locator('[data-dw-product="drink"]').click();
-  assert.equal(await page.locator('#dw-product-customer').inputValue(),'Laura');
+  assert.equal(await page.locator('#dw-product-customer').inputValue(),'LAURA');
   assert.equal(await page.locator('#dw-product-phone').inputValue(),'3001234567','El teléfono se conserva al agregar otro producto.');
   await page.locator('#dw-product-phone').fill('');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567','Editar otro producto no borra el teléfono válido ya guardado.');
   await page.locator('#dw-product-phone').fill('3001234567');
-  assert.equal(await page.locator('#dw-product-time').inputValue(),'25 minutos');
-  assert.equal(await page.locator('#dw-product-observations').inputValue(),'Entregar en portería.\nSalsa aparte.');
+  assert.equal(await page.locator('#dw-product-time').inputValue(),'25 MINUTOS');
+  assert.equal(await page.locator('#dw-product-observations').inputValue(),'ENTREGAR EN PORTERÍA.\nSALSA APARTE.');
   await page.locator('#dw-fulfillment').selectOption('delivery');
-  assert.equal(await page.locator('#dw-product-address').inputValue(),'Calle 10 # 20-30','La dirección se conserva al agregar productos a la misma venta.');
+  assert.equal(await page.locator('#dw-product-address').inputValue(),'CALLE 10 # 20-30','La dirección se conserva al agregar productos a la misma venta.');
   assert.match(await page.locator('#dw-product-price').innerText(),/4\.000/,'La bebida no cobra caja.');
   assert.equal(await page.locator('#dw-product-dialog').evaluate(node=>node.scrollWidth<=node.clientWidth+1),true);
   fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
@@ -90,7 +91,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Cerrar la carta no abre el cobro.');
   await page.evaluate(()=>saleTest.openPaymentDialog('walk-in-test'));
   assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
-  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'Laura');
+  assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'LAURA');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567');
   assert.equal(await page.locator('#paymentSaleLines>div').count(),2);
   const saved=await page.evaluate(()=>{
@@ -98,7 +99,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
    const session=saleTest.state.sessions.find(row=>row.id==='walk-in-test');
    return {count:session.session_items.length,total:session.session_items.reduce((sum,line)=>sum+line.unit_price*line.quantity,0),info:DonPierosOrderDetails.readTime(session.order_notes),packing:DonPierosPackaging.read(session.session_items[0].notes),address:session.delivery_address};
   });
-  assert.equal(saved.count,2);assert.equal(saved.total,26000);assert.equal(saved.info.time,'25 minutos');assert.equal(saved.packing.fulfillment,'delivery');assert.equal(saved.packing.fee,2000);assert.equal(saved.address,'Calle 10 # 20-30');
+  assert.equal(saved.count,2);assert.equal(saved.total,26000);assert.equal(saved.info.time,'25 MINUTOS');assert.equal(saved.packing.fulfillment,'delivery');assert.equal(saved.packing.fee,2000);assert.equal(saved.address,'CALLE 10 # 20-30');
   await page.evaluate(()=>{
    window.printTarget=window.open('','_blank');window.open=()=>printTarget;
    DonPierosThermal.print=async target=>{window.printReady=target.document.body.innerHTML;return {};};
@@ -112,8 +113,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
    delivery:[...document.querySelectorAll('article .comanda-underline')].some(node=>node.textContent==='Domicilio'),
    styles:[...document.querySelectorAll('.notes .comanda-underline,article .comanda-underline')].map(node=>{const s=getComputedStyle(node);return {color:s.color,line:s.textDecorationLine,green:s.textDecorationColor,bold:Number(s.fontWeight)};})
   }));
-  assert.equal(printCheck.before,true);assert.match(printCheck.notes,/Entregar en portería/);assert.equal(printCheck.delivery,true);
-  assert.equal(await printPage.locator('.delivery-address').innerText(),'Dirección: Calle 10 # 20-30');
+  assert.equal(printCheck.before,true);assert.match(printCheck.notes,/ENTREGAR EN PORTERÍA/);assert.equal(printCheck.delivery,true);
+  assert.equal(await printPage.locator('.delivery-address').innerText(),'Dirección: CALLE 10 # 20-30');
   assert.match(await printPage.locator('body').innerText(),/Teléfono: 3001234567/);
   assert.ok(printCheck.styles.length>=3);for(const style of printCheck.styles){assert.equal(style.color,'rgb(0, 0, 0)');assert.equal(style.line,'underline');assert.equal(style.green,'rgb(33, 134, 83)');assert.ok(style.bold>=800);}
   const paperWidth=width===390?58:80;
@@ -171,7 +172,7 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Enviar e imprimir no abre el formulario de cobro.');
   const shared=backend.call('dp_get_orders',{includeIndividuals:true}).individualSales;
   assert.equal(shared.length,1);assert.equal(shared[0].session.session_items.length,2,'Enviar agrega el producto una sola vez y guarda la comanda compartida.');
-  assert.equal(shared[0].session.delivery_address,'Calle 10 # 20-30','La copia compartida conserva la dirección incluso si el último producto es para llevar.');
+  assert.equal(shared[0].session.delivery_address,'CALLE 10 # 20-30','La copia compartida conserva la dirección incluso si el último producto es para llevar.');
   assert.equal(shared[0].session.customer_phone,'3001234567','El teléfono se comparte entre los equipos.');
   assert.deepEqual(errors,[]);await context.close();
  }}finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
