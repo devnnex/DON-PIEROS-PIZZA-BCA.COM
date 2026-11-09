@@ -112,8 +112,13 @@
       </section>
       <section class="panel dp-panel" id="webmenu" data-admin-section="webmenu">
         <div class="section-head"><div><span class="eyebrow">Carta del cliente</span><h2>Menú online</h2><p>Administra tus productos, precios y fotografías en un solo lugar.</p></div><a class="ghost" href="index.html" target="_blank" rel="noopener">Ver carta ↗</a></div>
-        <div class="dp-toolbar"><div class="dp-tabs" id="dp-catalog-tabs"><button type="button" data-catalog="products" class="active">Productos</button><button type="button" data-catalog="toppings">Tamaños y opciones</button><button type="button" data-catalog="payments">Pagos</button><button type="button" data-catalog="neighborhoods">Barrios</button></div><div><button class="ghost" id="dp-menu-refresh" type="button">↻ Actualizar</button> <button class="primary" id="dp-add-item" type="button">＋ Agregar</button></div></div>
-        <label class="dp-category-filter" id="dp-category-filter">Categoría<select id="dp-menu-category"><option value="">Todas las categorías</option></select></label><p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
+        <div class="dp-toolbar"><div class="dp-tabs" id="dp-catalog-tabs" role="group" aria-label="Secciones del menú online">
+          <button type="button" data-catalog="products" class="active" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>Productos</button>
+          <button type="button" data-catalog="toppings" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>Tamaños y opciones</button>
+          <button type="button" data-catalog="payments" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h3"/></svg>Pagos</button>
+          <button type="button" data-catalog="neighborhoods" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>Barrios</button>
+        </div><div><button class="ghost" id="dp-menu-refresh" type="button">↻ Actualizar</button> <button class="primary" id="dp-add-item" type="button">＋ Agregar</button></div></div>
+        <label class="dp-category-filter" id="dp-category-filter"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></svg>Categoría</span><select id="dp-menu-category"><option value="">Todas las categorías</option></select></label><p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
       </section>`);
     $('#alertsPanel').insertAdjacentHTML('afterend','<div id="dp-dashboard-orders" class="dp-dashboard-orders"></div>');
     document.body.insertAdjacentHTML('beforeend',`<dialog id="dp-order-dialog" class="dp-dialog" aria-labelledby="dp-order-title"><div class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><div id="dp-order-detail"></div></div></dialog><dialog id="dp-item-dialog" class="dp-dialog"><form id="dp-item-form" class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><span class="eyebrow">Menú online</span><h2 id="dp-item-title"></h2><div id="dp-item-fields"></div><p id="dp-item-error" role="alert"></p><div class="dp-form-actions"><button class="ghost" type="button" data-dp-close>Cancelar</button><button class="primary" id="dp-item-save" type="submit">Guardar</button></div></form></dialog>`);
@@ -156,7 +161,7 @@
     $('#dp-prev').onclick=()=>{offset=Math.max(0,offset-60);void loadOrders(true);};$('#dp-next').onclick=()=>{offset+=60;void loadOrders(true);};
     $('#dp-menu-refresh').onclick=()=>void loadCatalog();$('#dp-add-item').onclick=()=>openItem();
     $('#dp-menu-category').onchange=renderCatalog;
-    $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(!button)return;catalogKind=button.dataset.catalog;$$('[data-catalog]').forEach(b=>b.classList.toggle('active',b===button));renderCatalog();};
+    $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(!button)return;catalogKind=button.dataset.catalog;$$('[data-catalog]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',String(b===button));});renderCatalog();};
     $('#dp-item-form').onsubmit=saveItem;
     document.addEventListener('click',e=>{
       if(e.target.closest('[data-dp-close]'))e.target.closest('dialog')?.close();
