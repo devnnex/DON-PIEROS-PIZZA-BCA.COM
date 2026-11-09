@@ -10,6 +10,8 @@ Compartir `mesero.html` con los meseros. El acceso y la aplicación instalada us
 
 Los PIN creados para compartir accesos permanecen en memoria durante la sesión; ya no se guardan en almacenamiento persistente. Los accesos compartidos de mesero apuntan a `mesero.html`, sin credenciales en la URL.
 
-Los datos para copiar junto a «En vivo» se consultan desde los métodos de pago activos del catálogo existente. No hay números bancarios escritos en el código. El botón muestra «Copiado» y una confirmación únicamente cuando el navegador confirma la copia.
+Los datos para copiar junto a «En vivo» usan los métodos de pago activos del catálogo existente. No hay números bancarios escritos en el código. Las píldoras tienen la misma altura de «En vivo». Al copiar muestran una marca de confirmación y el aviso «dato copiado», conservando visible el número para evitar movimientos en la fila.
+
+Desde v71 la precarga pública comienza mientras se muestra el inicio de sesión. Pagos y carta comparten una sola solicitud en curso y una caché de hasta tres minutos. Los eventos existentes de cambios de catálogo invalidan esa caché. Los botones no agregan temporizadores de sondeo ni consultas o canales de Supabase. Las consultas privadas continúan esperando la autenticación. Una primera carga sin caché necesita conexión; los datos precargados aparecen inmediatamente y las demás cargas continúan en segundo plano.
 
 `mesero.html` se genera desde la plantilla operativa compartida. Después de editar `admin.html`, ejecutar `node tools/generate-waiter-page.cjs`; `node tools/check.cjs` comprueba que ambas estén sincronizadas.

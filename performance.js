@@ -26,7 +26,46 @@
       return blob&&blob.size<file.size?blob:file;
     }catch(_){return file;}finally{URL.revokeObjectURL(url);}
   }
-  window.DonPierosPerformance = Object.freeze({imageUrl,read,write,remove,compressImage});
+  // La precarga, la carta de meseros y los datos bancarios comparten una lectura.
+  const catalogAge = 3 * 60000;
+  let catalogLoading = null, catalogRevision = 0;
+  function normalizeCatalog(value) {
+    if (Array.isArray(value)) value = { products:value[0]?.data, toppings:value[1]?.data, payments:value[2]?.data, neighborhoods:value[3]?.data };
+    return Array.isArray(value?.products) && Array.isArray(value?.toppings) && Array.isArray(value?.payments) ? value : null;
+  }
+  function readCatalog() {
+    return normalizeCatalog(read('staff-public-catalog',catalogAge,localStorage)) || normalizeCatalog(read('catalog',catalogAge,localStorage));
+  }
+  function loadCatalog({force = false} = {}) {
+    if (catalogLoading) return catalogLoading;
+    const cached = !force && readCatalog();
+    if (cached) return Promise.resolve(cached);
+    catalogLoading = (async () => {
+      let data, revision;
+      do {
+        revision = catalogRevision;
+        const controller = new AbortController(), timer = setTimeout(() => controller.abort(),15000);
+        try {
+          const response = await fetch(window.DON_PIEROS_CONFIG.appsScriptUrl, {
+            method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'}, cache:'no-store', signal:controller.signal,
+            body:JSON.stringify({action:'dp_get_catalog',origin:location.origin})
+          });
+          const result = await response.json();
+          data = result.ok && normalizeCatalog(result);
+          if (!response.ok || !data) throw Error('No pudimos cargar la carta. Intenta de nuevo.');
+        } finally { clearTimeout(timer); }
+      } while (revision !== catalogRevision);
+      write('staff-public-catalog',data,localStorage);
+      window.dispatchEvent(new CustomEvent('donpieros-public-catalog-ready',{detail:data}));
+      return data;
+    })().finally(() => { catalogLoading = null; });
+    return catalogLoading;
+  }
+  window.addEventListener('donpieros-catalog-change',() => {
+    catalogRevision++;
+    remove('staff-public-catalog',localStorage); remove('catalog',localStorage);
+  });
+  window.DonPierosPerformance = Object.freeze({imageUrl,read,write,remove,compressImage,readCatalog,loadCatalog});
   if ('serviceWorker' in navigator) window.addEventListener('load',() => {
     const register = () => { void navigator.serviceWorker.register('./service-worker.js',{scope:'./',updateViaCache:'none'}).then(registration=>registration.update()).catch(() => {}); };
     if ('requestIdleCallback' in window) requestIdleCallback(register,{timeout:3000}); else setTimeout(register,300);

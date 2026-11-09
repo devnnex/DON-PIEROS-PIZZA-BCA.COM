@@ -13558,6 +13558,8 @@ const App = (() => {
 
   const waitForAdminLogin = async () => {
     if (!sessionGuard) throw new Error("No se pudo cargar la seguridad de acceso. Recarga la página.");
+    // Solo datos públicos de la carta; las consultas privadas esperan autenticación.
+    void window.DonPierosPerformance?.loadCatalog?.().catch(() => {});
     const storedToken = sessionGuard.restore();
     if (storedToken) {
       state.authToken = storedToken;

@@ -3,11 +3,19 @@
   const box = document.querySelector('#adminPaymentShortcuts');
   if (!box || document.body.dataset.staffEntry === 'waiter') return;
   const api = () => window.DonPierosAdmin;
-  let requestId = 0, loadedAt = 0, loadedToken = '', loading = false;
+  const fast = () => window.DonPierosPerformance;
+  let signature = '', pending = false;
   const clipboardIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 5H5v16h14V5h-3"/></svg>';
+  const copiedIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
+  const allowed = () => Boolean(api()?.getToken() && ['boss','admin'].includes(api()?.getUser()?.role));
   function render(payments) {
+    if (!allowed()) return;
+    const rows = payments.filter(p => p.available && String(p.account_value || '').trim());
+    const next = JSON.stringify(rows.map(p => [p.id,p.name,p.account_value]));
+    if (next === signature) return;
+    signature = next;
     box.replaceChildren();
-    for (const payment of payments.filter(p => p.available && String(p.account_value || '').trim())) {
+    for (const payment of rows) {
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'admin-payment-copy';
       button.setAttribute('aria-label', 'Copiar ' + payment.name + ': ' + payment.account_value);
@@ -15,14 +23,15 @@
       const text = document.createElement('span'), label = document.createElement('small'), value = document.createElement('strong');
       label.textContent = payment.name; value.textContent = payment.account_value;
       text.append(label, value); button.append(text);
-      button.insertAdjacentHTML('beforeend', clipboardIcon);
+      const icon = document.createElement('span'); icon.className = 'admin-payment-copy-icon'; icon.innerHTML = clipboardIcon; button.append(icon);
+      let copiedTimer;
       button.addEventListener('click', async () => {
         if (!api()?.getUser() || !window.DonPierosSessionGuard?.ensureActive()) return;
         try {
           await copy(String(payment.account_value));
           api().notify(payment.name + ': dato copiado.', 'ok');
-          value.textContent = 'Copiado';
-          window.setTimeout(() => { value.textContent = payment.account_value; }, 1800);
+          clearTimeout(copiedTimer); button.dataset.copied = ''; icon.innerHTML = copiedIcon; button.title = 'Copiado';
+          copiedTimer = window.setTimeout(() => { delete button.dataset.copied; icon.innerHTML = clipboardIcon; button.title = 'Copiar ' + payment.name; }, 1800);
         } catch (_) { api().notify('No se pudo copiar. Mantén presionado el dato para copiarlo.', 'error'); }
       });
       box.append(button);
@@ -40,33 +49,23 @@
     try { field.select(); field.setSelectionRange(0, field.value.length); if (!document.execCommand('copy')) throw Error('copy'); }
     finally { field.remove(); }
   }
-  async function refresh(force = false) {
-    const user = api()?.getUser(), token = api()?.getToken();
-    if (!token || !['boss', 'admin'].includes(user?.role)) {
-      requestId++; loadedToken = ''; box.replaceChildren(); box.hidden = true; return;
-    }
-    if (document.hidden || loading || !force && token === loadedToken && Date.now() - loadedAt < 60000) return;
-    const id = ++requestId; loading = true;
-    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 15000);
+  async function refresh() {
+    if (!allowed()) { signature = ''; box.replaceChildren(); box.hidden = true; return; }
+    const cached = fast()?.readCatalog?.();
+    if (cached) { render(cached.payments); return; }
+    if (document.hidden || pending) return;
+    pending = true;
     try {
-      const response = await fetch(window.DON_PIEROS_CONFIG.appsScriptUrl, {
-        method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify({ action: 'dp_get_catalog', origin: location.origin }),
-        cache: 'no-store', signal: controller.signal
-      });
-      if (!response.ok) throw Error('catalog');
-      const catalog = await response.json();
-      if (id !== requestId || token !== api()?.getToken()) return;
-      if (!catalog.ok || !Array.isArray(catalog.payments)) throw Error('payments');
-      render(catalog.payments); loadedAt = Date.now(); loadedToken = token;
+      const catalog = await fast()?.loadCatalog?.();
+      if (catalog && allowed()) render(catalog.payments);
     } catch (_) { /* Se vuelve a consultar al recuperar la conexión o el foco. */ }
-    finally { clearTimeout(timer); loading = false; }
+    finally { pending = false; }
   }
-  window.addEventListener('donpieros-session-change', () => void refresh(true));
-  window.addEventListener('donpieros-catalog-change', () => void refresh(true));
+  window.addEventListener('donpieros-public-catalog-ready', event => render(event.detail.payments));
+  window.addEventListener('donpieros-session-change', () => void refresh());
+  window.addEventListener('donpieros-catalog-change', () => void refresh());
   window.addEventListener('focus', () => void refresh());
-  window.addEventListener('online', () => void refresh(true));
+  window.addEventListener('online', () => void refresh());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });
-  window.setInterval(() => void refresh(), 60000);
   void refresh();
 })();

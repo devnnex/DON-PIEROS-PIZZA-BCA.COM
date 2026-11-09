@@ -35,7 +35,7 @@
   const menuCache=()=>window.DonPierosPerformance;
   const validCatalog=data=>Array.isArray(data?.products)&&Array.isArray(data?.toppings);
   const warmCatalogImages=()=>{for(const product of (catalog?.products||[]).filter(product=>product.available).slice(0,6)){const photo=new Image();photo.src=window.DonPierosImages.resolve(product);}};
-  const cachedCatalog=menuCache()?.read('catalog',3*60000,localStorage);
+  const cachedCatalog=menuCache()?.readCatalog?.()||menuCache()?.read('catalog',3*60000,localStorage);
   if(validCatalog(cachedCatalog)){catalog=cachedCatalog;warmCatalogImages();}
   try{if(localStorage.getItem('don_pieros_order_paper')==='58')printWidth=58;}catch(_){}
   const root=document.createElement('div');root.id='dp-waiter-app';root.hidden=true;$('#service').append(root);
@@ -125,12 +125,17 @@
     if(catalogLoading)return catalogLoading;
     catalogError='';
     catalogLoading=(async()=>{
-      const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),15000);
+      let timer;
       try{
-        const response=await fetch(window.DON_PIEROS_CONFIG.appsScriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'dp_get_catalog'}),signal:controller.signal});
-        const data=await response.json();if(!response.ok||!data.ok)throw Error('No pudimos cargar la carta. Intenta de nuevo.');
+        let data;
+        if(menuCache()?.loadCatalog)data=await menuCache().loadCatalog();
+        else{
+          const controller=new AbortController();timer=setTimeout(()=>controller.abort(),15000);
+          const response=await fetch(window.DON_PIEROS_CONFIG.appsScriptUrl,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'dp_get_catalog'}),signal:controller.signal});
+          data=await response.json();if(!response.ok||!data.ok)throw Error('No pudimos cargar la carta. Intenta de nuevo.');
+        }
         if(!validCatalog(data))throw Error('Carta inválida.');
-        catalog=data;menuCache()?.write('catalog',data,localStorage);warmCatalogImages();
+        catalog=data;if(!menuCache()?.loadCatalog)menuCache()?.write('catalog',data,localStorage);warmCatalogImages();
       }catch(error){catalogError='No pudimos cargar la carta. Toca Cargar carta para reintentar.';}
       finally{clearTimeout(timer);catalogLoading=null;renderProducts();renderManagerProducts();}
     })();return catalogLoading;
