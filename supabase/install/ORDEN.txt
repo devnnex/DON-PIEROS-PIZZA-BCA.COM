@@ -6,6 +6,7 @@
 6. 06_OPCIONES_QR.sql
 7. 07_COMANDAS_MESERO.sql
 8. 08_ACCESO_MANTENIMIENTO.sql (no crea una cuenta por defecto; aprovisionar desde SQL como propietario con el archivo privado generado por tools/create-maintenance-access.cjs).
+9. ../migrations/20261109120000_staff_daily_session_security.sql (corte diario de sesiones a las 02:00 de Colombia).
 No ejecutar schema.sql aparte: ya está incluido en las migraciones.
 NO ejecutar backups/data_2026-09-03.sql ni backups/roles_2026-09-03.sql.
 Después: abre admin.html y crea tu Jefe.

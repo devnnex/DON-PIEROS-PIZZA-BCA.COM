@@ -1,0 +1,16 @@
+{
+  "id": "./mesero.html",
+  "name": "Don Pieros Pizza · Meseros",
+  "short_name": "Pieros Meseros",
+  "description": "Servicio de mesas con tu usuario personal",
+  "lang": "es-CO",
+  "start_url": "./mesero.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111111",
+  "icons": [
+    { "src": "images/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "images/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

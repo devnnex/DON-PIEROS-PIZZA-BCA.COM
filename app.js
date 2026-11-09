@@ -52,6 +52,9 @@ const SupabaseDb = (() => {
     if (client) return client;
     if (!window.supabase?.createClient) throw new Error("No pudimos iniciar la conexión. Actualiza la página e inténtalo de nuevo.");
     const authenticatedFetch = (input, options = {}) => {
+      if (authToken && window.DonPierosSessionGuard && !window.DonPierosSessionGuard.ensureActive()) {
+        return Promise.reject(new Error('La sesión venció. Inicia sesión de nuevo.'));
+      }
       const headers = new Headers(options.headers || {});
       if (authToken) headers.set("x-app-token", authToken);
       if (clientTableAccess.table_id) headers.set("x-table-id", clientTableAccess.table_id);
@@ -1466,6 +1469,7 @@ const App = (() => {
   };
 
   const syncPwaBranding = async () => {
+    if (document.body.dataset.staffEntry === "waiter") return;
     if (!state.business || state.page !== "admin") return;
     const name = String(state.business.business_name || "Don Pieros Pizza").trim() || "Don Pieros Pizza";
     const logoUrl = String(state.business.logo_url || "images/don-pieros-logo.png").trim();
@@ -2188,8 +2192,8 @@ const App = (() => {
     state.invoiceHistory = Array.isArray(invoices) ? invoices : [];
     const movements = readLocalJson(INVENTORY_MOVEMENTS_STORAGE_KEY, []);
     if (!state.movementLoaded) state.inventoryMovements = Array.isArray(movements) ? movements : [];
-    const credentialPins = readLocalJson(USER_CREDENTIALS_CACHE_KEY, {});
-    state.userCredentialPins = credentialPins && typeof credentialPins === "object" && !Array.isArray(credentialPins) ? credentialPins : {};
+    // Los PIN para compartir permanecen únicamente en memoria durante esta sesión.
+    localStorage.removeItem(USER_CREDENTIALS_CACHE_KEY);
     const storedTips = readLocalJson(TIP_SETTINGS_STORAGE_KEY, {});
     const storedPercentage = Math.min(100, Math.max(1, Number(storedTips?.percentage || 10)));
     state.tipSettings = { enabled: storedTips?.enabled === true, percentage: Number.isFinite(storedPercentage) ? storedPercentage : 10 };
@@ -2669,6 +2673,7 @@ const App = (() => {
   };
 
   const appsScriptRequest = async (action, payload = {}, timeoutMs = APPS_SCRIPT_TIMEOUT_MS, operationId = "") => {
+    if (state.authToken && window.DonPierosSessionGuard && !window.DonPierosSessionGuard.ensureActive()) throw new Error("La sesión venció. Inicia sesión de nuevo.");
     if (!isAppsScriptConfigured()) throw new Error("El respaldo remoto no esta configurado.");
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
@@ -4492,8 +4497,8 @@ const App = (() => {
   const initClient = async () => {
     setLoading(true);
     const nativeScanValue = tableValueFromUrl();
-    if (nativeScanValue && localStorage.getItem("don_pieros_admin_token")) {
-      const adminUrl = new URL("admin.html", location.href);
+    if (nativeScanValue && (localStorage.getItem("don_pieros_waiter_token") || localStorage.getItem("don_pieros_admin_token"))) {
+      const adminUrl = new URL(localStorage.getItem("don_pieros_waiter_token") ? "mesero.html" : "admin.html", location.href);
       adminUrl.searchParams.set("scan", nativeScanValue);
       adminUrl.hash = "service";
       location.replace(adminUrl.href);
@@ -13515,30 +13520,74 @@ const App = (() => {
     window.dispatchEvent(new Event("donpieros-session-change"));
   };
 
-  const ADMIN_USER_CACHE_KEY = "don_pieros_admin_user_v1";
+  const waiterEntry = document.body.dataset.staffEntry === "waiter";
+  const sessionGuard = window.DonPierosStaffSession?.create({
+    storage: localStorage,
+    waiter: waiterEntry,
+    onExpire: () => {
+      state.authToken = "";
+      state.currentUser = null;
+      state.sb.setAuthToken("");
+      document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close());
+      applyCurrentUser();
+      sessionStorage.setItem("don_pieros_session_expired", "1");
+      location.reload();
+    }
+  });
+  window.DonPierosSessionGuard = sessionGuard;
+  const routeStaffSession = session => {
+    const targetWaiter = session.user.role === "waiter";
+    if (targetWaiter === waiterEntry) return false;
+    window.DonPierosStaffSession.create({ storage: localStorage, waiter: targetWaiter }).save(session);
+    sessionGuard.clear();
+    const target = new URL(targetWaiter ? "mesero.html" : "admin.html", location.href);
+    const scan = new URL(location.href).searchParams.get("scan");
+    if (scan) target.searchParams.set("scan", scan);
+    if (targetWaiter) target.hash = "service";
+    location.replace(target.href);
+    return true;
+  };
+  const armStaffSession = () => {
+    window.setInterval(() => sessionGuard.ensureActive(), 15000);
+    ["focus", "pageshow", "online", "storage"].forEach(event => window.addEventListener(event, () => sessionGuard.ensureActive()));
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) sessionGuard.ensureActive(); });
+    ["click", "submit"].forEach(event => document.addEventListener(event, e => {
+      if (!sessionGuard.ensureActive()) { e.preventDefault(); e.stopImmediatePropagation(); }
+    }, true));
+  };
 
   const waitForAdminLogin = async () => {
-    const storedToken = localStorage.getItem("don_pieros_admin_token") || "";
+    if (!sessionGuard) throw new Error("No se pudo cargar la seguridad de acceso. Recarga la página.");
+    const storedToken = sessionGuard.restore();
     if (storedToken) {
       state.authToken = storedToken;
       state.sb.setAuthToken(storedToken);
       const user = await dbQuiet(state.sb.rpc("getCurrentUser", { auth_token: storedToken }), null);
-      if (user) {
+      if (user && sessionGuard.ensureActive()) {
+        if ((user.role === "waiter") !== waiterEntry) {
+          sessionGuard.clear();
+          location.replace(new URL(user.role === "waiter" ? "mesero.html" : "admin.html", location.href).href);
+          return new Promise(() => {});
+        }
         state.currentUser = user;
-        localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(user));
+        localStorage.setItem(sessionGuard.userKey, JSON.stringify(user));
+        armStaffSession();
         applyCurrentUser();
         return true;
       }
       state.authToken = "";
       state.currentUser = null;
       state.sb.setAuthToken("");
-      localStorage.removeItem("don_pieros_admin_token");
-      localStorage.removeItem(ADMIN_USER_CACHE_KEY);
+      sessionGuard.clear();
     }
 
     setLoading(false);
     applyCurrentUser();
     refreshIcons();
+    if (sessionStorage.getItem("don_pieros_session_expired")) {
+      sessionStorage.removeItem("don_pieros_session_expired");
+      if ($("#loginError")) $("#loginError").textContent = "Tu sesión terminó. Ingresa de nuevo con tu usuario y PIN. El corte diario es a las 2:00 a. m. de Colombia.";
+    }
     return new Promise((resolve) => {
       const form = $("#loginForm");
       form?.addEventListener("submit", async (event) => {
@@ -13557,11 +13606,19 @@ const App = (() => {
           if (button) button.disabled = false;
           return;
         }
+        try {
+          if (routeStaffSession(session)) return;
+          sessionGuard.save(session);
+        } catch (error) {
+          if (errorBox) errorBox.textContent = error.message;
+          if (button) button.disabled = false;
+          return;
+        }
         state.authToken = session.token;
         state.currentUser = session.user;
         state.sb.setAuthToken(session.token);
-        localStorage.setItem("don_pieros_admin_token", session.token);
-        localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(session.user));
+        form.pin.value = "";
+        armStaffSession();
         applyCurrentUser();
         setLoading(true);
         resolve(true);
@@ -13588,9 +13645,7 @@ const App = (() => {
   };
 
   const persistUserCredentialPins = () => {
-    try {
-      localStorage.setItem(USER_CREDENTIALS_CACHE_KEY, JSON.stringify(state.userCredentialPins));
-    } catch (error) { /* La credencial puede copiarse durante esta sesión. */ }
+    localStorage.removeItem(USER_CREDENTIALS_CACHE_KEY);
   };
 
   const syncUserPermissionsForm = (form = $("#userForm"), permissions = null) => {
@@ -13631,7 +13686,7 @@ const App = (() => {
       toast("Por seguridad el PIN anterior no se puede recuperar. Escribe uno nuevo, guarda y luego copia el acceso.", "error", `missing-user-pin:${user.id}`);
       return;
     }
-    const accessUrl = new URL("admin.html", location.href);
+    const accessUrl = new URL(user.role === "waiter" ? "mesero.html" : "admin.html", location.href);
     accessUrl.search = "";
     accessUrl.hash = "";
     const message = [
@@ -13815,7 +13870,7 @@ const App = (() => {
     persistUsersCache();
     if (String(saved.id) === String(state.currentUser?.id)) {
       state.currentUser = saved;
-      localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(saved));
+      localStorage.setItem(sessionGuard.userKey, JSON.stringify(saved));
       applyCurrentUser();
       showAdminSection(canAccessAdminSection(state.activeAdminSection) ? state.activeAdminSection : firstAllowedAdminSection());
     }
@@ -13901,8 +13956,7 @@ const App = (() => {
     state.authToken = "";
     state.currentUser = null;
     state.sb.setAuthToken("");
-    localStorage.removeItem("don_pieros_admin_token");
-    localStorage.removeItem(ADMIN_USER_CACHE_KEY);
+    sessionGuard.clear();
     applyCurrentUser();
     void dbQuiet(state.sb.rpc("logout", { auth_token: token }), null);
     location.reload();
@@ -14077,7 +14131,10 @@ const App = (() => {
       renderAdminLive();
     };
   };
-  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => state.authToken, db: SupabaseDb,
+  window.DonPierosAdmin = { getUser: () => state.currentUser, getToken: () => {
+    if (state.authToken && sessionGuard && !sessionGuard.ensureActive()) return "";
+    return state.authToken;
+  }, db: SupabaseDb,
     getPendingWebCheckouts: () => Object.values(readLocalJson(CHECKOUT_INTENTS_KEY,{})).filter(intent=>intent.invoice?.webOrderId).map(intent=>({id:intent.invoice.webOrderId,number:intent.invoice.number})),
     retryPendingWebCheckouts:()=>recoverPendingCheckouts(),
     createStaffOrder: async order => {

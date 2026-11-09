@@ -7,7 +7,7 @@
  */
 
 var APP = {
-  version: "3.20.0-donpieros",
+  version: "3.21.0-donpieros",
   spreadsheetId: "1uzIMd_xhCsICQgdlYcZuEgOfq07XUt9iFCume64LT2E",
   properties: {
     schemaVersion: "DP_SCHEMA_VERSION",
@@ -1630,11 +1630,17 @@ function validateSupabaseUser_(authToken) {
   var cache = CacheService.getScriptCache();
   var cacheKey = "user_" + hash_(token);
   var cached = cache.get(cacheKey);
-  if (cached) return JSON.parse(cached);
+  if (cached) {
+    var cachedUser = JSON.parse(cached);
+    // Una entrada de caché antigua o vencida nunca extiende la sesión.
+    if (Date.parse(cachedUser.session_expires_at) > Date.now()) return cachedUser;
+    cache.remove(cacheKey);
+  }
   var config = getConfig_();
   if (!config.supabaseUrl || !config.supabaseAnonKey) throw new Error("Complete la configuracion de Supabase en la hoja Configuracion.");
   var user = validateSupabaseUserWithConfig_(token, config);
-  cache.put(cacheKey, JSON.stringify(user), 120);
+  var remaining = Math.floor((Date.parse(user.session_expires_at) - Date.now()) / 1000);
+  if (remaining > 0) cache.put(cacheKey, JSON.stringify(user), Math.min(120, remaining));
   return user;
 }
 
