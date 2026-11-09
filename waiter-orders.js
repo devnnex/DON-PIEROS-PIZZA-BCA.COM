@@ -3,7 +3,7 @@
   if(document.body.dataset.page!=='admin')return;
   const $=selector=>document.querySelector(selector),api=()=>window.DonPierosAdmin;
   const deletions=()=>window.DonPierosDeletions;
-  const isRemoved=order=>deletions()?.hidden('waiter-comanda',order.id,order.version);
+  const isRemoved=order=>!order.accepted_at&&deletions()?.hidden('waiter-comanda',order.id,order.version);
   const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const money=value=>new Intl.NumberFormat('es-CO',{style:'currency',currency:'COP',maximumFractionDigits:0}).format(Number(value)||0);
   const normalize=value=>String(value??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
@@ -27,6 +27,7 @@
   let writeRevision=0,reloadWanted=false,serviceReady=false;const localWrites=new Map();
   let printWidth=80,directLineEdit=false;
   const kitchenPrintItems=new Map();
+  const closedAccountIds=new Set();
   let individualPick=null;
   const individualTable='staff-walk-in';
   let lastIndividual=null;
@@ -151,7 +152,7 @@
         if(currentToken!==api().getToken())return;
         if(!Array.isArray(data?.orders))return;
         const becameReady=!serviceReady;serviceReady=true;if(becameReady)sync();
-        const next=new Map(data.orders.map(order=>[order.id,order]));
+        const next=new Map(data.orders.filter(order=>!closedAccountIds.has(order.session_id)).map(order=>[order.id,order]));
         for(const [id,write] of localWrites){
           const incoming=next.get(id);
           if(write.revision>readRevision||incoming&&(incoming.version<write.order.version||String(incoming.updated_at)<String(write.order.updated_at)))next.set(id,write.order);
@@ -382,6 +383,7 @@
     return data.session.session_items.find(item=>item.id===itemId);
   }
   function rememberResult(data){
+    if(closedAccountIds.has(data.session?.id||data.comanda?.session_id))return;
     const previous=orders.find(order=>order.id===data.comanda.id)||{};
     const order={...previous,...data.comanda,table:operations().tables.find(t=>t.id===data.comanda.table_id)||previous.table,
       waiter_name:data.comanda.waiter_name||previous.waiter_name||api().getUser().full_name,request_status:data.request?.status,
@@ -482,7 +484,7 @@
   function renderReception(){
     if(waiter()||!allowed()){reception.hidden=true;return;}reception.hidden=false;
     const board=window.DonPierosReceptionBoard;
-    const visible=orders.filter(order=>order.items.length&&!isRemoved(order)&&(!board||board.matches('table',order)));
+    const visible=orders.filter(order=>!closedAccountIds.has(order.session_id)&&order.items.length&&!isRemoved(order)&&(!board||board.matches('table',order)));
     if(board)visible.sort(board.compare);
     const signature=JSON.stringify(visible);if(signature===managerSignature)return;managerSignature=signature;
     reception.innerHTML=`<div class="section-head"><h3>Comandas de mesas <span class="dp-count">${visible.length}</span></h3></div>${visible.length?visible.map(order=>`<button type="button" class="dw-received-card" data-dw-open-comanda="${esc(order.id)}"><span><strong>${esc(tableLabel(order.table))}</strong><small>${esc(order.waiter_name)} · ${esc(window.DonPierosDates.dateTime(order.updated_at))}</small></span><b>${order.items.length?money(order.items.reduce((sum,item)=>sum+item.quantity*item.unit_price,0)):'Retirada'}</b><p>${esc(order.items.map(item=>`${item.quantity} × ${item.item_name}`).join(', '))}</p><span class="dw-received-status">${!order.items.length?'Retirada':!order.accepted_at?'Pendiente de aceptar':order.version>1?'Aceptada · Actualizada':'Aceptada'} <em>Ver comanda →</em></span></button>`).join(''):'<p class="dw-muted">Los pedidos tomados por meseros aparecerán aquí.</p>'}`;
@@ -493,7 +495,7 @@
     const order=orders.find(row=>row.id===id);if(!order||isRemoved(order))return;managerOpen=id;
     const printItems=kitchenPrintItems.get(id),visibleOrder=printItems?{...order,items:printItems}:order;
     $('#dw-kitchen-body').innerHTML=`<header class="dw-dialog-head"><div><span class="eyebrow">${printItems?'Productos agregados al consumo':'Comanda de mesa · v'+order.version}</span><h2 id="dw-kitchen-title">${esc(tableLabel(order.table))}</h2><p>${esc(order.waiter_name)} · ${esc(window.DonPierosDates.dateTime(order.updated_at))}</p></div><button class="dw-close" type="button" data-dw-close aria-label="Cerrar">×</button></header><div class="dw-review-lines">${visibleOrder.items.map(item=>`<article><b class="dw-kitchen-qty">${item.quantity} ×</b><div><strong>${esc(item.item_name)}</strong>${window.DonPierosOrderLabels.compact(item.waiter_options?.labels||[]).map(label=>`<p>${esc(label)}</p>`).join('')}${item.waiter_line_notes?`<p class="dw-order-notes">${esc(item.waiter_line_notes)}</p>`:''}</div></article>`).join('')||'<p class="dw-empty">El mesero retiró los productos de esta comanda.</p>'}</div>${!printItems&&order.notes?`<div class="dw-kitchen-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}<div class="dw-review-total"><span>${printItems?'Total de productos nuevos':'Total de la comanda'}</span><strong>${money(visibleOrder.items.reduce((sum,item)=>sum+Number(item.quantity)*Number(item.unit_price),0))}</strong></div>${printItems?'':'<p class="dw-muted">Esta vista se actualiza cuando el mesero guarda una corrección.</p>'}`;
-    $('#dw-kitchen-body').insertAdjacentHTML('beforeend',`<p class="dw-edit-notice">${printItems?'Consumo agregado a la mesa. Imprime esta comanda para cocina.':order.accepted_at?'Aceptada: los productos ya están en el consumo de la mesa.':'Pendiente de aceptar: estos productos todavía no se han agregado al consumo.'}</p><div class="dw-kitchen-actions">${!printItems&&!waiter()&&!order.accepted_at&&order.items.length?`<button class="dw-primary" type="button" data-dw-accept-order="${esc(order.id)}">Agregar a la mesa</button>`:''}<label class="dw-paper">Papel<select id="dw-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="dw-button dw-print" type="button" data-dw-print-order="${esc(order.id)}">&#9636; Imprimir comanda</button>${printItems?'':`<button class="dw-button" type="button" data-dw-edit-order="${esc(order.id)}">Editar comanda</button>${order.items.length?`<button class="dw-button dw-remove" type="button" data-dw-remove-order="${esc(order.id)}">Retirar comanda</button>`:''}`}</div><p id="dw-kitchen-error" class="dw-error" role="alert"></p>`);
+    $('#dw-kitchen-body').insertAdjacentHTML('beforeend',`<p class="dw-edit-notice">${printItems?'Consumo agregado a la mesa. Imprime esta comanda para cocina.':order.accepted_at?'Aceptada: los productos ya están en el consumo de la mesa.':'Pendiente de aceptar: estos productos todavía no se han agregado al consumo.'}</p><div class="dw-kitchen-actions">${!printItems&&!waiter()&&!order.accepted_at&&order.items.length?`<button class="dw-primary" type="button" data-dw-accept-order="${esc(order.id)}">Agregar a la mesa</button>`:''}<label class="dw-paper">Papel<select id="dw-print-width"><option value="80">80 mm</option><option value="58">58 mm</option></select></label><button class="dw-button dw-print" type="button" data-dw-print-order="${esc(order.id)}">&#9636; Imprimir comanda</button>${printItems?'':`<button class="dw-button" type="button" data-dw-edit-order="${esc(order.id)}">Editar comanda</button>${!order.accepted_at&&order.items.length?`<button class="dw-button dw-remove" type="button" data-dw-remove-order="${esc(order.id)}">Retirar comanda</button>`:''}`}</div><p id="dw-kitchen-error" class="dw-error" role="alert"></p>`);
     $('#dw-print-width').value=String(printWidth);
     const info=details().readTime(order.notes),notes=$('#dw-kitchen-body .dw-kitchen-notes');
     if(notes){notes.querySelector('p').textContent=info.notes;notes.hidden=!info.notes;$('#dw-kitchen-body .dw-review-lines').before(notes);}
@@ -536,9 +538,10 @@
   }
   async function removeOrder(id){
     const order=orders.find(row=>row.id===id);if(!order||!allowed()||isRemoved(order))return;
+    if(order.accepted_at){api().notify('Esta comanda ya está agregada al consumo. Se retirará de Inicio al cobrar la mesa.','error');return;}
     const token=api().getToken();
-    if(!await window.DonPierosDialogs.confirm({key:'remove-comanda:'+id,title:'¿Retirar esta comanda?',message:'Sus productos se quitarán también del consumo de la mesa si ya fueron agregados.',accept:'Retirar comanda',danger:true}))return;
-    if(token!==api().getToken()||!allowed()||isRemoved(order))return;
+    if(!await window.DonPierosDialogs.confirm({key:'remove-comanda:'+id,title:'¿Retirar esta comanda pendiente?',message:'Se retirará este envío que todavía no fue agregado al consumo de la mesa.',accept:'Retirar comanda',danger:true}))return;
+    if(token!==api().getToken()||!allowed()||isRemoved(order)||orders.find(row=>row.id===id)?.accepted_at)return;
     try{
       deletions().enqueue('waiter-comanda',id,{p_operation_id:crypto.randomUUID(),p_comanda_id:id,p_table_id:order.table_id,p_session_id:order.session_id,p_expected_version:order.version,p_items:[],p_notes:order.notes||''});
       api().previewWaiterRemoval?.(id);$('#dw-kitchen-dialog').close();
@@ -763,11 +766,19 @@
   const editComanda=async(id,removeId='')=>{if(!orders.some(order=>order.id===id))await loadOrders();editOrder(id);if(removeId&&draft?.id===id&&!draft.pending){draft.items=draft.items.filter(item=>item.id!==removeId);persist();renderReview();renderSelection();}void loadOrders();};
   deletions()?.register('waiter-comanda',async(payload,update)=>{
     const currentToken=api().getToken();
+    if(orders.find(order=>order.id===payload.p_comanda_id)?.accepted_at){
+      deletions()?.cancel('waiter-comanda',payload.p_comanda_id);api().cancelWaiterRemoval?.(payload.p_comanda_id);return;
+    }
     const {data,error}=await rpc('dp_save_waiter_comanda',payload);
     if(error||!data?.comanda||data.comanda.items?.length){
       const result=await rpc('dp_list_waiter_comandas');if(result.error||!Array.isArray(result.data?.orders))throw error||Error('Retiro pendiente.');
       const current=result.data.orders.find(order=>order.id===payload.p_comanda_id);
       if(!current||!current.items.length)return {version:current?.version||payload.p_expected_version+1};
+      if(current.accepted_at){
+        orders=orders.map(order=>order.id===current.id?current:order);
+        deletions()?.cancel('waiter-comanda',current.id);api().cancelWaiterRemoval?.(current.id);
+        api().notify('La comanda ya fue agregada a la mesa. Se conservó todo su consumo.','error');return;
+      }
       if(current.version!==payload.p_expected_version)update({p_operation_id:crypto.randomUUID(),p_expected_version:current.version});
       throw error||Error('Retiro pendiente.');
     }
@@ -778,7 +789,16 @@
     if(event.detail.kind!=='waiter-comanda')return;
     window.DonPierosReception?.dismiss('request:'+event.detail.id);
     managerSignature='';homeSignature='';renderReception();renderAccount();if(waiter())renderHome();
-    if(event.detail.state==='done'){void loadOrders(true);void api().refreshOperations();}
+    if(['done','cancelled'].includes(event.detail.state)){void loadOrders(true);void api().refreshOperations();}
+  });
+  window.addEventListener('donpieros-account-closed',event=>{
+    const sessionId=event.detail.sessionId;
+    closedAccountIds.add(sessionId);
+    const closedIds=new Set(orders.filter(order=>order.session_id===sessionId).map(order=>order.id));
+    orders=orders.filter(order=>order.session_id!==sessionId);
+    for(const [id,write] of localWrites)if(write.order.session_id===sessionId)localWrites.delete(id);
+    if(closedIds.has(managerOpen)){$('#dw-kitchen-dialog').close();managerOpen='';}
+    managerSignature='';homeSignature='';renderReception();renderAccount();if(waiter())renderHome();
   });
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});

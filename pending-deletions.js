@@ -34,6 +34,10 @@
     if(kind==='waiter-comanda'&&Number(version)>Number(record.confirmedVersion||0))return false;
     return Date.now()-record.completedAt<86400000;
   }
+  function cancel(kind,id){
+    const key=keyFor(owner(),kind,id),record=read(key);if(!record)return;
+    localStorage.removeItem(key);changed({...record,state:'cancelled'});
+  }
   async function process(record){
     const key=record.key,handler=handlers.get(record.kind);running.add(key);
     try{
@@ -62,7 +66,7 @@
       if(record.nextAt<=Date.now()&&!running.has(record.key)&&handlers.has(record.kind))void process(record);
     }
   }
-  window.DonPierosDeletions={enqueue,hidden,list,pending:(kind,id)=>read(keyFor(owner(),kind,id))?.state==='pending',register(kind,handler){handlers.set(kind,handler);setTimeout(tick,0);},tick};
+  window.DonPierosDeletions={enqueue,hidden,list,cancel,pending:(kind,id)=>read(keyFor(owner(),kind,id))?.state==='pending',register(kind,handler){handlers.set(kind,handler);setTimeout(tick,0);},tick};
   setInterval(tick,1000);
   for(const event of ['online','focus','donpieros-session-change'])window.addEventListener(event,tick);
   window.addEventListener('storage',event=>{

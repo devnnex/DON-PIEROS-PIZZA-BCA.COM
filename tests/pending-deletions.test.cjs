@@ -23,3 +23,9 @@ test('el retiro no caduca ni reaparece tras fallos, reinicio, cambio de sesión 
  reloaded.navigator.onLine=false;reloaded.queue.tick();await settle();assert.equal(calls,3);
  reloaded.navigator.onLine=true;reloaded.queue.tick();await settle();assert.equal(calls,4);assert.equal(reloaded.queue.list()[0].state,'done');assert.equal(reloaded.queue.hidden('web-order','DP-1'),true,'Una lectura atrasada tampoco devuelve el registro confirmado.');
 });
+test('cancelar un retiro rechazado devuelve visibilidad y detiene los reintentos',async()=>{
+ const d=device();let calls=0;d.queue.enqueue('waiter-comanda','accepted',{id:'accepted'});
+ d.queue.register('waiter-comanda',async()=>{calls++;d.queue.cancel('waiter-comanda','accepted');});
+ d.queue.tick();await settle();assert.equal(d.queue.hidden('waiter-comanda','accepted'),false);assert.equal(d.queue.list().length,0);
+ d.advance(60000);d.queue.tick();await settle();assert.equal(calls,1);
+});

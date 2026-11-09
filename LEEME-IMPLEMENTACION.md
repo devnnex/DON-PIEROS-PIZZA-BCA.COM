@@ -1,5 +1,7 @@
 # Don Pieros Pizza · activación
 
+**Activar v72:** publicar la web y ejecutar `supabase/migrations/20261109150000_protect_accepted_comandas.sql`. Los cobros de cuentas diferentes ya no bloquean entre sí la interfaz; el guardado financiero conserva su orden y la protección contra duplicados. Las comandas aceptadas no se retiran desde recepción y desaparecen al cobrar la mesa. Los datos bancarios de Inicio se actualizan al confirmar ediciones; Nueva venta y Otro producto tienen bordes destacados. No requiere publicar Apps Script otra vez. Ver [ACTUALIZACION-V72.md](ACTUALIZACION-V72.md).
+
 **Activar v71:** publicar solo los archivos web. Los datos bancarios usan píldoras compactas con la misma altura de «En vivo». La carta pública se precarga durante el inicio de sesión y comparte solicitud/caché con pagos y comandas; se elimina el sondeo exclusivo de los botones bancarios. Sin SQL ni cambios adicionales de Apps Script. Se conservan los pasos de seguridad de v70 si aún no se han aplicado.
 
 **Activar v70:** ejecutar `supabase/migrations/20261109120000_staff_daily_session_security.sql`, actualizar la implementación existente de `appscript/Code.gs` a **3.21.0-donpieros** conservando `/exec`, y publicar la web v70. Las sesiones vencen a las 2:00 a. m. de Colombia; meseros usan `mesero.html` con su usuario personal. Junto a «En vivo» aparecen los datos de los métodos de pago activos con botón de copiar y confirmación. Ver [SEGURIDAD-SESIONES.md](SEGURIDAD-SESIONES.md).

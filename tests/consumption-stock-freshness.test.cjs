@@ -1,6 +1,6 @@
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm'),http=require('node:http'),test=require('node:test'),assert=require('node:assert/strict');
 const {chromium}=require('playwright-core');
-const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'app.js'),'utf8');
+const root=path.resolve(__dirname,'..'),source=fs.readFileSync(path.join(root,'app.js'),'utf8').replace(/\r\n/g,'\n');
 const section=(start,end)=>{const a=source.indexOf('  const '+start+' ='),b=source.indexOf('  const '+end+' =',a+1);assert.ok(a>=0&&b>a);return source.slice(a,b);};
 test('BCA actualiza Agregar consumo al recibir existencias, sin cerrar el modal ni perder la cantidad escrita',async()=>{
  const server=http.createServer((req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end(fs.readFileSync(path.join(root,'admin.html'),'utf8').replace(/<script\b[^>]*>[\s\S]*?<\/script>/g,''));});

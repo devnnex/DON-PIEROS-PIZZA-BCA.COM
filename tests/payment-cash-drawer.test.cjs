@@ -16,7 +16,7 @@ const setup=(method,closed=true,device='bridge')=>{
   hydrateDurableKey:async()=>{},readLocalJson:(key,fallback)=>local.has(key)?structuredClone(local.get(key)):fallback,
   persistDurableJson:async(key,value)=>{local.set(key,structuredClone(value));return true;},
   flushDurableWrites:async()=>true,persistCheckoutAtomically:async project=>{project();return true;},
-  persistInvoiceHistory(){},readAppsScriptOutbox:()=>[],writeAppsScriptOutbox:async()=>true,flushAppsScriptOutbox(){},
+  persistInvoiceHistory(){local.set('invoices',structuredClone(state.invoiceHistory));},readAppsScriptOutbox:()=>[],writeAppsScriptOutbox:async()=>true,flushAppsScriptOutbox(){},
   $:()=>({close(){calls.push('dialog-close');}}),$$:()=>buttons,
   window:{posCashDrawer:device==='bridge'?{open:async()=>{calls.push('drawer');return true;}}:null,open:()=>({close(){calls.push('popup-close');}})},
   navigator:{userAgent:device==='mobile'?'Android':'Windows',onLine:true},setTimeout:callback=>callback(),
@@ -92,4 +92,33 @@ test('BCA un fallo de impresión conserva el cobro y permite reimprimirlo sin co
  await app.context.process(app.form,{value:'print'});
  await app.context.process(app.form,{value:'save'});
  assert.equal(app.calls.filter(call=>typeof call==='object').length,1);
+});
+
+test('cuentas independientes se pueden confirmar mientras otra espera, sin mezclar dinero ni cerrar el formulario siguiente',async()=>{
+ const app=setup('cash'),{state}=app.context;
+ let release;const gate=new Promise(resolve=>{release=resolve;});const closed=[],dialogCloses=[];
+ app.context.$=()=>({close(){dialogCloses.push(app.form.session_id.value);}});
+ app.context.closeSession=async id=>{closed.push(id);if(id==='account-8')await gate;return {saved:{id}};};
+ app.context.sessionTotals=session=>({subtotal:session.session_items.reduce((sum,item)=>sum+item.quantity*item.unit_price,0),total:session.session_items.reduce((sum,item)=>sum+item.quantity*item.unit_price,0)});
+ app.context.paymentFromForm=()=>({method:'cash',payments:[{method:'cash',amount:state.activePaymentTotal}]});
+ app.form.payment_reference.value='PRIMERA';
+ const first=app.context.process(app.form,{value:'save'});
+ for(let i=0;i<10&&!closed.length;i++)await new Promise(setImmediate);
+ assert.deepEqual(closed,['account-8']);
+ const secondSession={id:'account-9',table_id:'table-9',session_items:[{id:'second',item_name:'Otra pizza',quantity:1,unit_price:200,status:'served'}]};
+ state.sessions.push(secondSession);state.activePaymentTotal=200;state.activePaymentBase=200;
+ app.form.session_id.value=secondSession.id;app.form.payment_reference.value='SEGUNDA';app.form.cash_received.value=300;
+ const second=app.context.process(app.form,{value:'save'});
+ for(let i=0;i<10&&!state.checkoutAccounts.has(secondSession.id);i++)await new Promise(setImmediate);
+ await new Promise(setImmediate);
+ assert.equal(state.checkoutAccounts.size,2,'Solo se bloquean las dos cuentas enviadas');
+ assert.equal(Object.keys(app.context.readLocalJson('donpieros_checkout_intents_v1',{})).length,2,'Los dos intentos ya son durables antes de terminar el primero');
+ assert.deepEqual(closed,['account-8'],'El guardado financiero se mantiene en orden');
+ app.form.session_id.value='third-open';app.form.payment_reference.value='BORRADOR';
+ release();await Promise.all([first,second]);
+ const invoices=app.calls.filter(call=>typeof call==='object');
+ assert.equal(invoices.length,2);assert.deepEqual(closed,['account-8','account-9']);
+ assert.equal(invoices[0].reference,'PRIMERA');assert.equal(invoices[0].remainingPaid,60);
+ assert.equal(invoices[1].reference,'SEGUNDA');assert.equal(invoices[1].remainingPaid,200);assert.equal(invoices[1].changeDue,100);
+ assert.equal(dialogCloses.includes('third-open'),false);assert.equal(state.checkoutAccounts.size,0);assert.equal(state.paymentProcessing,false);
 });

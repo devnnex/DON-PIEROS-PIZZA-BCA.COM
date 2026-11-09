@@ -501,7 +501,7 @@
           catalog[kind]=catalog[kind].filter(item=>item.id!==id);
           if(write.after)catalog[kind].push(write.after);
         }
-        catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
+        catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();window.dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:catalog.payments}));$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
       catch(error){$('#dp-menu-status').textContent=friendly(error);}finally{catalogLoading=null;}
     })();return catalogLoading;
   }
@@ -616,7 +616,7 @@
     catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
   function signal(event,orderId){
-    if(event==='catalog-changed')window.dispatchEvent(new Event('donpieros-catalog-change'));
+    if(event==='catalog-changed')window.dispatchEvent(new CustomEvent('donpieros-catalog-change',{detail:{payments:catalog?.payments?.filter(item=>!deletions()?.hidden('catalog-payments',item.id))}}));
     const payload={at:Date.now(),...(orderId?{orderId}:{})};
     if(channel)void channel.send({type:'broadcast',event,payload}).catch(()=>{});
     // Send outside the Apps Script save, without holding up the editor. HTTP

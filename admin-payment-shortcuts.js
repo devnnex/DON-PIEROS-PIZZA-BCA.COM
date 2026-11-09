@@ -62,8 +62,11 @@
     finally { pending = false; }
   }
   window.addEventListener('donpieros-public-catalog-ready', event => render(event.detail.payments));
+  window.addEventListener('donpieros-payment-methods-change', event => { if(Array.isArray(event.detail))render(event.detail); });
   window.addEventListener('donpieros-session-change', () => void refresh());
-  window.addEventListener('donpieros-catalog-change', () => void refresh());
+  window.addEventListener('donpieros-catalog-change', event => {
+    if(Array.isArray(event.detail?.payments))render(event.detail.payments);else void refresh();
+  });
   window.addEventListener('focus', () => void refresh());
   window.addEventListener('online', () => void refresh());
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void refresh(); });
