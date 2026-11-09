@@ -10,6 +10,23 @@ window.MenuCards = (() => {
   let imageFit={width:0,height:0,viewportWidth:0,viewportHeight:0};
   const pointers=new Map();
   const moveViewer=delta=>{const next=viewIndex+delta;if(next<0 || next>=viewCards.length)return;viewIndex=next;void renderViewer();};
+  let tableCatalog=null,tableCatalogJob=null;
+  const decodeImage=image=>typeof image.decode==='function'?image.decode():image.complete&&image.naturalWidth?Promise.resolve():new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(Error('No se pudo cargar la imagen.'));});
+  const tableCatalogFor=table=>{
+    const key=table.id+':'+table.qr_code;
+    if(tableCatalog?.key===key&&Date.now()-tableCatalog.at<30000)return Promise.resolve(tableCatalog.cards);
+    if(tableCatalogJob?.key===key)return tableCatalogJob.promise;
+    const job={key,promise:rpc('pos_get_menu_cards',{p_table_id:table.id,p_table_access_code:table.qr_code}).then(data=>{
+      const list=Array.isArray(data)?data:[];tableCatalog={key,cards:list,at:Date.now()};return list;
+    }).finally(()=>{if(tableCatalogJob===job)tableCatalogJob=null;})};tableCatalogJob=job;return job.promise;
+  };
+  const preload=async()=>{
+    const table=ctx?.page==='client'&&ctx.getCurrentTable();if(!table)return;
+    try{const list=await tableCatalogFor(table),card=list[0];if(!card)return;
+      const url=await signedImage(card.image_path),image=new Image();image.src=url;await decodeImage(image);
+      images.set(card.image_path,{url,expiresAt:Math.min(Date.now()+270000,signedImages.get(card.image_path)?.expiresAt||Date.now())});
+    }catch(_){/* Opening the viewer retries a failed preload. */}
+  };
   const images = new Map();
   const libraryPreviews = new Map();
   const signedImages = new Map();
@@ -116,7 +133,7 @@ window.MenuCards = (() => {
     if (!valid) throw new Error('El contenido del archivo no corresponde a una imagen permitida.');
     const url = URL.createObjectURL(file), image = new Image();
     try {
-      image.src = url; await image.decode();
+      image.src = url; await decodeImage(image);
       if (!image.naturalWidth || image.naturalWidth*image.naturalHeight > 100000000) throw new Error('La imagen supera 100 megapíxeles. Usa una resolución menor.');
     } finally { URL.revokeObjectURL(url); }
     return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(n=>n.toString(16).padStart(2,'0')).join('');
@@ -162,7 +179,7 @@ window.MenuCards = (() => {
           const {error} = await storage().upload(path,blob,{upsert:false,contentType:blob.type,cacheControl:'31536000'});
           if (error && !['409','Duplicate'].includes(String(error.statusCode || error.error))) throw new Error(error.message || 'No se pudo subir la imagen.');
           // Verifica que Storage puede devolver el objeto antes de publicar sus metadatos.
-          const remote = new Image(); remote.src = await signedImage(path); await remote.decode();
+          const remote = new Image(); remote.src = await signedImage(path); await decodeImage(remote);
           const card = replacing || {id,name:file.name.replace(/\.[^.]+$/,'').trim().slice(0,80) || 'Carta',all_tables:true,table_ids:[],version:0};
           const saved=await saveCard(card,{image_path:path});
           const confirmed={...saved,table_ids:card.table_ids || []};
@@ -316,7 +333,7 @@ window.MenuCards = (() => {
       event.preventDefault();
       zoomViewerAt(zoom * Math.exp(-event.deltaY * .002), event.clientX, event.clientY);
     }, {passive: false});
-    new ResizeObserver(fitViewerImage).observe(wrap);
+    if(typeof ResizeObserver==='function')new ResizeObserver(fitViewerImage).observe(wrap);else window.addEventListener('resize',fitViewerImage);
   };
 
   const renderViewer = async () => {
@@ -335,12 +352,12 @@ window.MenuCards = (() => {
       if (!url || cached.expiresAt<Date.now()) {
         requireOnline();
         url=await signedImage(card.image_path);
-        const check=new Image();check.src=url;await check.decode();
+        const check=new Image();check.src=url;await decodeImage(check);
         if(request!==generation) return;
         images.set(card.image_path,{url,expiresAt:Math.min(Date.now()+270000,signedImages.get(card.image_path)?.expiresAt || Date.now())});
       }
       if (request!==generation || !viewer.open) return;
-      img.src=url;img.alt=card.name;await img.decode();
+      img.src=url;img.alt=card.name;await decodeImage(img);
       if (request!==generation || !viewer.open) return;
       img.hidden=false;message.hidden=true;resetZoom();
     } catch (error) { if(request===generation) {images.delete(card.image_path);message.textContent=friendly(`No se pudo cargar la imagen. ${error.message}`);} }
@@ -355,9 +372,9 @@ window.MenuCards = (() => {
     if (key!==tableKey) { images.clear();tableKey=key; }
     try {
       if (!table) throw new Error('Selecciona tu mesa para consultar la Carta.');
-      const data=await rpc('pos_get_menu_cards',{p_table_id:table.id,p_table_access_code:table.qr_code});
+      const data=await tableCatalogFor(table);
       if (request!==generation || !viewer.open || key!==`${ctx.getCurrentTable()?.id}:${ctx.getCurrentTable()?.qr_code}`) return;
-      viewCards=Array.isArray(data)?data:[]; images.clear();await renderViewer();
+      viewCards=Array.isArray(data)?data:[];await renderViewer();
     } catch (error) { if(request===generation) $('#menuViewerStatus').textContent=friendly(error); }
   };
   const init = context => {
@@ -379,8 +396,8 @@ window.MenuCards = (() => {
       $('#menuCardsUpload').addEventListener('change',e=>void uploadFiles(e.target.files));
       library.addEventListener('click',e=>{if(e.target.closest('[data-menu-library-upload]')){if(!loaded)void loadLibrary();else if(cards.length){admin.showModal();void loadLibrary();}else if(!$('#menuCardsUpload').disabled)$('#menuCardsUpload').click();}});
       renderLibrary();
-      const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting) && ctx.canManage() && !loaded && !busy)void loadLibrary();});
-      observer.observe(library);
+      if(typeof IntersectionObserver==='function'){const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting) && ctx.canManage() && !loaded && !busy)void loadLibrary();});
+      observer.observe(library);}else if(ctx.canManage())void loadLibrary();
       admin.addEventListener('click',e=>{const button=e.target.closest('[data-menu-action]');if(button)void adminAction(button);});
       admin.addEventListener('change',e=>{
         if(e.target.matches('[data-menu-all]')) $('fieldset',e.target.closest('[data-menu-card]')).hidden=e.target.checked;
@@ -393,7 +410,7 @@ window.MenuCards = (() => {
       document.body.append(viewer);
       $('#openMenuCards')?.addEventListener('click',()=>void openViewer());
       $('#menuViewerClose').addEventListener('click',()=>viewer.close());
-      viewer.addEventListener('close',()=>{generation++;resetZoom();images.clear();$('#menuViewerImage').removeAttribute('src');$('#openMenuCards')?.focus();});
+      viewer.addEventListener('close',()=>{generation++;resetZoom();$('#menuViewerImage').removeAttribute('src');$('#openMenuCards')?.focus();});
       viewer.addEventListener('click',e=>{if(e.target===viewer)viewer.close();});
       $('#menuViewerPrevious').addEventListener('click',()=>moveViewer(-1));$('#menuViewerNext').addEventListener('click',()=>moveViewer(1));
       viewer.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){if(zoom===1){e.preventDefault();moveViewer(e.key==='ArrowLeft'?-1:1);}}});
@@ -404,5 +421,5 @@ window.MenuCards = (() => {
       setInterval(()=>{if(viewer.open && ctx.getCurrentTable() && tableKey!==`${ctx.getCurrentTable().id}:${ctx.getCurrentTable().qr_code}`)viewer.close();},1000);
     }
   };
-  return {init};
+  return {init,preload};
 })();

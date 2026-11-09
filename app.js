@@ -602,7 +602,7 @@ const App = (() => {
     pwaRegistrationPromise: null,
     qrCache: new Map(),
     selectedTableQrIds: new Set(),
-    activeServiceZone: localStorage.getItem(SERVICE_ZONE_STORAGE_KEY) === "planter" ? "planter" : "bar",
+    activeServiceZone: (()=>{try{return localStorage.getItem(SERVICE_ZONE_STORAGE_KEY)==="planter"?"planter":"bar";}catch(_){return "bar";}})(),
     tableRenderSignature: "",
     assistantMessages: [],
     assistantThreads: { bar: [], song: [] },
@@ -4497,8 +4497,10 @@ const App = (() => {
   const initClient = async () => {
     setLoading(true);
     const nativeScanValue = tableValueFromUrl();
-    if (nativeScanValue && (localStorage.getItem("don_pieros_waiter_token") || localStorage.getItem("don_pieros_admin_token"))) {
-      const adminUrl = new URL(localStorage.getItem("don_pieros_waiter_token") ? "mesero.html" : "admin.html", location.href);
+    let staffEntry="";
+    try{staffEntry=localStorage.getItem("don_pieros_waiter_token")?"mesero.html":localStorage.getItem("don_pieros_admin_token")?"admin.html":"";}catch(_){/* Public table access does not require local storage. */}
+    if (nativeScanValue && staffEntry) {
+      const adminUrl = new URL(staffEntry, location.href);
       adminUrl.searchParams.set("scan", nativeScanValue);
       adminUrl.hash = "service";
       location.replace(adminUrl.href);
@@ -4507,6 +4509,7 @@ const App = (() => {
     await loadBootstrap();
     renderBrand();
     state.currentTable = findTableFromUrl();
+    void window.MenuCards?.preload?.();
     if (state.currentTable) {
       const adminLink = $(".admin-link");
       if (adminLink) {

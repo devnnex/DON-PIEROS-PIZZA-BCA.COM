@@ -79,7 +79,11 @@ test('Carta: carga múltiple, confirmación, persistencia entre dispositivos, re
   // Segundo contexto de navegador: no comparte almacenamiento con la administración.
   const clientContext=await browser.newContext({viewport:{width:375,height:812},isMobile:true,hasTouch:true});
   const client=await clientContext.newPage();await setup(client,false);
+  const readsBeforePreload=calls.filter(([op,arg])=>op==='rpc'&&arg.name==='pos_get_menu_cards').length;
+  await client.evaluate(()=>MenuCards.preload());
+  assert.equal(calls.filter(([op,arg])=>op==='rpc'&&arg.name==='pos_get_menu_cards').length,readsBeforePreload+1);
   await client.locator('#openMenuCards').click();await client.locator('#menuViewerImage').waitFor({state:'visible'});
+  assert.equal(calls.filter(([op,arg])=>op==='rpc'&&arg.name==='pos_get_menu_cards').length,readsBeforePreload+1,'Abrir reutiliza la precarga de esta mesa y QR');
   assert.equal(await client.locator('#menuViewerTitle').textContent(),'Bebidas');assert.equal(await client.locator('#menuViewerCounter').textContent(),'1 de 2');
   await client.locator('#menuViewerNext').click();await client.waitForFunction(()=>document.querySelector('#menuViewerTitle').textContent==='Comidas'&&!document.querySelector('#menuViewerImage').hidden);
   await client.locator('#menuViewerZoom').click();await client.waitForFunction(()=>document.querySelector('#menuViewerImage').style.transform.includes('scale(2.5)'));assert.equal(await client.locator('#menuViewerZoom').getAttribute('aria-pressed'),'true');

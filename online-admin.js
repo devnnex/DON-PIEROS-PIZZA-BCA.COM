@@ -495,6 +495,12 @@
   async function loadCatalog(){
     if(!canMenu())return;
     if(catalogLoading)return catalogLoading;
+    if(!catalog){
+      const fast=window.DonPierosPerformance;
+      const saved=fast?.read('admin-catalog:'+api().getUser()?.id,7*86400000,'local');
+      catalog=saved&&['products','toppings','payments','neighborhoods'].every(key=>Array.isArray(saved[key]))?saved:fast?.previewCatalog?.();
+      if(catalog)renderCatalog();
+    }
     const readEpoch=catalogEpoch;
     $('#dp-menu-status').textContent='Cargando menú…';
     catalogLoading=(async()=>{
@@ -506,13 +512,14 @@
           catalog[kind]=catalog[kind].filter(item=>item.id!==id);
           if(write.after)catalog[kind].push(write.after);
         }
-        catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);renderCatalog();window.dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:catalog.payments}));$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
+        catalog.products=catalog.products.map(item=>pendingAvailability.get(item.id)||item);window.DonPierosPerformance?.write('admin-catalog:'+api().getUser()?.id,catalog,'local');renderCatalog();window.dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:catalog.payments}));$('#dp-menu-status').textContent='Menú actualizado. Los cambios llegan a la carta al actualizar o en menos de un minuto.';}
       catch(error){$('#dp-menu-status').textContent=friendly(error);}finally{catalogLoading=null;}
     })();return catalogLoading;
   }
   function applyCatalogItem(kind,item){catalogEpoch++;catalog[kind]=[...(catalog[kind]||[]).filter(row=>row.id!==item.id),item].sort((a,b)=>a.sort_order-b.sort_order||String(a.name).localeCompare(String(b.name)));}
   function removeCatalogPhoto(path,message){void api().db.storage.from('product-images').remove([path]).then(({error})=>{if(error)notify(message,true);}).catch(()=>notify(message,true));}
   function renderCatalog(){
+    $('#webmenu').dataset.catalogKind=catalogKind;
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
     let rows=(catalog[catalogKind]||[]).filter(item=>!deletions()?.hidden('catalog-'+catalogKind,item.id));
     if(catalogKind==='products'&&window.DonPierosMenuOrder)rows=window.DonPierosMenuOrder.products(rows);

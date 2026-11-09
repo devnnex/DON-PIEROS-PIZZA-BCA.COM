@@ -5594,11 +5594,11 @@ button,a,[role="button"]{touch-action:manipulation}
 .admin-payment-copy:hover{border-color:#b8ab8c;box-shadow:inset 0 1px 0 #fff,0 3px 8px #2520140b}
 .admin-payment-copy[data-copied] .admin-payment-copy-icon{background:#e1f5ea;color:#17734c}
 
-#individualSalesPanel [data-new-individual],#newWalkInSale{background:#1458cc;border:1px solid #236ce4;color:#fff;font-weight:750;box-shadow:0 3px 10px #1458cc24}
-#individualSalesPanel [data-new-individual]:hover,#newWalkInSale:hover{background:#104bb1;color:#fff}
-#individualSalesPanel [data-new-individual],#newWalkInSale,.dw-custom-choice{--login-neon-angle:0deg;position:relative;isolation:isolate}
-#individualSalesPanel [data-new-individual]::after,#newWalkInSale::after,.dw-custom-choice::after{content:"";position:absolute;inset:0;z-index:1;padding:2px;border-radius:inherit;background:conic-gradient(from var(--login-neon-angle),transparent 0 70%,#e4efff55 78%,#fff 87%,#8dc4ff 92%,transparent 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;pointer-events:none;animation:loginNeonCircuit 3.2s linear infinite}
+#individualSalesPanel [data-new-individual]{background:#1458cc;border:1px solid #236ce4;color:#fff;font-weight:750;box-shadow:0 3px 10px #1458cc24}
+#individualSalesPanel [data-new-individual]:hover{background:#104bb1;color:#fff}
+#individualSalesPanel [data-new-individual],.dw-custom-choice{--login-neon-angle:0deg;position:relative;isolation:isolate}
+#individualSalesPanel [data-new-individual]::after,.dw-custom-choice::after{content:"";position:absolute;inset:0;z-index:1;padding:2px;border-radius:inherit;background:conic-gradient(from var(--login-neon-angle),transparent 0 70%,#e4efff55 78%,#fff 87%,#8dc4ff 92%,transparent 100%);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;pointer-events:none;animation:loginNeonCircuit 3.2s linear infinite}
 .dw-custom-choice::after{background:conic-gradient(from var(--login-neon-angle),transparent 0 68%,#edc75e66 77%,#fff9cf 85%,#dca52d 91%,transparent 100%)}
-@media(prefers-reduced-motion:reduce){#individualSalesPanel [data-new-individual]::after,#newWalkInSale::after,.dw-custom-choice::after{animation:none;background:linear-gradient(115deg,#dcb550,#fff4ba,#ba8518)}}
+@media(prefers-reduced-motion:reduce){#individualSalesPanel [data-new-individual]::after,.dw-custom-choice::after{animation:none;background:linear-gradient(115deg,#dcb550,#fff4ba,#ba8518)}}
 .admin-payment-copy:focus-visible{outline:3px solid #228b68;outline-offset:3px}
 @media(max-width:600px){.admin-status-payments{gap:10px}.admin-payment-shortcuts{flex:1 1 100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));width:100%}.admin-payment-copy{width:100%;gap:8px}}

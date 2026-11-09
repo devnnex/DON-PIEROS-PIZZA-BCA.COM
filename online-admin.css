@@ -120,3 +120,27 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 @media(max-width:640px){#webmenu #dp-catalog-tabs{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.35fr);width:100%}#webmenu #dp-catalog-tabs button{justify-content:flex-start;gap:8px;min-height:52px;padding:11px 10px;font-size:12px;white-space:normal}#webmenu #dp-catalog-tabs button.active::after{left:10px}#webmenu #dp-category-filter{gap:10px;padding:11px 12px}#webmenu #dp-category-filter>span{font-size:12px}#webmenu #dp-menu-category{padding:10px;font-size:13px}}
 @media(max-width:360px){#webmenu #dp-category-filter{flex-wrap:wrap}#webmenu #dp-menu-category{flex-basis:100%}}
 @media(prefers-reduced-motion:reduce){#webmenu #dp-catalog-tabs button{transition:none}}
+
+/* Tarjetas del catálogo: lectura rápida y acciones claras. */
+#webmenu[data-catalog-kind="toppings"] #dp-menu-status{margin:18px 0;padding:12px 16px;border:1px solid #e5ddcc;border-left:3px solid #b28b40;border-radius:10px;background:#faf8f2;color:#675635;font-size:13px;line-height:1.6}
+#webmenu[data-catalog-kind="toppings"] #dp-menu-status:empty{display:none}
+#webmenu[data-catalog-kind="toppings"] #dp-catalog-list{gap:18px}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card{position:relative;min-width:0;overflow:hidden;padding:20px;border:1px solid #e5dfd3;border-radius:18px;background:linear-gradient(145deg,#fff 65%,#fcfaf5);box-shadow:0 3px 12px #382c1007;transition:border-color .15s,box-shadow .15s}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card:hover{border-color:#cbb781;box-shadow:0 6px 20px #382c1010}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card>div{min-width:0}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card small{display:inline-block;max-width:100%;padding:5px 8px;border:1px solid #eee4ce;border-radius:6px;background:#fbf6e9;color:#7a5d28;font-size:10px;line-height:1.45;font-weight:700;letter-spacing:.025em;overflow-wrap:anywhere}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card h3{margin:12px 0 16px;color:#24251f;font-size:18px;line-height:1.35;font-weight:750;letter-spacing:-.015em;overflow-wrap:anywhere}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card>div>p{margin:0 0 16px;color:#685029;font-size:20px;font-weight:700;line-height:1.4;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card .dp-status{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid #cfe5d7;border-radius:7px;background:#f0f8f3;color:#236b46;font-size:10px;line-height:1.4;font-weight:700}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card .dp-status::before{content:'';width:5px;height:5px;flex:none;border-radius:50%;background:currentColor}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-unavailable{background:#faf9f7}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-unavailable .dp-status{border-color:#ead9d3;background:#fbefeb;color:#9b4b36}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card footer{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px;padding-top:14px;border-top:1px solid #eee8dc}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card footer button{flex:1;min-width:0;min-height:44px;padding:9px 12px;border-radius:9px;font-size:12px;font-weight:700}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card [data-dp-edit]{background:#f7f2e6;border:1px solid #ddcda9;color:#675024;box-shadow:0 1px 2px #3a2b0b08}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card [data-dp-edit]:hover{background:#eee3ca;border-color:#b79a5b}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card [data-dp-delete]{background:#fff;border:1px solid #eadbd7;color:#9a4d41;box-shadow:none}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card [data-dp-delete]:hover{background:#fff1ed;border-color:#c99486}
+#webmenu[data-catalog-kind="toppings"] .dp-menu-card button:focus-visible{outline:3px solid #a98b48;outline-offset:3px}
+@media(max-width:640px){#webmenu[data-catalog-kind="toppings"] #dp-catalog-list{gap:12px}#webmenu[data-catalog-kind="toppings"] .dp-menu-card{padding:16px}#webmenu[data-catalog-kind="toppings"] .dp-menu-card h3{font-size:17px}}
+@media(prefers-reduced-motion:reduce){#webmenu[data-catalog-kind="toppings"] .dp-menu-card{transition:none}}

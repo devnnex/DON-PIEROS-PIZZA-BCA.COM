@@ -36,7 +36,7 @@
   const menuCache=()=>window.DonPierosPerformance;
   const validCatalog=data=>Array.isArray(data?.products)&&Array.isArray(data?.toppings);
   const warmCatalogImages=()=>{for(const product of (catalog?.products||[]).filter(product=>product.available).slice(0,6)){const photo=new Image();photo.src=window.DonPierosImages.resolve(product);}};
-  const cachedCatalog=menuCache()?.readCatalog?.()||menuCache()?.read('catalog',3*60000,localStorage);
+  let cachedCatalog;try{cachedCatalog=menuCache()?.previewCatalog?.()||menuCache()?.readCatalog?.()||menuCache()?.read('catalog',3*60000,'local');}catch(_){/* Optional cache. */}
   if(validCatalog(cachedCatalog)){catalog=cachedCatalog;warmCatalogImages();}
   try{if(localStorage.getItem('don_pieros_order_paper')==='58')printWidth=58;}catch(_){}
   const root=document.createElement('div');root.id='dp-waiter-app';root.hidden=true;$('#service').append(root);

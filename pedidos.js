@@ -11,11 +11,12 @@
     && !CONFIG.supabaseAnonKey.includes('PEGA_');
   const isOrdersConfigured = /^https:\/\/script\.google\.com\//i.test(CONFIG.appsScriptUrl)
     && !CONFIG.appsScriptUrl.includes('PEGA_');
-  const supabaseClient = isSupabaseConfigured && window.supabase
+  let supabaseClient = null;
+  try { supabaseClient = isSupabaseConfigured && window.supabase
     ? window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseAnonKey, {
         auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
       })
-    : null;
+    : null; } catch (_) { /* Realtime is optional; the menu remains available. */ }
 
   const option = (id, name, price = 0) => ({ id, name, price });
   const group = (id, name, type, options, settings = {}) => ({ id, name, type, options, ...settings });
@@ -139,7 +140,7 @@
   const table = new URLSearchParams(location.search).get('table');
   if (table) $('#order-location').textContent = `Mesa ${table}`;
 
-  function saveCart() { localStorage.setItem('don-pieros-cart-v2', JSON.stringify(state.cart)); updateCounts(); showAvailabilityAlert(); }
+  function saveCart() { try{localStorage.setItem('don-pieros-cart-v2', JSON.stringify(state.cart));}catch(_){/* Browsing and cart editing remain available without storage. */} updateCounts(); showAvailabilityAlert(); }
   function updateCounts() { const count = state.cart.reduce((sum,item) => sum + item.quantity, 0); $$('.cart-count').forEach(node => { node.textContent = count; }); $('#nav-cart').classList.toggle('has-items', count > 0); }
   function replayFeedback(element, className) {
     element.classList.remove(className);
@@ -223,6 +224,7 @@
   }
 
   function applyStoreData(data) {
+      if(!Array.isArray(data))data=[{data:data.products},{data:data.toppings},{data:data.payments},{data:data.neighborhoods}];
       const [productResult,toppingResult,paymentResult,neighborhoodResult] = data;
       const toppingRows = toppingResult.data || [];
       toppingCatalog = toppingRows;
@@ -252,20 +254,25 @@
       showAvailabilityAlert();
   }
   let catalogLoading = null, catalogQueued = false;
-  function loadStoreData(showError = false, queue = false) {
+  function loadStoreData(showError = false, queue = false, force = true) {
     if (catalogLoading) { if (queue) catalogQueued = true; return catalogLoading; }
-    catalogLoading = refreshStoreData(showError).finally(() => { catalogLoading = null; if (catalogQueued) { catalogQueued = false; void loadStoreData(false); } });
+    catalogLoading = refreshStoreData(showError,force).finally(() => { catalogLoading = null; if (catalogQueued) { catalogQueued = false; void loadStoreData(false); } });
     return catalogLoading;
   }
-  async function refreshStoreData(showError) {
+  async function refreshStoreData(showError,force) {
+    const connection=$('#catalog-connection');
     try {
-      const result = await window.DonPierosServices.api('dp_get_catalog');
+      const result = fast?.loadCatalog ? await fast.loadCatalog({force}) : await window.DonPierosServices.api('dp_get_catalog');
       const data = [{data:result.products},{data:result.toppings},{data:result.payments},{data:result.neighborhoods}];
-      state.catalogReady = true; fast.write('catalog',data,localStorage); applyStoreData(data);
-    } catch(error) { if(showError) toast('Carta pendiente de conexión', error.message); renderCategories(); renderProducts(); }
+      state.catalogReady = true; applyStoreData(data);if(connection)connection.hidden=true;
+    } catch(error) {
+      if(connection){connection.hidden=false;connection.innerHTML='La carta sigue visible. Conéctate para verificar precios y disponibilidad. <button type="button" data-retry-catalog>Reintentar</button>';}
+      else if(showError)toast('Carta pendiente de conexión',error.message);
+      renderCategories();renderProducts();
+    }
   }
   function connectRealtime() {
-    if(supabaseClient) state.orderSignal = supabaseClient.channel('don-pieros-orders-live').on('broadcast',{event:'catalog-changed'},()=>loadStoreData(false,true)).on('broadcast',{event:'order-received'},rememberReception).subscribe();
+    try { if(supabaseClient) state.orderSignal = supabaseClient.channel('don-pieros-orders-live').on('broadcast',{event:'catalog-changed'},()=>loadStoreData(false,true)).on('broadcast',{event:'order-received'},rememberReception).subscribe(); } catch(_){ /* Periodic refresh remains available. */ }
     setInterval(()=>{if(!document.hidden) void loadStoreData(false);},60000);
     window.addEventListener('online',()=>loadStoreData(true));
   }
@@ -355,7 +362,7 @@
     }
     const selectionLabels = {};
     (state.active.modifiers || []).forEach(modifier => { selectionLabels[modifier.id] = (state.selections[modifier.id] || []).map(id => modifier.options.find(item => item.id === id)?.name).filter(Boolean); });
-    const item = { key:state.editingKey || `${state.active.id}-${Date.now()}`, productId:state.active.id, productSnapshot:{...state.active}, quantity:state.quantity, selections:structuredClone(state.selections), selectionLabels, unitPrice:selectedUnitPrice() };
+    const item = { key:state.editingKey || `${state.active.id}-${Date.now()}`, productId:state.active.id, productSnapshot:{...state.active}, quantity:state.quantity, selections:JSON.parse(JSON.stringify(state.selections)), selectionLabels, unitPrice:selectedUnitPrice() };
     state.cart = state.editingKey ? state.cart.map(entry => entry.key === state.editingKey ? item : entry) : [...state.cart,item];
     saveCart(); hideOverlay('product'); toast(state.editingKey ? 'Producto actualizado' : 'Agregado a tu pedido', `${item.quantity} × ${state.active.name}`, true); state.active = null; state.editingKey = null;
   }
@@ -495,7 +502,7 @@
     renderCart();
   }
   function guideCheckoutField(selector,title,copy) { const field = $(selector,$('#checkout-form')); if (!field) return; const target = field.type === 'radio' ? field.closest('.checkout-choice') : field.closest('label'); target.classList.add('checkout-attention'); target.scrollIntoView({behavior:'smooth',block:'center'}); field.focus({preventScroll:true}); toast(title,copy); }
-  function getPendingOrderId() { let id=localStorage.getItem("don_pieros_pending_order_id"); if(!id){id=crypto.randomUUID();localStorage.setItem("don_pieros_pending_order_id",id);}return id; }
+  function getPendingOrderId() { let id=localStorage.getItem("don_pieros_pending_order_id"); if(!id){id=typeof crypto.randomUUID==='function'?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));localStorage.setItem("don_pieros_pending_order_id",id);}return id; }
   function readPendingOrder(){try{const pending=JSON.parse(localStorage.getItem('don_pieros_pending_order_v1')||'null');return pending?.order?.requestId ? pending : null;}catch(_){return null;}}
   function cartFingerprint(){return JSON.stringify(state.cart.map(item=>[item.key,item.quantity,item.unitPrice]));}
   async function confirmOrder() {
@@ -515,8 +522,10 @@
     if (!state.payment) return guideCheckoutField('[name="payment"]','Selecciona el pago','Elige un método de pago para continuar.');
     if (!isOrdersConfigured) return toast('Pedidos aún no disponibles','Estamos terminando de conectar la carta. Puedes contactarnos por WhatsApp.');
     const selectedPayment = paymentMethods.find(method => method.id === state.payment);
+    let requestId;
+    try{requestId=getPendingOrderId();}catch(_){return toast('No pudimos preparar el pedido','Tu navegador bloquea el almacenamiento necesario para evitar pedidos duplicados. Habilítalo o contáctanos por WhatsApp.');}
     const order = {
-      requestId: getPendingOrderId(), paymentId:state.payment, neighborhoodId:state.selectedNeighborhood?.id || "",
+      requestId, paymentId:state.payment, neighborhoodId:state.selectedNeighborhood?.id || "",
       customerName:state.customer.name,phone:digits,fulfillment:state.fulfillment,
       address:state.customer.address,neighborhood:state.customer.neighborhood.trim(),deliveryFee:deliveryFee(),deliveryFeePending:deliveryFeePending(),
       subtotal:subtotal(),packagingFee:packagingFee(),paymentMethod:selectedPayment?.name || state.payment,paymentValue:selectedPayment?.account_value || '',notes:state.customer.notes,
@@ -530,10 +539,13 @@
     try{localStorage.setItem('don_pieros_pending_order_v1',JSON.stringify({order,cartFingerprint:fingerprint}));}catch(_){return toast('No pudimos conservar tu pedido','Libera espacio en el navegador e intenta nuevamente.');}
     state.cartStep = 'sending';
     renderCart();
-    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),45000);
+    const controller=typeof AbortController==='function'?new AbortController():null;let timer;
     try {
-      const response = await fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},signal:controller.signal,body:JSON.stringify({action:'createOrder',order,clientSignals:true}) });
-      const result = await response.json(); if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
+      const result = await Promise.race([
+        fetch(CONFIG.appsScriptUrl, { method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},...(controller?{signal:controller.signal}:{}),body:JSON.stringify({action:'createOrder',order,clientSignals:true}) }).then(response=>response.json()),
+        new Promise((_,reject)=>{timer=setTimeout(()=>{controller?.abort();const error=Error('La conexión tardó. Puedes verificar sin duplicar tu pedido.');error.name='AbortError';reject(error);},45000);})
+      ]);
+      if (!result.ok) {const error=new Error(result.error || 'No se pudo crear la orden.');error.confirmedRejected=result.code==='ORDER_VALIDATION';throw error;}
       notifyOrderCreated(result.orderId);
       await waitForReception(result.orderId);
       order.subtotal = result.subtotal; order.deliveryFee = result.deliveryFee;order.packagingFee=Number(result.packagingFee)||0;
@@ -607,10 +619,11 @@
   $('#availability-review').addEventListener('click', () => { hideOverlay('availability'); $('#welcome-overlay').hidden = true; openCart(); });
   $('#availability-overlay').addEventListener('click', event => { if (event.target.id === 'availability-overlay') hideOverlay('availability'); });
   localProducts.forEach(product => { product.image = fast.imageUrl(product.image); });
-  const cachedCatalog = fast.read('catalog',3 * 60000,localStorage);
-  if (Array.isArray(cachedCatalog) && cachedCatalog.length === 4 && cachedCatalog.every(result => Array.isArray(result.data))) applyStoreData(cachedCatalog);
+  const cachedCatalog = fast?.previewCatalog?.();
+  if (cachedCatalog) applyStoreData(cachedCatalog);
   else { renderCategories(); renderProducts(); }
+  $('#catalog-connection')?.addEventListener('click',event=>{if(event.target.closest('[data-retry-catalog]'))void loadStoreData(true);});
   updateCounts();
-  void loadStoreData(true);
+  void loadStoreData(true,false,false);
   connectRealtime();
 })();
