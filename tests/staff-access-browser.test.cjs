@@ -54,11 +54,11 @@ test('navegador: rutas por rol, sesiones, copiar cuenta/llave y alineación resp
    await page.locator('.admin-payment-copy').click();assert.equal((await page.evaluate(()=>copied)).at(-1),'009988');
    await page.evaluate(()=>dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:[{id:'bank',name:'Cuenta editada',account_value:'009988',available:false}]})));
    assert.equal(await page.locator('#adminPaymentShortcuts').isVisible(),false,'Desactivar el medio lo retira inmediatamente de Inicio');
-   await page.evaluate(()=>{copied.length=0;dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:[{name:'Bancolombia',account_value:'01234567890',available:true},{name:'Llave Bre-B',account_value:'@DONPIEROS',available:true}]}));});
+   await page.evaluate(()=>{copied.length=0;dispatchEvent(new CustomEvent('donpieros-payment-methods-change',{detail:[{name:'BANCOLOMBIA - AHORROS',account_value:30687716449,available:true},{name:'Llave Bre-B',account_value:'@DONPIEROS',available:true}]}));});
    assert.equal(await page.locator('.admin-payment-copy').count(),2);
    await page.locator('.admin-payment-copy').first().click();
-   assert.deepEqual(await page.evaluate(()=>copied),['01234567890']);
-   assert.equal(await page.evaluate(()=>lastNotice.text),'Bancolombia: dato copiado.');
+   assert.deepEqual(await page.evaluate(()=>copied),['BANCOLOMBIA - AHORROS: 30687716449']);
+   assert.equal(await page.evaluate(()=>lastNotice.text),'BANCOLOMBIA - AHORROS: dato copiado.');
    await page.locator('.admin-payment-copy').nth(1).click();
    assert.equal((await page.evaluate(()=>copied)).at(-1),'@DONPIEROS');
    assert.equal(await page.locator('.admin-payment-copy svg').count(),2);

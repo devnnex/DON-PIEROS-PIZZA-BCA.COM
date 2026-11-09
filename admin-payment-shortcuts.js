@@ -16,6 +16,10 @@
     signature = next;
     box.replaceChildren();
     for (const payment of rows) {
+      const name = String(payment.name || '').toUpperCase();
+      const copyValue = name.includes('BANCOLOMBIA') && name.includes('AHORROS')
+        ? 'BANCOLOMBIA - AHORROS: ' + String(payment.account_value).trim()
+        : String(payment.account_value);
       const button = document.createElement('button');
       button.type = 'button'; button.className = 'admin-payment-copy';
       button.setAttribute('aria-label', 'Copiar ' + payment.name + ': ' + payment.account_value);
@@ -28,7 +32,7 @@
       button.addEventListener('click', async () => {
         if (!api()?.getUser() || !window.DonPierosSessionGuard?.ensureActive()) return;
         try {
-          await copy(String(payment.account_value));
+          await copy(copyValue);
           api().notify(payment.name + ': dato copiado.', 'ok');
           clearTimeout(copiedTimer); button.dataset.copied = ''; icon.innerHTML = copiedIcon; button.title = 'Copiado';
           copiedTimer = window.setTimeout(() => { delete button.dataset.copied; icon.innerHTML = clipboardIcon; button.title = 'Copiar ' + payment.name; }, 1800);
