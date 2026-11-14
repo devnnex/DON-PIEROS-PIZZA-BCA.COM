@@ -4905,10 +4905,26 @@ body[data-page="admin"] { overflow-x: hidden; }
 #tableManagerList .table-terrace-badge { display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 999px; color: #52368e; background: #e8ddff; font-size: 11px; vertical-align: middle; }
 #tableManagerList [data-regenerate-qr]:disabled { opacity: .38; cursor: not-allowed; }
 
-.payment-sale-lines { display: grid; gap: .38rem; }
+.payment-sale-lines { display: grid; gap: .55rem; }
 .payment-sale-lines:empty { display: none; }
-.payment-sale-lines > div { display: flex; justify-content: space-between; gap: .7rem; padding: .55rem .7rem; border: 1px solid rgba(18, 24, 31, .08); border-radius: 11px; color: #4c5665; background: #f8fafc; font-size: .78rem; }
+.payment-sale-lines > div { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .65rem .85rem; padding: .8rem .9rem; border: 1px solid #e6dcc9; border-radius: 12px; color: #241e15; background: #fffefb; box-shadow: 0 2px 5px rgba(55, 40, 15, .04); font-size: .78rem; }
 .payment-sale-lines strong { color: #17191f; white-space: nowrap; }
+.order-time-disclosure { margin:12px 0; border:1px solid #e5d7b8; border-radius:12px; background:#fffaf0; color:#493719; }
+.order-time-disclosure > summary { padding:12px 14px; font-size:13px; font-weight:700; cursor:pointer; }
+.order-time-disclosure > summary:focus-visible { outline:3px solid #1765ce; outline-offset:2px; border-radius:10px; }
+.order-time-disclosure .order-time-form { margin:0; border:0; border-top:1px solid #e5d7b8; border-radius:0 0 12px 12px; }
+.payment-line-product { display: flex; align-items: baseline; gap: .65rem; min-width: 0; font-weight: 700; line-height: 1.5; overflow-wrap: anywhere; }
+.payment-line-quantity { flex: 0 0 auto; padding: .2rem .45rem; border-radius: 7px; background: #fff0b8; color: #30230b; font-weight: 800; white-space: nowrap; }
+.payment-sale-lines > div > strong { grid-column: 2; font-variant-numeric: tabular-nums; }
+.payment-sale-lines [data-edit-individual-line] { grid-column: 3; border-color: #c9d9ee; background: #f2f7ff; color: #174e99; font-weight: 700; }
+.payment-sale-lines [data-edit-individual-line]:hover { border-color: #1765ce; background: #e6efff; }
+.payment-sale-lines .individual-line-notes { min-width: 0; margin: 0; padding-top: .65rem; border-top: 1px solid #eee5d5; line-height: 1.5; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .payment-sale-lines > div { grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; padding: .75rem; }
+  .payment-sale-lines .payment-line-product { grid-column: 1 / -1; }
+  .payment-sale-lines > div > strong { grid-column: 1; grid-row: 2; }
+  .payment-sale-lines [data-edit-individual-line] { grid-column: 2; grid-row: 2; }
+}
 .payment-empty-sale { margin: 0; padding: .72rem; border: 1px dashed rgba(240, 90, 40, .35); border-radius: 11px; color: #697386; background: #fffaf8; text-align: center; font-size: .78rem; }
 .payment-add-item { width: 100%; justify-content: center; }
 
@@ -5537,7 +5553,7 @@ button,a,[role="button"]{touch-action:manipulation}
 #individualSalesGrid .individual-sale-arrow{margin-left:auto;color:#7a8da8;font-size:18px}
 #individualSalesGrid .individual-sale-customer{color:#172c48;font-size:16px;font-weight:800;line-height:1.35;white-space:normal;overflow-wrap:anywhere}
 #individualSalesGrid .individual-sale-total{color:#1559b8;font-size:24px;line-height:1.15;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-#individualSalesGrid .individual-sale-date{text-align:left;color:#758298;font-size:11px;white-space:normal;line-height:1.4}
+#individualSalesGrid .individual-sale-date{text-align:left;color:#526279;font-size:11px;white-space:nowrap;line-height:1.4}
 #individualSalesGrid .individual-sale-footer{display:flex;align-items:center;justify-content:space-between;gap:7px;flex-wrap:wrap;padding-top:11px;margin-top:2px;border-top:1px solid #edf0f5}
 #individualSalesGrid .individual-sale-footer em{width:auto;height:auto;min-height:23px;padding:4px 8px;border-radius:6px;background:#fff3d4!important;color:#8a5b04!important;font-size:10px!important;line-height:1.3;white-space:normal;text-align:left}
 #individualSalesGrid .individual-sale-footer>span{color:#356aad;font-size:11px;font-weight:700}
@@ -5550,7 +5566,7 @@ button,a,[role="button"]{touch-action:manipulation}
 .individual-comanda-fields small{font-size:11px;font-weight:400;color:#5e718b;line-height:1.5}
 #individualComandaEditFields{grid-column:1/-1;margin-top:6px}
 #individualSalesGrid>.muted{grid-column:1/-1;margin:0;padding:24px;text-align:center;border:1px dashed #d4deec;border-radius:12px;background:#fff}
-@media(max-width:640px){#individualSalesPanel{padding:14px}#individualSalesGrid{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}#individualSalesGrid .individual-sale-tile{padding:12px!important;min-height:205px}#individualSalesGrid .individual-sale-total{font-size:21px}#individualSalesGrid .individual-sale-customer{font-size:14px}}
+@media(max-width:640px){#individualSalesPanel{padding:14px}#individualSalesGrid{grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px}#individualSalesGrid .individual-sale-tile{padding:12px!important;min-height:205px}#individualSalesGrid .individual-sale-total{font-size:21px}#individualSalesGrid .individual-sale-customer{font-size:14px}}
 @media(max-width:380px){#individualSalesGrid{grid-template-columns:minmax(0,1fr)}}
 #consumptionForm:not(.is-editing-consumption) .dp-packing-controls { display: none; }
 #consumptionMenuButton[hidden]{display:none!important}

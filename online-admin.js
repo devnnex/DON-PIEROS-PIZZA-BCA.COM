@@ -236,7 +236,7 @@
       if(arrived.length&&api().getUser()?.role!=='waiter'){
         api().announceWebOrders(arrived);
         for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,
-          detail:`${order.id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
+          detail:`${sourceLabel(order)} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
           action:()=>openOrder(order.id)});
       }
       for(const order of dashboardOrders)if(order.status!=='nueva')window.DonPierosReception?.dismiss('order:'+order.id);
@@ -246,7 +246,19 @@
     finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
   }
 
-  function orderCard(order){const individual=order.source==='staff_walk_in';return `<article class="dp-order-card order-origin-${individual?'individual':'online'} dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="${individual?'Venta individual enviada por '+esc(order.waiterName||'mesero'):'Pedido'} ${esc(order.id)} de ${esc(order.customerName)}"><div><span class="dp-status-actions"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span><small>${esc(date(order.createdAt))}</small></div><h3>${esc(order.customerName)}</h3><p>${esc(sourceLabel(order))}<br>${esc(order.id)} · ${fulfillmentLabel(order.fulfillment)}</p><p>${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p><footer><strong>${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01"/></svg>Imprimir comanda</button><button type="button" class="dp-remove-order" data-dp-remove-order>Eliminar</button></div></footer></article>`;}
+  const actionIcon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true" class="dp-action-icon"><path d="${({receipt:'M6 3h12v18l-3-2-3 2-3-2-3 2V3ZM9 7h6M9 11h6',print:'M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01',trash:'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'})[name]}"/></svg>`;
+  function orderCard(order){
+    const individual=order.source==='staff_walk_in';
+    return `<article class="dp-order-card order-origin-${individual?'individual':'online'} dp-state-${esc(order.status)}" data-dp-order="${esc(order.id)}" tabindex="0" aria-label="${individual?'Venta individual enviada por '+esc(order.waiterName||'mesero'):'Pedido en línea'} de ${esc(order.customerName)}">
+      <div class="dp-card-heading"><span class="dp-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</div>
+      <time class="dp-card-date" datetime="${esc(order.createdAt)}">${esc(date(order.createdAt))}</time>
+      <h3>${esc(order.customerName)}</h3>
+      <strong class="dp-card-total">${money(order.total)}${order.deliveryFeePending?'<small> + domicilio por confirmar</small>':''}</strong>
+      <p class="dp-card-origin">${esc(sourceLabel(order))} · ${fulfillmentLabel(order.fulfillment)}</p>
+      <p class="dp-card-products">${order.items.reduce((sum,item)=>sum+Number(item.quantity),0)} producto(s) · ${esc(order.items.map(i=>i.quantity+' × '+i.name).join(', '))}</p>
+      <footer><div class="dp-card-actions"><button type="button" class="dp-view-order" data-dp-view>Ver comanda <span aria-hidden="true">→</span></button><button type="button" class="dp-print-card" data-dp-print aria-label="Imprimir comanda" title="Imprimir comanda">${actionIcon('print')}<span>Imprimir</span></button><button type="button" class="dp-remove-order" data-dp-remove-order aria-label="Eliminar pedido" title="Eliminar pedido">${actionIcon('trash')}<span>Eliminar</span></button></div></footer>
+    </article>`;
+  }
   function overlayOrders(rows){
     const next=new Map(rows.map(row=>[row.id,row]));
     for(const [id,write] of orderWrites){
@@ -355,7 +367,7 @@
     const order=findOrder(id);if(!order)return;
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     $('#dp-order-detail').innerHTML=`
-      <header class="dp-order-heading dp-state-${esc(order.status)}"><div><span class="eyebrow">Don Pieros Pizza · Comanda</span><h2>${order.source==='staff_walk_in'?'Venta individual':'Pedido'} ${esc(order.sequence||String(order.id).split('-').at(-1))}</h2><p>${esc(order.id)}<br><time>${esc(date(order.createdAt))}</time></p></div><span class="dp-status-actions"><span class="dp-status dp-detail-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span></header>
+      <header class="dp-order-heading dp-state-${esc(order.status)}"><div><span class="eyebrow">Don Pieros Pizza · Comanda</span><h2 id="dp-order-title">${order.source==='staff_walk_in'?'Venta individual':'Pedido'} ${esc(order.sequence||String(order.id).split('-').at(-1))}</h2><p><time>${esc(date(order.createdAt))}</time></p></div><span class="dp-status-actions"><span class="dp-status dp-detail-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span></header>
       <div class="dp-order-layout">
         <section class="dp-order-products"><div class="dp-products-heading"><h3>Productos para preparar</h3><span>${units} ${units===1?'unidad':'unidades'}</span></div>
           <div class="dp-detail-lines">${order.items.map(item=>`<article><span class="dp-item-quantity">${Number(item.quantity)||0} ×</span><div><strong>${esc(item.name)}</strong>${item.selections.length?`<ul>${window.DonPierosOrderLabels.compact(item.selections).map(selection=>`<li>${esc(kitchenSelection(selection))}</li>`).join('')}</ul>`:''}</div></article>`).join('')}</div>
@@ -367,14 +379,21 @@
         </aside>
       </div>
       <div class="dp-order-actions">${['boss','admin'].includes(api().getUser()?.role)?'<button class="primary dp-charge-order" id="dp-charge-order" type="button">Cobrar pedido</button>':''}<button class="ghost" id="dp-print-order" type="button">▤ Imprimir comanda</button>${order.phone?`<a class="ghost dp-whatsapp-order" href="https://wa.me/${esc(order.phone.replace(/\D/g,'').replace(/^(\d{10})$/,'57$1'))}?text=${encodeURIComponent('🍕 Hola '+order.customerName+', somos Don Pieros Pizza. Tu pedido '+order.id+' está recibido.')}" target="_blank" rel="noopener">WhatsApp ↗</a>`:''}<button class="ghost dp-remove-order" id="dp-delete-order" type="button">Eliminar pedido</button></div><p id="dp-order-error" role="alert"></p>`;
+    const heading=$('#dp-order-detail .dp-order-heading'),summary=$('#dp-order-detail .dp-order-summary');
+    summary.prepend(heading.querySelector('.dp-status-actions'));
+    $('#dp-order-detail .dp-order-products').prepend(heading);
+    summary.append($('#dp-order-detail .dp-order-actions'));
+    for(const [id,label,icon] of [['dp-charge-order','COBRAR PEDIDO','receipt'],['dp-print-order','IMPRIMIR COMANDA','print'],['dp-delete-order','ELIMINAR PEDIDO','trash']]){
+      const button=$('#'+id);if(button)button.innerHTML=actionIcon(icon)+'<span>'+label+'</span>';
+    }
     $('#dp-order-detail .eyebrow').textContent=sourceLabel(order);
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
     const whatsapp=$('#dp-order-detail .dp-whatsapp-order');
-    if(whatsapp){whatsapp.textContent='WhatsApp';whatsapp.insertAdjacentHTML('afterbegin','<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.5 3.5A11.8 11.8 0 0 0 1.9 17.7L.2 24l6.5-1.7A11.8 11.8 0 0 0 24 11.9c0-3.2-1.2-6.1-3.5-8.4ZM12 21.7a9.8 9.8 0 0 1-5-1.4l-.4-.2-3.9 1 1-3.8-.2-.4A9.8 9.8 0 1 1 12 21.7Zm5.4-7.3c-.3-.1-1.7-.8-2-.9-.2-.1-.4-.1-.6.2-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1a8 8 0 0 1-3.9-3.4c-.3-.4.3-.4.8-1.4.1-.2.1-.4 0-.6l-.9-2.1c-.2-.6-.5-.5-.7-.5H8c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.7 1.2 2.9c.1.2 2 3 4.8 4.2 1.8.8 2.5.9 3.4.8.6-.1 1.7-.7 1.9-1.4.3-.7.3-1.3.2-1.4-.1-.1-.3-.2-.6-.3Z"/></svg>');}
+    if(whatsapp){whatsapp.textContent='WHATSAPP';whatsapp.insertAdjacentHTML('afterbegin','<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.5 3.5A11.8 11.8 0 0 0 1.9 17.7L.2 24l6.5-1.7A11.8 11.8 0 0 0 24 11.9c0-3.2-1.2-6.1-3.5-8.4ZM12 21.7a9.8 9.8 0 0 1-5-1.4l-.4-.2-3.9 1 1-3.8-.2-.4A9.8 9.8 0 1 1 12 21.7Zm5.4-7.3c-.3-.1-1.7-.8-2-.9-.2-.1-.4-.1-.6.2-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1a8 8 0 0 1-3.9-3.4c-.3-.4.3-.4.8-1.4.1-.2.1-.4 0-.6l-.9-2.1c-.2-.6-.5-.5-.7-.5H8c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.7 1.2 2.9c.1.2 2 3 4.8 4.2 1.8.8 2.5.9 3.4.8.6-.1 1.7-.7 1.9-1.4.3-.7.3-1.3.2-1.4-.1-.1-.3-.2-.6-.3Z"/></svg>');}
     const timing=orderDetails().readTime(order.notes),noteParagraph=$('#dp-order-detail .dp-notes p');
     if(noteParagraph){noteParagraph.textContent=timing.notes;noteParagraph.parentElement.hidden=!timing.notes;$('#dp-order-detail .dp-detail-lines').before(noteParagraph.parentElement);}
     if(['nueva','atendiendo','lista'].includes(order.status)){
-      $('#dp-order-detail .dp-order-products').insertAdjacentHTML('beforeend',`<form class="order-time-form" id="dp-order-time-form"><label>Tiempo estimado<input name="estimated_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(timeEdits.get(id)??timing.time)}"></label><label class="order-observations-field">Observaciones<textarea name="order_observations" maxlength="1000" rows="2" placeholder="Indicaciones para este pedido…">${esc(timing.notes)}</textarea></label><button class="ghost" type="submit">Guardar tiempo y observaciones</button></form>`);
+      $('#dp-order-detail .dp-order-products').insertAdjacentHTML('beforeend',`<details class="order-time-disclosure"><summary>Colocar tiempo y observaciones</summary><form class="order-time-form" id="dp-order-time-form"><label>Tiempo estimado<input name="estimated_time" type="text" maxlength="80" placeholder="Ej.: 25 minutos" value="${esc(timeEdits.get(id)??timing.time)}"></label><label class="order-observations-field">Observaciones<textarea name="order_observations" maxlength="1000" rows="2" placeholder="Indicaciones para este pedido…">${esc(timing.notes)}</textarea></label><button class="ghost" type="submit">Guardar tiempo y observaciones</button></form></details>`);
       $('#dp-order-time-form input').oninput=event=>timeEdits.set(id,event.target.value);
       $('#dp-order-time-form').onsubmit=event=>{event.preventDefault();const time=event.currentTarget.estimated_time.value.trim(),observations=event.currentTarget.order_observations.value.trim();timeEdits.delete(id);void mutateOrder(order,{...order,notes:orderDetails().withTime(orderDetails().withTime(observations,timing.time,timing.startedAt),time)},'dp_order_time',{estimatedTime:time,observations});};
       $('#dp-order-detail .dp-order-actions').insertAdjacentHTML('afterbegin',`<label class="dp-order-stage">Estado del pedido<select id="dp-change-order-stage">${[['nueva','Por atender'],['atendiendo','En preparación'],['lista','Listo']].map(([value,label])=>`<option value="${value}" ${order.status===value?'selected':''}>${label}</option>`).join('')}</select></label>`);

@@ -29,11 +29,11 @@ function harness(savedStorage) {
     localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     getAlarmAudio: () => alarm, getWebOrderAudio: () => webOrderAudio, updateAlarmButton() {}, toast() {}, hasOpenAdminChatForRequest: () => false,
     activeRequests: () => state.requests.filter(r => r.status === 'pending'), requestTableName: r => 'Mesa ' + r.table_id,
-    requestOrigin: () => ({kind:'client'}), isSongRequest: () => false, normalizeText: value=>String(value).toLowerCase(),
+    isSongRequest: () => false, normalizeText: value=>String(value).toLowerCase(),
     Date, Map, Set });
-  vm.runInContext(slice('getReceiptAudio', 'latestClientBill') + slice('requestVoiceText', 'disableAlarm')
+  vm.runInContext(slice('requestOrigin', 'requestBody') + slice('getReceiptAudio', 'latestClientBill') + slice('requestVoiceText', 'disableAlarm')
     + slice('primeAlertVoice', 'startAlarmLoop')
-    + ';globalThis.api={playReceiptSound,playClientChatReceipt,playAdminChatReceipt,armClientSoundsOnFirstGesture,armAlarmOnFirstGesture,playAlarm,announceWebOrders};', context);
+    + ';globalThis.api={playReceiptSound,playClientChatReceipt,playAdminChatReceipt,armClientSoundsOnFirstGesture,armAlarmOnFirstGesture,playAlarm,announceWebOrders,requestVoiceText};', context);
   return { state, calls, voices, storage, api: context.api, alarm,webOrderAudio,
     unblock() { blocked = false; }, block() { blocked = true; },
     async gesture(name) { const event = events.get(name); assert.ok(event); assert.equal(event.options.capture, true); event.fn({ target: { closest: () => null } }); await settle(); },
@@ -42,6 +42,20 @@ function harness(savedStorage) {
     async finishVoice() { voices.at(-1)?.onend?.(); await settle(); }
   };
 }
+
+test('las comandas de mesa y venta individual anuncian al mesero y usan su nombre actualizado',async()=>{
+ const h=harness();h.unblock();h.state.soundPrimed=true;
+ h.state.users=[{id:'waiter-1',full_name:'Laura Gómez'}];
+ const table={id:'table-command',request_source:'waiter',requested_by_user_id:'waiter-1',requested_by_name:'Nombre anterior',request_type:'other',table_id:4,message:'Pizza'};
+ assert.match(h.api.requestVoiceText(table),/Laura Gómez envía un pedido para Mesa 4/);
+ assert.doesNotMatch(h.api.requestVoiceText(table),/canción|Nombre anterior/i);
+ h.state.users[0].full_name='María Torres';
+ assert.match(h.api.requestVoiceText(table),/María Torres/);
+ h.api.announceWebOrders([{id:'staff-individual',status:'nueva',source:'staff_walk_in',waiterId:'waiter-1',waiterName:'Nombre anterior',customerName:'Hellen Pava'}]);
+ await settle();await h.finishTone(true);
+ assert.match(h.voices.at(-1).text,/María Torres envía una venta individual para Hellen Pava/);
+ assert.match(h.api.requestVoiceText({...table,requested_by_user_id:'another',requested_by_name:'Fabián Gómez'}),/Fabián Gómez/);
+});
 
 test('recargar conserva los pedidos web y comandas de mesero ya reproducidos',async()=>{
  const first=harness();first.unblock();first.state.soundPrimed=true;

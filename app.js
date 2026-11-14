@@ -4613,6 +4613,7 @@ const App = (() => {
     && normalizeText(request.message || "").includes("solicita la cancion");
 
   const requestKind = (request) => {
+    if (request.request_source === "waiter") return "comanda";
     if (isSongRequest(request)) return "song";
     return request.request_type === "other" && String(request.message || "").trim() ? "chat" : request.request_type;
   };
@@ -4662,11 +4663,16 @@ const App = (() => {
   );
 
   const requestVoiceText = (request) => {
+    const origin = requestOrigin(request);
+    if (origin.kind === "waiter") {
+      const destination = request.request_type === "web_order"
+        ? `una venta individual${request.customer_name ? ' para ' + request.customer_name : ''}`
+        : `un pedido para ${requestTableName(request)}`;
+      return `Atención, nueva comanda en recepción. ${origin.name} envía ${destination}. Por favor, revisar y confirmar su preparación.`;
+    }
     if(request.request_type === "web_order") return "Una nueva orden ha llegado a Don Pieros Pizza.";
     const table = requestTableName(request);
     const message = String(request.message || "").replace(/\s+/g, " ").trim().slice(0, 320);
-    const origin = requestOrigin(request);
-    if (origin.kind === "waiter") return `${table}. Pedido tomado por ${origin.name}. ${requestBody(request).slice(0, 240)}`;
     if (request.request_type === "waiter") return `${table} solicita al mesero.`;
     if (request.request_type === "bill") return `${table} solicita la cuenta.`;
     if (!message) return `${table} necesita ayuda.`;
@@ -4784,7 +4790,8 @@ const App = (() => {
 
   const announceWebOrders = (orders) => {
     playAlarm(orders.filter((order) => order && order.status === "nueva" && order.id).map((order) => ({
-      id: `web-order:${order.id}`, request_type: "web_order"
+      id: `web-order:${order.id}`, request_type: "web_order", request_source: order.source === 'staff_walk_in' ? 'waiter' : 'client',
+      requested_by_user_id: order.waiterId, requested_by_name: order.waiterName, customer_name: order.customerName
     })));
   };
 
@@ -5573,7 +5580,8 @@ const App = (() => {
   };
 
   const requestOrigin = (request) => {
-    return request.request_source === "waiter" ? { kind: "waiter", name: String(request.requested_by_name || "Mesero") }
+    const user = request.requested_by_user_id ? state.users?.find(user => String(user.id) === String(request.requested_by_user_id)) : null;
+    return request.request_source === "waiter" ? { kind: "waiter", name: String(user?.full_name || user?.username || request.requested_by_name || "el mesero") }
       : { kind: "client", name: "" };
   };
 
@@ -5593,7 +5601,7 @@ const App = (() => {
     const receptionRequests = activeRequests().filter(request => state.currentUser?.role !== "waiter"
       || request.request_source !== "waiter" || request.requested_by_user_id !== state.currentUser?.id);
     window.DonPierosReception?.syncRequests(receptionRequests, {
-      label: request => `${REQUEST_LABELS[request.request_type] || "Nueva solicitud"} · ${tableLabel(request.restaurant_tables)}`,
+      label: request => `${request.request_source === 'waiter' ? 'Nueva comanda de mesero' : isSongRequest(request) ? 'Canción solicitada' : REQUEST_LABELS[request.request_type] || "Nueva solicitud"} · ${tableLabel(request.restaurant_tables)}`,
       body: request => requestOrigin(request).kind === "waiter"
         ? `Pedido tomado por ${requestOrigin(request).name}\n${requestBody(request) || "Revisa el pedido de la mesa."}`
         : requestBody(request) || "El cliente está esperando atención.",
@@ -5615,7 +5623,9 @@ const App = (() => {
               <article class="alert-card alert-${request.kind}${request.request_source === "waiter" ? " alert-waiter-order" : ""}" data-alert-card="${request.id}">
                 <div class="alert-icon">
                   ${
-                    request.kind === "song"
+                    request.request_source === "waiter"
+                      ? icon("clipboard-list", 22)
+                      : request.kind === "song"
                       ? icon("music-2", 22)
                       : REQUEST_IMAGES[request.request_type]
                         ? `<img class="alert-image" src="${REQUEST_IMAGES[request.request_type]}" alt="">`
@@ -5623,9 +5633,9 @@ const App = (() => {
                   }
                 </div>
                 <div>
-                  <span>${request.kind === "song" ? "Canción solicitada" : request.kind === "chat" ? "Chat / pedido" : (REQUEST_LABELS[request.request_type] || request.request_type)}</span>
+                  <span>${request.request_source === "waiter" ? "Comanda de mesero" : request.kind === "song" ? "Canción solicitada" : request.kind === "chat" ? "Chat / pedido" : (REQUEST_LABELS[request.request_type] || request.request_type)}</span>
                   <h3><mark class="alert-table-name">${escapeHTML(tableLabel(request.restaurant_tables))}</mark></h3>
-                  ${request.kind === "chat" ? `<small class="alert-origin${requestOrigin(request).kind === "waiter" ? " is-waiter" : ""}">${requestOrigin(request).kind === "waiter" ? `Pedido de mesero · ${escapeHTML(requestOrigin(request).name)}` : "Cliente · En línea"}</small>` : ""}
+                  ${request.kind === "chat" || request.request_source === "waiter" ? `<small class="alert-origin${requestOrigin(request).kind === "waiter" ? " is-waiter" : ""}">${requestOrigin(request).kind === "waiter" ? `Pedido de mesero · ${escapeHTML(requestOrigin(request).name)}` : "Cliente · En línea"}</small>` : ""}
                   ${request.message && !parseBillMessage(request.message) ? `<p>${escapeHTML(requestBody(request))}</p>` : ""}
                   <p>${prettyDateTime(request.created_at)}</p>
                   ${requestGroupDetailsHtml(request)}
@@ -10288,7 +10298,7 @@ const App = (() => {
     $("#paymentTotal").textContent = money(total);
     const paymentLines = $("#paymentSaleLines");
     if (paymentLines) paymentLines.innerHTML = activeItems.length
-      ? activeItems.map((item) => `<div class="${quickSale && state.individualProductFlashes?.get(item) > Date.now() ? "consumption-just-added" : ""}"><span>${Number(item.quantity || 0)} &times; ${escapeHTML(item.item_name)}</span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong>${manualSale?`<button class="ghost small" type="button" data-edit-individual-line="${escapeHTML(item.id)}">Editar</button>`:''}</div>`).join("")
+      ? activeItems.map((item) => `<div class="${quickSale && state.individualProductFlashes?.get(item) > Date.now() ? "consumption-just-added" : ""}"><span class="payment-line-product"><span class="payment-line-quantity">${Number(item.quantity || 0)} &times;</span><span>${escapeHTML(item.item_name)}</span></span><strong>${money(Number(item.quantity || 0) * Number(item.unit_price || 0))}</strong>${manualSale?`<button class="ghost small" type="button" data-edit-individual-line="${escapeHTML(item.id)}" aria-label="Editar ${escapeHTML(item.item_name)}">Editar</button>`:''}</div>`).join("")
       : '<p class="payment-empty-sale">Agrega el producto para continuar con el cobro.</p>';
     paymentLines?.querySelectorAll(':scope > div').forEach((row,index)=>{const note=activeItems[index]?.notes;if(note){const text=document.createElement('p');text.className='individual-line-notes';text.textContent=(window.DonPierosOrderDetails?.readTime(note).notes||note).trim().toLocaleUpperCase('es-CO');row.append(text);}});
     const addItemButton = $("#paymentAddItem");
@@ -10798,7 +10808,7 @@ const App = (() => {
     if ((state.activePaymentBase != null && checkoutBase !== state.activePaymentBase) || expectedBalance !== integerMoney(state.activePaymentTotal)) {
       state.activePaymentBase = checkoutBase; updatePaymentTipChoice();
       const lines = $("#paymentSaleLines");
-      if (lines) lines.innerHTML = (session.session_items || []).filter((row) => row.status !== "cancelled").map((row) => '<div><span>' + row.quantity + ' × ' + escapeHTML(row.item_name) + '</span><strong>' + money(Number(row.quantity) * Number(row.unit_price)) + '</strong></div>').join('');
+      if (lines) lines.innerHTML = (session.session_items || []).filter((row) => row.status !== "cancelled").map((row) => '<div><span class="payment-line-product"><span class="payment-line-quantity">' + row.quantity + ' ×</span><span>' + escapeHTML(row.item_name) + '</span></span><strong>' + money(Number(row.quantity) * Number(row.unit_price)) + '</strong></div>').join('');
       toast("La cuenta cambió en otra sesión. Revisa el saldo actualizado y confirma nuevamente.", "error", "payment-refreshed"); return;
     }
     if (tipsEnabled() && !form.tip_choice?.value) {
