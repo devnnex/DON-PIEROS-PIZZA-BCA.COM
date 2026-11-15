@@ -374,7 +374,7 @@
           ${order.notes?`<div class="dp-notes"><strong>Indicaciones para cocina</strong><p>${esc(order.notes)}</p></div>`:''}
         </section>
         <aside class="dp-order-summary"><section class="dp-order-customer"><small>DATOS DEL CLIENTE</small><h3>${esc(order.customerName)}</h3>${order.phone?`<a href="tel:${esc(order.phone.replace(/[^+\d]/g,''))}">${esc(order.phone)}</a>`:''}<div class="dp-fulfillment-label">${fulfillmentLabel(order.fulfillment)}</div>${order.fulfillment==='delivery'?`<p><strong>Barrio:</strong> ${esc(order.neighborhood)}<br><strong>Dirección:</strong> ${esc(order.address)}</p>`:''}</section>
-          <div class="dp-totals"><p>Productos <b>${money(order.subtotal)}</b></p>${order.packagingFee?`<p>Cajas para llevar <b>${money(order.packagingFee)}</b></p>`:''}${order.fulfillment==='delivery'?`<p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos y cajas':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<small>${esc(order.paymentValue)}</small>`:''}</div>
+          <div class="dp-totals"><p>Productos <b>${money(order.subtotal)}</b></p>${order.packagingFee?`<p>Cajas para llevar <b>${money(order.packagingFee)}</b></p>`:''}${order.fulfillment==='delivery'?`<p>Domicilio <b>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</b></p>`:''}<p class="dp-total"><span>${order.deliveryFeePending?'Total de productos y cajas':'Total del pedido'}</span><b>${money(order.total)} <small>COP</small></b></p><p class="dp-payment-method"><span>Forma de pago</span><strong>${esc(order.paymentMethod)}</strong></p>${order.paymentValue?`<button class="dp-payment-copy" type="button" data-dp-copy-payment aria-label="Copiar dato de ${esc(order.paymentMethod)}" title="Copiar dato de pago"><span>${esc(order.paymentValue)}</span><svg viewBox="0 0 24 24" aria-hidden="true" class="dp-action-icon"><rect x="8" y="3" width="8" height="4" rx="1"/><path d="M8 5H5v16h14V5h-3"/></svg></button>`:''}</div>
           <p class="dp-muted">Turno ${Number(order.queuePosition)||1}${order.handledByName?' · Atendido por '+esc(order.handledByName):''}</p>
         </aside>
       </div>
@@ -390,6 +390,18 @@
     $('#dp-delete-order').disabled=!!orderWrites.get(id)?.pending;
     const whatsapp=$('#dp-order-detail .dp-whatsapp-order');
     if(whatsapp){whatsapp.textContent='WHATSAPP';whatsapp.insertAdjacentHTML('afterbegin','<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M20.5 3.5A11.8 11.8 0 0 0 1.9 17.7L.2 24l6.5-1.7A11.8 11.8 0 0 0 24 11.9c0-3.2-1.2-6.1-3.5-8.4ZM12 21.7a9.8 9.8 0 0 1-5-1.4l-.4-.2-3.9 1 1-3.8-.2-.4A9.8 9.8 0 1 1 12 21.7Zm5.4-7.3c-.3-.1-1.7-.8-2-.9-.2-.1-.4-.1-.6.2-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1a8 8 0 0 1-3.9-3.4c-.3-.4.3-.4.8-1.4.1-.2.1-.4 0-.6l-.9-2.1c-.2-.6-.5-.5-.7-.5H8c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.7 1.2 2.9c.1.2 2 3 4.8 4.2 1.8.8 2.5.9 3.4.8.6-.1 1.7-.7 1.9-1.4.3-.7.3-1.3.2-1.4-.1-.1-.3-.2-.6-.3Z"/></svg>');}
+    const copyPayment=$('#dp-order-detail [data-dp-copy-payment]');
+    if(copyPayment)copyPayment.onclick=async()=>{
+      if(!canOrders()||window.DonPierosSessionGuard&&!window.DonPierosSessionGuard.ensureActive())return;
+      copyPayment.disabled=true;
+      try{
+        const value=String(order.paymentValue).replace(/^\s*🔑\s*/u,'').trim();
+        await api().copyText(value);
+        copyPayment.dataset.copied='';copyPayment.title='Copiado';copyPayment.setAttribute('aria-label','Dato copiado. Volver a copiar');
+        notify('Dato de pago copiado.');
+      }catch(_){notify('No se pudo copiar. Selecciona el dato para copiarlo manualmente.',true);}
+      finally{copyPayment.disabled=false;}
+    };
     const timing=orderDetails().readTime(order.notes),noteParagraph=$('#dp-order-detail .dp-notes p');
     if(noteParagraph){noteParagraph.textContent=timing.notes;noteParagraph.parentElement.hidden=!timing.notes;$('#dp-order-detail .dp-detail-lines').before(noteParagraph.parentElement);}
     if(['nueva','atendiendo','lista'].includes(order.status)){

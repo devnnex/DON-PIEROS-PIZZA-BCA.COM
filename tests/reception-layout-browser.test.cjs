@@ -27,6 +27,7 @@ test('comandas web y de mesero: resumen arriba, acciones juntas y tiempo despleg
   });
   for(const file of ['style.css','online-admin.css','waiter-orders.css'])await page.addStyleTag({path:path.join(root,file)});
   for(const file of ['date-format.js','order-labels.js','order-details.js','packaging.js','online-admin.js','waiter-orders.js'])await page.addScriptTag({path:path.join(root,file)});
+  await page.evaluate(()=>{DonPierosAdmin.copyText=async value=>{window.copiedPayment=value;};});
   await page.waitForSelector('#staffIndividualSalesGrid [data-dp-order="DP-test-staff"]');
   const card=page.locator('#staffIndividualSalesGrid [data-dp-order="DP-test-staff"]');
   assert.doesNotMatch(await card.innerText(),/DP-test/);
@@ -38,6 +39,9 @@ test('comandas web y de mesero: resumen arriba, acciones juntas y tiempo despleg
   for(const id of ['DP-test-staff','DP-test-web']){
    await page.locator(`[data-dp-order="${id}"] [data-dp-view]`).first().click();
    const dialog=page.locator('#dp-order-dialog');
+   await dialog.locator('[data-dp-copy-payment]').click();
+   assert.equal(await page.evaluate(()=>window.copiedPayment),'@yadir31202','Copia la llave sin el icono decorativo.');
+   assert.equal(await dialog.locator('[data-dp-copy-payment] svg').count(),1,'El portapapeles es visible junto al dato.');
    assert.equal(await dialog.locator('.order-time-disclosure').evaluate(n=>n.open),false);
    assert.equal(await dialog.locator('#dp-order-time-form').isVisible(),false);
    assert.equal(await dialog.locator('#dp-change-order-stage').count(),0,'No hay selector de estado ocupando espacio sobre las acciones.');

@@ -94,8 +94,20 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
    const heading=form.querySelector('.section-head').getBoundingClientRect(),summary=form.querySelector('.payment-summary').getBoundingClientRect();
    return summary.top-heading.bottom;
   });
-  assert.ok(paymentHeadingGap<=16,'El resumen sigue al título sin un bloque vacío intermedio.');
+  assert.ok(paymentHeadingGap<=8,'El resumen sigue al título sin un bloque vacío intermedio.');
   assert.equal(await page.locator('#paymentAbonoSummary').isVisible(),false,'Los abonos vacíos no ocupan espacio.');
+  for(const kind of ['table','web']){
+   await page.evaluate(kind=>{
+    const original=saleTest.state.sessions.find(row=>row.id==='walk-in-test');
+    const session={...original,id:'spacing-'+kind,local_only:false,table_id:kind==='table'?'spacing-table':null,restaurant_tables:kind==='table'?{table_number:1,table_name:'Mesa 1'}:null,sale_channel:kind==='table'?'table':'walk_in',web_order_id:kind==='web'?'DP-spacing':null};
+    saleTest.state.sessions.push(session);document.querySelector('#paymentDialog').close();saleTest.openPaymentDialog(session.id);
+   },kind);
+   assert.ok(await page.locator('#paymentForm').evaluate(form=>form.querySelector('.payment-summary').getBoundingClientRect().top-form.querySelector('.section-head').getBoundingClientRect().bottom)<=8,`Cobrar ${kind}: tampoco reserva un espacio vacío.`);
+  }
+  await page.evaluate(()=>{
+   document.querySelector('#paymentDialog').close();saleTest.state.sessions=saleTest.state.sessions.filter(row=>!row.id.startsWith('spacing-'));saleTest.openPaymentDialog('walk-in-test');
+  });
+  await page.locator('#paymentDialog').screenshot({path:path.join(root,`artifacts/cobro-compacto-${width}.png`)});
   assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'LAURA');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567');

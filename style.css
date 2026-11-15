@@ -3735,9 +3735,11 @@ button:disabled {
 
 .payment-modal { width: min(96vw, 650px); }
 .payment-card { max-height: min(92vh, 820px); overflow-y: auto; }
-#paymentForm > .section-head { margin-bottom: 0; }
+#paymentForm { align-content: start; }
+.payment-overview { display: grid; gap: .5rem; align-content: start; }
+.payment-overview > .section-head { margin-bottom: 0; }
 #paymentAbonoSummary { margin: 0; }
-#paymentAbonoSummary:empty { display: none; }
+#paymentAbonoSummary:empty,#paymentAbonoSummary[hidden] { display: none !important; }
 .payment-summary {
   display: grid;
   grid-template-columns: 1fr auto;

@@ -6,11 +6,12 @@ const {chromium}=require('playwright-core');
  const server=http.createServer((req,res)=>{
   const url=new URL(req.url,'http://localhost');res.setHeader('Cache-Control','max-age=600');
   if(url.pathname==='/favicon.ico'){res.statusCode=204;return res.end();}
-  if(url.pathname==='/service-worker.js'){res.setHeader('Content-Type','text/javascript');return res.end(worker.replaceAll('20261030-v33',revision));}
+  if(url.pathname==='/service-worker.js'){res.setHeader('Content-Type','text/javascript');return res.end(worker.replace(/don-pieros-assets-[^"\s]+/,`don-pieros-assets-${revision}`));}
   if(url.pathname==='/pwa-updates.js'){res.setHeader('Content-Type','text/javascript');return res.end(updater);}
   if(url.pathname==='/app-release.json'){res.setHeader('Content-Type','application/json');return res.end(JSON.stringify({version:revision}));}
   if(url.pathname==='/fixture.js'){res.setHeader('Content-Type','text/javascript');return res.end(`window.assetVersion='${revision}';`);}
-  visits++;res.setHeader('Content-Type','text/html');res.end(`<!doctype html><meta name="app-version" content="${revision}"><title>PWA QA</title><script defer src="pwa-updates.js?v=1"></script><script defer src="fixture.js?v=${revision}"></script><p id="phone">${revision==='qa1'?'3102241444':'3138367511 · 3185536604'}</p><form id="draft"><input name="customer"></form>`);
+  if(req.headers['sec-fetch-mode']==='navigate')visits++;
+  res.setHeader('Content-Type','text/html');res.end(`<!doctype html><meta name="app-version" content="${revision}"><title>PWA QA</title><script defer src="pwa-updates.js?v=1"></script><script defer src="fixture.js?v=${revision}"></script><p id="phone">${revision==='qa1'?'3102241444':'3138367511 · 3185536604'}</p><form id="draft"><input name="customer"></form>`);
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const base='http://127.0.0.1:'+server.address().port;

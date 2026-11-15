@@ -1055,6 +1055,7 @@ const App = (() => {
     syncAdminSectionAccess();
     if (section === "tips" && !tipsEnabled()) section = canAccessAdminSection("accounts") ? "accounts" : firstAllowedAdminSection();
     if (!canAccessAdminSection(section)) section = firstAllowedAdminSection();
+    if (state.activeAdminSection !== section) window.dispatchEvent(new Event('donpieros-section-change'));
     state.activeAdminSection = section;
     $$("[data-admin-section]").forEach((el) => {
       el.classList.toggle("section-active", el.dataset.adminSection === section);
@@ -8486,6 +8487,11 @@ const App = (() => {
     const recordsTarget = $("#incomeRecords");
     const summaryTarget = $("#incomeFilterSummary");
     if (!kpis || !payments || !recordsTarget) return;
+    const expandedSales = state.expandedIncomeSales ||= new Set();
+    recordsTarget.querySelectorAll?.('details[data-income-sale]').forEach(details => {
+      if (details.open) expandedSales.add(details.dataset.incomeSale);
+      else expandedSales.delete(details.dataset.incomeSale);
+    });
     const report = state.incomeReport;
     const shiftSignature = report ? JSON.stringify({
       filters: report.filters, totals: report.totals, records: report.records,
@@ -8554,7 +8560,7 @@ const App = (() => {
               <div class="income-record-total"><small>Total</small><strong>${money(record.total)}</strong><span class="income-record-profit">Ganancia ${money(record.profit)}</span></div>
             </div>
             <div class="income-payment-badges">${paymentBadges || "<span>Medio no registrado</span>"}</div>
-            <details>
+            <details data-income-sale="${escapeHTML(record.saleId)}"${expandedSales.has(String(record.saleId)) ? ' open' : ''}>
               <summary>${icon("list-collapse", 15)} Ver productos y desglose</summary>
               <div class="income-record-detail">
                 <ul>${itemRows || "<li><span>Sin detalle de productos</span></li>"}</ul>
@@ -9384,8 +9390,13 @@ const App = (() => {
     if (!dialog || !target || !state.activeAccountDetailId) return;
     const session = state.sessions.find((entry) => entry.id === state.activeAccountDetailId);
     if (!session) {
-      if (dialog.open) dialog.close();
-      state.activeAccountDetailId = "";
+      if (!target.querySelector('.account-detail-update-status')) {
+        const status = document.createElement('p');
+        status.className = 'account-detail-update-status'; status.setAttribute('role', 'status');
+        status.textContent = 'La cuenta se está verificando. Conservamos el desglose que estás consultando.';
+        target.append(status);
+      }
+      target.querySelectorAll('.account-detail-actions button,.account-detail-line button').forEach(button => { button.disabled = true; });
       return;
     }
     const items = newestSessionItems(session);
@@ -9437,6 +9448,9 @@ const App = (() => {
   const openAccountDetailDialog = (sessionId) => {
     const dialog = $("#accountDetailDialog");
     if (!dialog) return;
+    if (dialog.open && state.activeAccountDetailId === String(sessionId || "")) {
+      state.activeAccountDetailId = ""; dialog.close(); return;
+    }
     state.activeAccountDetailId = String(sessionId || "");
     renderAccountDetail();
     if (!dialog.open) dialog.showModal();
@@ -10235,7 +10249,11 @@ const App = (() => {
     const total = Math.max(0, baseTotal + tip - paid);
     state.activePaymentTip = tip;
     state.activePaymentTotal = total;
-    if ($("#paymentAbonoSummary")) $("#paymentAbonoSummary").textContent = paid ? "Consumo: " + money(baseTotal) + " · Abonos: −" + money(paid) + " · Saldo por cobrar: " + money(total) : "";
+    const abonoSummary = $("#paymentAbonoSummary");
+    if (abonoSummary) {
+      abonoSummary.hidden = !paid;
+      abonoSummary.textContent = paid ? "Consumo: " + money(baseTotal) + " · Abonos: −" + money(paid) + " · Saldo por cobrar: " + money(total) : "";
+    }
     if ($("#paymentTotal")) $("#paymentTotal").textContent = money(total);
     if ($("#paymentTotalHint")) $("#paymentTotalHint").textContent = enabled && !choice
       ? "Selecciona si el cliente paga con o sin propina para continuar."
@@ -11142,6 +11160,7 @@ const App = (() => {
     const preview = $("#tableConsumptionPreview");
     const actions = $("#tableSessionActions");
     if (!preview || !actions) return;
+    const scrollTop = preview.scrollTop;
     const items = session ? newestSessionItems(session) : [];
     const productCount = items.reduce((total, item) => total + Number(item.quantity || 0), 0);
     const emptyAccount = Boolean(session) && !items.length && sessionTotal(session) <= 0;
@@ -11164,6 +11183,7 @@ const App = (() => {
     if (session) preview.innerHTML += abonoRowsHtml(session) + (sessionPaid(session) ? `<div class="account-abono-summary">Saldo pendiente: ${money(sessionBalance(session))}</div>` : "");
     preview.dataset.sessionSnapshot=JSON.stringify(session?.session_items||[]);
     if (!quickCheckout) setTableConsumptionPreviewVisible(Boolean(previewWasVisible));
+    preview.scrollTop = scrollTop;
   };
 
   const notifyWaiterOrder = (session, items) => {
@@ -12331,7 +12351,38 @@ const App = (() => {
     }
   };
 
+  const bindReadingDetails = () => {
+    if (bindReadingDetails.bound) return;
+    bindReadingDetails.bound = true;
+    const selector = 'details[data-income-sale][open],.alert-request-details[open],.order-time-disclosure[open]';
+    const closeDetails = details => {
+      details.open = false;
+      if (details.dataset.incomeSale) state.expandedIncomeSales?.delete(details.dataset.incomeSale);
+    };
+    document.addEventListener('toggle', event => {
+      const details = event.target;
+      if (!details.isConnected || !details.matches?.('details[data-income-sale]')) return;
+      const expanded = state.expandedIncomeSales ||= new Set();
+      if (details.open) expanded.add(details.dataset.incomeSale);
+      else expanded.delete(details.dataset.incomeSale);
+    }, true);
+    document.addEventListener('click', event => {
+      document.querySelectorAll(selector).forEach(details => {
+        if (details.open && !details.contains(event.target)) closeDetails(details);
+      });
+      const dialog = $('#accountDetailDialog');
+      if (dialog?.open && event.target === dialog) { state.activeAccountDetailId = ''; dialog.close(); }
+    }, true);
+    window.addEventListener('donpieros-section-change', () => {
+      state.expandedIncomeSales?.clear();
+      document.querySelectorAll(selector).forEach(closeDetails);
+      state.activeAccountDetailId = '';
+      $('#accountDetailDialog')?.close();
+    });
+  };
+
   const bindAdmin = () => {
+    bindReadingDetails();
     $("#toggleOpenBalance")?.addEventListener("click", () => {
       openBalanceHidden = !openBalanceHidden;
       try { localStorage.setItem(OPEN_BALANCE_PRIVACY_KEY, openBalanceHidden ? "1" : "0"); } catch (_) { /* La preferencia se mantiene en memoria. */ }
@@ -13703,18 +13754,19 @@ const App = (() => {
 
   const copyTextToClipboard = async (text) => {
     if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return;
+      try { await navigator.clipboard.writeText(text); return; } catch (_) { /* Try selection inside the active dialog. */ }
     }
+    const focused = document.activeElement;
     const field = document.createElement("textarea");
     field.value = text;
     field.setAttribute("readonly", "");
     field.style.position = "fixed";
     field.style.opacity = "0";
-    document.body.appendChild(field);
-    field.select();
-    document.execCommand("copy");
-    field.remove();
+    (document.querySelector('dialog[open]') || document.body).appendChild(field);
+    try {
+      field.select(); field.setSelectionRange(0, field.value.length);
+      if (!document.execCommand("copy")) throw Error('No se pudo copiar el dato.');
+    } finally { field.remove(); focused?.focus?.({ preventScroll: true }); }
   };
 
   const shareUserCredentials = async (id) => {
@@ -14264,7 +14316,7 @@ const App = (() => {
     },
     getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
     cancelWaiterRemoval:id=>{state.optimisticRequestStates.delete(id);void refreshAdminNow();},
-    notify: toast, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
+    notify: toast, copyText: copyTextToClipboard, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   window.addEventListener('don-pieros-before-update', event => {
     if (state.paymentProcessing || checkoutSubmissionBusy || checkoutRecoveryBusy
       || state.appsScriptOutboxBusy || state.consumptionDrafts?.length) event.preventDefault();

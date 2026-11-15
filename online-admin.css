@@ -172,6 +172,12 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 #dp-order-dialog .dp-order-summary .dp-add-product { min-height:30px; padding:6px 9px; font-size:11px; border-radius:7px; }
 #dp-order-dialog .dp-order-customer { padding:14px; border-radius:13px; }
 #dp-order-dialog .dp-order-summary > .dp-muted,#dp-order-dialog .dp-totals > small { color:#514838; font-weight:600; }
+#dp-order-dialog .dp-payment-copy { display:inline-flex; align-items:center; gap:8px; max-width:100%; margin:0; padding:3px 0; border:0; border-radius:5px; background:transparent; color:#514838; font:inherit; font-size:13px; font-weight:600; text-align:left; cursor:pointer; }
+#dp-order-dialog .dp-payment-copy span { overflow-wrap:anywhere; user-select:text; }
+#dp-order-dialog .dp-payment-copy svg { width:18px; height:18px; color:#1765ce; }
+#dp-order-dialog .dp-payment-copy[data-copied] svg { color:#168344; }
+#dp-order-dialog .dp-payment-copy:hover { color:#1765ce; }
+#dp-order-dialog .dp-payment-copy:focus-visible { outline:2px solid #1765ce; outline-offset:3px; }
 #dp-order-dialog .dp-order-actions { margin-top:12px; padding-top:12px; gap:8px; }
 #dp-order-dialog .dp-order-actions :is(button,a) { min-height:65px; flex-direction:column; padding:10px 6px; border-radius:7px; font-size:11px; text-transform:uppercase; }
 #dp-order-dialog .dp-order-actions .dp-action-icon,#dp-order-dialog .dp-whatsapp-order svg { width:20px; height:20px; }
