@@ -224,7 +224,7 @@
       const listChanged=result.changed!==false&&(firstLoad||result.revision!==revision||ordersView!==view);
       const activeChanged=active.changed!==false&&(firstLoad||active.revision!==dashboardRevision);
       if(activeChanged){
-        if(active.orders.length>=active.total)for(const previous of dashboardOrders)if(!active.orders.some(order=>order.id===previous.id&&order.status==='nueva'))window.DonPierosReception?.dismiss('order:'+previous.id);
+        if(active.orders.length>=active.total)for(const previous of dashboardOrders)if(!active.orders.some(order=>order.id===previous.id))window.DonPierosReception?.dismiss('order:'+previous.id);
         dashboardOrders=active.orders;dashboardRevision=active.revision;searchEpoch++;searchCache.clear();searchJobs.clear();
       }
       const arrived=firstLoad?[]:overlayOrders(dashboardOrders).filter(o=>!deletions()?.hidden('web-order',o.id)&&o.status==='nueva'&&!seenOrderIds.has(o.id)&&Number(o.sequence)>newestOrderSequence);
@@ -236,11 +236,16 @@
       for(const order of overlayOrders(dashboardOrders))if(!deletions()?.hidden('web-order',order.id)&&receivedOrderSignals.has(order.id))confirmReception(order.id);
       if(arrived.length&&api().getUser()?.role!=='waiter'){
         api().announceWebOrders(arrived);
-        for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,
+        for(const order of arrived)window.DonPierosReception?.show({key:'order:'+order.id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,createdAt:order.createdAt,
           detail:`${sourceLabel(order)} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,
           action:()=>openOrder(order.id)});
       }
-      for(const order of dashboardOrders)if(order.status!=='nueva')window.DonPierosReception?.dismiss('order:'+order.id);
+      for(const order of overlayOrders(dashboardOrders)){
+        const key='order:'+order.id,queue=window.DonPierosReception;
+        if(['nueva','atendiendo','lista'].includes(order.status)&&(order.status==='nueva'||queue?.has?.(key)))queue?.show({key,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,createdAt:order.createdAt,
+          detail:sourceLabel(order)+' · '+fulfillmentLabel(order.fulfillment)+'\n'+order.items.map(item=>item.quantity+' × '+item.name).join(', ')+'\n'+money(order.total),action:()=>openOrder(order.id)});
+        else if(['cobrada','cancelada','despachada','eliminada'].includes(order.status))queue?.dismiss(key);
+      }
       if(activeChanged){void ensureSearchRows('dashboard');void ensureSearchRows('list');}
       $('#dp-orders-status').textContent='Conectado · Recepción automática activa · '+window.DonPierosDates.time(Date.now());
     }catch(error){if(controller.signal.aborted||controller!==ordersController)return;$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}
@@ -278,7 +283,7 @@
     if(!canOrders()||orderWrites.get(order.id)?.pending)return;
     const token=api().getToken(),write={before:order,after,pending:true};
     orderEpoch++;orderWrites.set(order.id,write);
-    window.DonPierosReception?.dismiss('order:'+order.id);$('#dp-order-dialog').close();repaintOrders();
+    if(!after||['cobrada','cancelada','despachada','eliminada'].includes(after.status))window.DonPierosReception?.dismiss('order:'+order.id);$('#dp-order-dialog').close();repaintOrders();
     try{
       const result=await request(action,{id:order.id,version:order.version,...payload});
       if(token!==api().getToken())return;
@@ -363,9 +368,9 @@
   }
 
   function openOrder(id){
-    if(!canOrders())return;
-    if(checkoutPending(id))return;
-    const order=findOrder(id);if(!order)return;
+    if(!canOrders())return false;
+    if(checkoutPending(id))return false;
+    const order=findOrder(id);if(!order)return false;
     clearTimeout(paymentCopyTimer);paymentCopyTimer=0;
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     $('#dp-order-detail').innerHTML=`
@@ -443,7 +448,8 @@
     $('#dp-order-detail h2').id='dp-order-title';
     dialog.querySelector('.dp-dialog-card').scrollTop=0;
     if(!dialog.open)dialog.showModal();
-    window.DonPierosReception?.dismiss('order:'+id);
+    window.DonPierosReception?.mark?.('order:'+id,'viewed');
+    return true;
   }
   window.addEventListener('donpieros-reception-filter',()=>{
     const board=window.DonPierosReceptionBoard?.getState();if(!board)return;
@@ -528,7 +534,7 @@
       </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',orderDetails().groupComandaItems(order.items),order.notes,order);
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
-    void window.DonPierosThermal.print(popup,width).catch(error=>{
+    return window.DonPierosThermal.print(popup,width).then(()=>window.DonPierosReception?.mark?.('order:'+order.id,'printed')).catch(error=>{
       notify('No se pudo preparar la impresión. '+String(error.message||error),true);
     });
   }
@@ -713,7 +719,7 @@
         dashboardOrders=[...(active(order)?[order]:[]),...dashboardOrders.filter(row=>row.id!==id)].sort((a,b)=>b.sequence-a.sequence);
         if(order.status==='nueva'&&!seenOrderIds.has(id)&&api().getUser()?.role!=='waiter'){
           api().announceWebOrders([order]);
-          window.DonPierosReception?.show({key:'order:'+id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,
+          window.DonPierosReception?.show({key:'order:'+id,kind:order.source==='staff_walk_in'?'individual':'order',title:order.customerName,createdAt:order.createdAt,
             detail:`${id} · ${fulfillmentLabel(order.fulfillment)}\n${order.items.map(item=>`${item.quantity} × ${item.name}`).join(', ')}\n${money(order.total)}`,action:()=>openOrder(id)});
         }
         seenOrderIds.add(id);
@@ -721,7 +727,7 @@
         orders=orders.filter(row=>row.id!==id);dashboardOrders=dashboardOrders.filter(row=>row.id!==id);
         if(previous&&['nueva','atendiendo','lista'].includes(previous.status))activeCount=Math.max(0,activeCount-1);
       }
-      if(!order||order.status!=='nueva')window.DonPierosReception?.dismiss('order:'+id);
+      if(!order||['cobrada','cancelada','despachada','eliminada'].includes(order.status))window.DonPierosReception?.dismiss('order:'+id);
       revision='';dashboardRevision='';searchEpoch++;searchCache.clear();repaintOrders();
       if(order&&findOrder(id))confirmReception(id);
     }catch(_){/* Older deployments retain the paginated reception fallback. */}
@@ -766,7 +772,17 @@
     }
   });
   window.addEventListener('donpieros-individual-saved',()=>{individualRevision='';signal('individual-changed');if(busy)ordersReloadRequested=true;else void loadOrders();});
-  mount();setInterval(tick,3000);void tick();
+  async function openQueuedOrder(entry){
+    const id=entry.key.slice('order:'.length);
+    if(!findOrder(id)){
+      const token=api()?.getToken(),result=await request('dp_get_order',{id});
+      if(token!==api()?.getToken())return false;
+      if(!result.order||['cobrada','cancelada','despachada','eliminada'].includes(result.order.status)){window.DonPierosReception?.dismiss(entry.key);return;}
+      orderWrites.set(id,{before:null,after:result.order,pending:false});
+    }
+    return openOrder(id);
+  }
+  mount();window.DonPierosReception?.register?.('order',openQueuedOrder);window.DonPierosReception?.register?.('individual',openQueuedOrder);setInterval(tick,3000);void tick();
   window.addEventListener('donpieros-session-change',()=>void tick());
   window.addEventListener('storage',event=>{if(event.key!=='don_pieros_order_signal_v1'||!event.newValue)return;try{const notice=JSON.parse(event.newValue);if(Math.abs(Date.now()-notice.at)<15000)receiveOrderSignal(notice);}catch(_){}});
   window.addEventListener('focus',()=>void tick());window.addEventListener('online',()=>void tick());document.addEventListener('visibilitychange',()=>{if(!document.hidden)void tick();});

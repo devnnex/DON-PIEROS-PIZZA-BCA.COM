@@ -4,6 +4,10 @@
 .dp-reception-notices{position:fixed;top:max(18px,env(safe-area-inset-top));right:max(18px,env(safe-area-inset-right));z-index:1900;width:min(370px,calc(100vw - 28px));display:grid;gap:10px;max-height:calc(100dvh - 36px);overflow:auto;pointer-events:none;scrollbar-width:thin;scrollbar-color:#efc642 transparent}
 .dp-reception-notice{position:relative;padding:19px 20px 17px;border:1px solid #efcc74;border-left:5px solid #d71920;border-radius:18px;background:linear-gradient(120deg,#fffdf4,#fff2c7);color:#211c10;box-shadow:0 12px 38px #291b0026;pointer-events:auto;animation:dp-notice-enter .3s ease-out}
 .dp-notice-label{display:block;font-size:10px;font-weight:800;letter-spacing:.13em;color:#a71d22;margin-bottom:7px}
+.dp-notice-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
+.dp-notice-head .dp-notice-label{margin-bottom:0}
+.dp-notice-number{flex:none;padding:4px 8px;border-radius:7px;background:#fff;color:#263447;font-size:11px;font-weight:800;border:1px solid #d9e1eb}
+.dp-notice-progress{display:block;margin:-4px 0 12px;color:#354636;font-size:11px;font-weight:650;line-height:1.45}
 .dp-reception-notice:is(.is-waiter,.is-money){border-color:#a4d5b7;border-left-color:#218653;background:linear-gradient(120deg,#f7fff9,#e1f4e8);box-shadow:0 12px 38px #164e2d20}
 .dp-reception-notice:is(.is-waiter,.is-money) .dp-notice-label{color:#196a41}
 .dp-reception-notice:is(.is-waiter,.is-money) button{background:#218653;color:#fff}

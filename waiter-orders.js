@@ -483,6 +483,13 @@
   }
   function renderReception(){
     if(waiter()||!allowed()){reception.hidden=true;return;}reception.hidden=false;
+    const queue=window.DonPierosReception;
+    for(const order of orders.filter(order=>!closedAccountIds.has(order.session_id)&&order.items.length&&!isRemoved(order))){
+      const key='request:'+order.id;
+      if(!order.accepted_at||queue?.has?.(key))queue?.show({key,kind:'waiter',title:tableLabel(order.table),
+        detail:`${order.waiter_name||'Mesero'} · ${order.items.map(item=>`${item.quantity} × ${item.item_name}`).join(', ')}`,
+        createdAt:order.created_at||order.updated_at,accepted:!!order.accepted_at,action:()=>openRequest(order.id)});
+    }
     const board=window.DonPierosReceptionBoard;
     const visible=orders.filter(order=>!closedAccountIds.has(order.session_id)&&order.items.length&&!isRemoved(order)&&(!board||board.matches('table',order)));
     if(board)visible.sort(board.compare);
@@ -504,7 +511,7 @@
       $('#dw-time-value').oninput=event=>timeEdits.set(id,event.target.value);
       $('#dw-time-observations').oninput=event=>observationEdits.set(id,event.target.value);
       $('#dw-time-form').onsubmit=event=>{event.preventDefault();void saveKitchenTime(id);};}
-    window.DonPierosReception?.dismiss('request:'+id);
+    window.DonPierosReception?.mark?.('request:'+id,'viewed');
     if(!$('#dw-kitchen-dialog').open)$('#dw-kitchen-dialog').showModal();
   }
   async function saveKitchenTime(id){
@@ -525,6 +532,7 @@
       const {data,error}=await rpc('dp_accept_waiter_comanda',{p_comanda_id:id,p_expected_version:order.version});if(error)throw error;
       if(currentToken!==api().getToken())return;
       if(!data?.comanda?.accepted_at)throw Error('No pudimos confirmar que se agregaron los productos. Intenta de nuevo.');
+      window.DonPierosReception?.mark?.('request:'+id,'accepted');
       if(managerOpen===id){managerOpen='';$('#dw-kitchen-dialog').close();}button.remove();rememberResult(data);api().applyWaiterResult(data);void loadOrders();
       const accepted=orders.find(row=>row.id===id),printItems=hadTableConsumption?newKitchenItems(accepted):[];
       if(hadTableConsumption&&printItems.length){kitchenPrintItems.set(id,printItems);showKitchen(id);api().notify('Comanda aceptada. Consumo agregado a la mesa; comanda lista para imprimir.');}
@@ -577,7 +585,10 @@
       if(!items.length)throw Error('Esta mesa todavía no tiene productos para imprimir.');
       const notes=tableOrders.map(order=>{const info=details().readTime(order.notes);return [info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).length?`${order.waiter_name||'Comanda'}: `+[info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).join(' · '):'';}).filter(Boolean).join('\n');
       let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
-      if(!popup.closed)await renderKitchenPrint(popup,{table:operations().tables.find(table=>table.id===tableId)||session.restaurant_tables,items,notes,waiter_name:[...new Set(tableOrders.map(order=>order.waiter_name).filter(Boolean))].join(', ')||session.assigned_waiter?.full_name||'',updated_at:new Date().toISOString()},width,true);
+      if(!popup.closed){
+        await renderKitchenPrint(popup,{table:operations().tables.find(table=>table.id===tableId)||session.restaurant_tables,items,notes,waiter_name:[...new Set(tableOrders.map(order=>order.waiter_name).filter(Boolean))].join(', ')||session.assigned_waiter?.full_name||'',updated_at:new Date().toISOString()},width,true);
+        tableOrders.forEach(order=>window.DonPierosReception?.mark?.('request:'+order.id,'printed'));
+      }
     }catch(error){if(!popup.closed)popup.close();api().notify(errorText(error),'error');}
     finally{tablePrints.delete(tableId);}
   }
@@ -588,7 +599,7 @@
     const popup=window.open('','_blank','width=480,height=720');
     if(!popup){api().notify('Permite las ventanas emergentes para imprimir la comanda.','error');return;}
     const printable=kitchenPrintItems.has(id)?{...order,items:kitchenPrintItems.get(id)}:order;
-    void renderKitchenPrint(popup,printable,printWidth).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
+    void renderKitchenPrint(popup,printable,printWidth).then(()=>window.DonPierosReception?.mark?.('request:'+id,'printed')).catch(error=>api()?.notify('No se pudo preparar la impresión. '+String(error.message||error),'error'));
   }
   function finishTableOrderFlow(){
     ['dw-product-dialog','dw-review-dialog','dw-catalog-dialog','dw-kitchen-dialog'].forEach(dialogId=>{const dialog=$('#'+dialogId);if(dialog?.open)dialog.close();});
@@ -796,6 +807,7 @@
     const sessionId=event.detail.sessionId;
     closedAccountIds.add(sessionId);
     const closedIds=new Set(orders.filter(order=>order.session_id===sessionId).map(order=>order.id));
+    for(const id of closedIds)window.DonPierosReception?.dismiss('request:'+id);
     orders=orders.filter(order=>order.session_id!==sessionId);
     for(const [id,write] of localWrites)if(write.order.session_id===sessionId)localWrites.delete(id);
     if(closedIds.has(managerOpen)){$('#dw-kitchen-dialog').close();managerOpen='';}
@@ -803,5 +815,6 @@
   });
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});
+  window.DonPierosReception?.register?.('waiter',entry=>openRequest(entry.key.slice('request:'.length)));
   window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,printCompleteTable,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();
