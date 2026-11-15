@@ -40,6 +40,13 @@ test('comandas web y de mesero: resumen arriba, acciones juntas y tiempo despleg
    const dialog=page.locator('#dp-order-dialog');
    assert.equal(await dialog.locator('.order-time-disclosure').evaluate(n=>n.open),false);
    assert.equal(await dialog.locator('#dp-order-time-form').isVisible(),false);
+   assert.equal(await dialog.locator('#dp-change-order-stage').count(),0,'No hay selector de estado ocupando espacio sobre las acciones.');
+   const totalAlignment=await dialog.locator('.dp-total').evaluate(n=>{
+    const label=n.querySelector('span').getBoundingClientRect(),price=n.querySelector('b').getBoundingClientRect();
+    return {labelRight:label.right,priceLeft:price.left,centerDifference:Math.abs((label.top+label.bottom-price.top-price.bottom)/2)};
+   });
+   assert.ok(totalAlignment.priceLeft>totalAlignment.labelRight,'El precio queda a la derecha de la etiqueta.');
+   assert.ok(totalAlignment.centerDifference<1,'La etiqueta y el precio comparten la misma fila.');
    const layout=await dialog.evaluate(n=>{
     const summary=n.querySelector('.dp-order-summary'),actions=summary.querySelector('.dp-order-actions'),customer=summary.querySelector('.dp-order-customer'),toolbar=summary.querySelector('.dp-status-actions');
     const buttons=[...actions.querySelectorAll('button,a')].map(b=>({x:b.getBoundingClientRect().x,y:b.getBoundingClientRect().y}));

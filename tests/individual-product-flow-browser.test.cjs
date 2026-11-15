@@ -90,6 +90,12 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   await page.locator('#dw-catalog-dialog [data-dw-close]').click();
   assert.equal(await page.locator('#paymentDialog').evaluate(node=>node.open),false,'Cerrar la carta no abre el cobro.');
   await page.evaluate(()=>saleTest.openPaymentDialog('walk-in-test'));
+  const paymentHeadingGap=await page.locator('#paymentForm').evaluate(form=>{
+   const heading=form.querySelector('.section-head').getBoundingClientRect(),summary=form.querySelector('.payment-summary').getBoundingClientRect();
+   return summary.top-heading.bottom;
+  });
+  assert.ok(paymentHeadingGap<=16,'El resumen sigue al título sin un bloque vacío intermedio.');
+  assert.equal(await page.locator('#paymentAbonoSummary').isVisible(),false,'Los abonos vacíos no ocupan espacio.');
   assert.equal(await page.locator('#individualComandaFields,[name="individual_customer"],[name="individual_estimated_time"],[name="individual_observations"]').count(),0,'El cobro no repite los datos del producto.');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').customerName),'LAURA');
   assert.equal(await page.evaluate(()=>DonPierosAdmin.getIndividualDetails('walk-in-test').phone),'3001234567');
