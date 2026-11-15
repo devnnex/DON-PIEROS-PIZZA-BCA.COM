@@ -34,18 +34,18 @@
       const records = JSON.parse(localStorage.getItem(storageKey()) || '[]');
       if (Array.isArray(records)) for (const record of records) {
         if (!valid(record)) continue;
-        entries.set(record.key, {...record, action:null, node:null});
+        const entry = {...record, action:null, node:null};
+        finish(entry); entries.set(record.key,entry);
         ordinal = Math.max(ordinal, Number(record.ordinal) || 0);
       }
     } catch (_) { /* Rebuild the queue from the server's pending comandas. */ }
-    render(); return true;
+    render(); persist(); return true;
   }
   function updateCard(entry) {
     const card = entry.node;
     card.querySelector('strong').textContent = entry.title;
     card.querySelector('p').textContent = entry.detail;
-    const pending = [!entry.viewed && 'revisar', !entry.printed && 'imprimir', entry.kind === 'waiter' && !entry.accepted && 'agregar a la mesa'].filter(Boolean);
-    card.querySelector('.dp-notice-progress').textContent = 'Pendiente: ' + pending.join(' · ');
+    card.querySelector('.dp-notice-progress').textContent = 'Pendiente: abrir comanda';
     card.querySelector('button').disabled = !entry.action && !handlers.has(entry.kind);
   }
   function createCard(entry) {
@@ -116,7 +116,7 @@
     }
   }
   function finish(entry) {
-    if (entry.viewed && entry.printed && (entry.kind !== 'waiter' || entry.accepted)) entry.complete = true;
+    if (entry.viewed) entry.complete = true;
   }
   function mark(key,step) {
     if (!['viewed','printed','accepted'].includes(step) || !activate()) return;

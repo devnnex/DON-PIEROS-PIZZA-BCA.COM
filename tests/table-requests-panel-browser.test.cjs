@@ -47,6 +47,7 @@ test('las solicitudes permanecen en su panel, independientemente de filtros y no
   assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),1,'La notificación de comanda del mesero continúa funcionando.');
   await page.locator('.dp-reception-notice.is-waiter button').click();
   assert.equal(await page.evaluate(()=>window.openedWaiterRequest),'staff-comanda');
+  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),0,'Abrir la comanda retira solamente su aviso.');
   assert.equal(await page.evaluate(()=>writes.length),0,'Ver una comanda no acepta solicitudes de los clientes.');
   await page.evaluate(()=>DonPierosReception.show({key:'order:individual-test',kind:'individual',title:'Venta individual',detail:'Comanda de Laura',action:async()=>{}}));
   assert.equal(await page.locator('.dp-reception-notice.is-individual').count(),1,'Las ventas individuales conservan su notificación.');
@@ -59,14 +60,9 @@ test('las solicitudes permanecen en su panel, independientemente de filtros y no
   assert.equal(await page.locator('#alertsPanel .alert-card').count(),2,'El paso del tiempo no retira solicitudes.');
   await page.evaluate(async()=>{partialSnapshot=true;await requestTest.loadAdminData();requestTest.renderAlerts();});
   assert.equal(await page.locator('#alertsPanel .alert-card').count(),2,'Una respuesta parcial tampoco retira las pendientes.');
-  assert.equal(await page.locator('.dp-reception-notice').count(),2,'Las comandas tampoco desaparecen por tiempo o lecturas parciales.');
-  await page.evaluate(()=>{
-   DonPierosReception.mark('request:staff-comanda','printed');
-   DonPierosReception.mark('request:staff-comanda','accepted');
-   DonPierosReception.mark('order:individual-test','viewed');
-   DonPierosReception.mark('order:individual-test','printed');
-  });
-  assert.equal(await page.locator('.dp-reception-notice').count(),0,'Cada aviso termina al completar su propio flujo.');
+  assert.equal(await page.locator('.dp-reception-notice').count(),1,'El aviso que aún no se abre permanece pese al tiempo o lecturas parciales.');
+  await page.locator('.dp-reception-notice.is-individual button').click();
+  assert.equal(await page.locator('.dp-reception-notice').count(),0,'Cada aviso termina al abrir su comanda.');
   await page.locator('[data-alert-card="call-1"] [data-accept-request]').click();
   assert.equal(await page.locator('[data-alert-card="call-1"]').count(),0);
   assert.equal(await page.locator('[data-alert-card="message-2"]').count(),1,'Aceptar una solicitud conserva las demás.');

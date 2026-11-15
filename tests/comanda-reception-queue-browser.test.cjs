@@ -1,7 +1,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),http=require('node:http'),path=require('node:path');
 const {chromium}=require('playwright-core');
 const root=path.resolve(__dirname,'..');
-test('cola de comandas: orden, permanencia, pasos independientes y restauración',async()=>{
+test('cola de comandas: permanece hasta abrir, se retira individualmente y restaura los avisos pendientes',async()=>{
  const server=http.createServer((_req,res)=>{res.setHeader('Content-Type','text/html; charset=utf-8');res.end('<body data-page="admin"></body>');});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'});
@@ -28,34 +28,38 @@ test('cola de comandas: orden, permanencia, pasos independientes y restauración
   await other.evaluate(()=>DonPierosReception.register('waiter',async()=>{}));
   await page.evaluate(()=>DonPierosReception.show({key:'request:tabs',kind:'waiter',title:'Mesa 3'}));
   await other.waitForFunction(()=>DonPierosReception.has('request:tabs'));
-  await other.evaluate(()=>['viewed','printed','accepted'].forEach(step=>DonPierosReception.mark('request:tabs',step)));
+  await other.evaluate(()=>DonPierosReception.mark('request:tabs','viewed'));
   await page.waitForFunction(()=>!DonPierosReception.has('request:tabs'));
   assert.deepEqual(await keys(),['request:first','request:second','order:sale'],'Completar en otra pestaña sincroniza solo esa comanda.');
   await other.close();
   await page.clock.install();await page.clock.runFor(15*60000);
   await page.evaluate(()=>DonPierosReception.syncRequests([],{label:()=>'',body:()=>''}));
   assert.equal(await page.locator('.dp-reception-notice').count(),3,'El tiempo y una lectura vacía no borran la cola.');
+  await page.evaluate(()=>{DonPierosReception.mark('request:first','printed');DonPierosReception.mark('request:first','accepted');});
+  assert.equal(await page.locator('.dp-reception-notice').count(),3,'Imprimir o asignar sin abrir no retira el aviso.');
   await page.locator('[data-notice-key="request:first"] button').click();
-  await page.evaluate(()=>DonPierosReception.mark('request:first','printed'));
-  assert.equal(await page.locator('.dp-reception-notice').count(),3,'Ver e imprimir aún requiere agregar a la mesa.');
+  assert.deepEqual(await keys(),['request:second','order:sale'],'Abrir retira solamente el aviso de esa comanda.');
   await page.evaluate(()=>DonPierosReception.mark('request:second','accepted'));
   await page.reload();await init();
-  assert.deepEqual(await keys(),['request:first','request:second','order:sale'],'Recargar conserva todos los pendientes.');
-  await page.evaluate(()=>DonPierosReception.mark('request:first','accepted'));
-  assert.deepEqual(await keys(),['request:second','order:sale']);
+  assert.deepEqual(await keys(),['request:second','order:sale'],'Recargar conserva los avisos sin abrir.');
   await page.locator('[data-notice-key="request:second"] button').click();
-  assert.equal(await page.locator('.dp-reception-notice').count(),2,'Agregar primero no omite la impresión.');
-  await page.evaluate(()=>DonPierosReception.mark('request:second','printed'));
+  assert.deepEqual(await keys(),['order:sale'],'Abrir retira el aviso aunque todavía no se haya impreso.');
   await page.locator('[data-notice-key="order:sale"] button').click();
-  assert.equal(await page.locator('.dp-reception-notice').count(),1,'Ver una venta individual no la descarta.');
-  await page.evaluate(()=>DonPierosReception.mark('order:sale','printed'));
+  assert.equal(await page.locator('.dp-reception-notice').count(),0,'Abrir una venta individual también retira su aviso.');
   assert.deepEqual(await keys(),[]);
+  await page.evaluate(()=>{
+   const key=Object.keys(localStorage).find(key=>key.startsWith('dp-reception-queue-v1:'));
+   const records=JSON.parse(localStorage.getItem(key));
+   records.push({key:'request:previous-release',kind:'waiter',title:'Mesa 4',createdAt:new Date().toISOString(),ordinal:100,viewed:true,printed:false,accepted:false,complete:false});
+   localStorage.setItem(key,JSON.stringify(records));
+  });
   await page.reload();await init();
+  assert.deepEqual(await keys(),[],'Actualizar no devuelve avisos ya abiertos en la versión anterior.');
   await page.evaluate(()=>DonPierosReception.show({key:'request:first',kind:'waiter',title:'Mesa 9'}));
   assert.deepEqual(await keys(),[],'Una lectura antigua no revive una comanda terminada.');
   await page.evaluate(()=>{DonPierosReception.show({key:'request:failure',kind:'waiter',title:'Mesa 2',action:async()=>{throw Error('offline');}});});
   await page.locator('.dp-reception-notice button').click();
-  assert.match(await page.locator('.dp-notice-progress').innerText(),/revisar/,'Una apertura fallida no se marca revisada.');
+  assert.match(await page.locator('.dp-notice-progress').innerText(),/abrir/,'Una apertura fallida conserva el aviso pendiente.');
   await page.evaluate(()=>{user='other';DonPierosReception.register('waiter',async()=>{});});
   assert.deepEqual(await keys(),[],'No se mezclan usuarios.');
   await page.evaluate(()=>{user='boss';DonPierosReception.register('waiter',async()=>{});});
