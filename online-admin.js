@@ -12,6 +12,7 @@
   const checkoutPending=id=>pendingCheckouts().some(entry=>entry.id===id);
   const sourceLabel=order=>order.source==='staff_walk_in'?'Venta individual · '+(order.waiterName||'Mesero'):'Pedido en línea';
   const timeEdits=new Map();
+  let paymentCopyTimer=0;
   function decorateTimes(root){root?.querySelectorAll('[data-dp-order]').forEach(node=>{const order=findOrder(node.dataset.dpOrder);if(order){const active=!['cancelada','despachada','cobrada'].includes(order.status);orderDetails().decorate(node,active?order.notes:'',order.createdAt);orderDetails().decorateArrival(node,order.createdAt,active,order.source==='staff_walk_in'?90000:120000);}});}
   const newestFirst=(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0)||(Number(b.sequence)||0)-(Number(a.sequence)||0);
   const deletions=()=>window.DonPierosDeletions;
@@ -365,6 +366,7 @@
     if(!canOrders())return;
     if(checkoutPending(id))return;
     const order=findOrder(id);if(!order)return;
+    clearTimeout(paymentCopyTimer);paymentCopyTimer=0;
     const units=order.items.reduce((sum,item)=>sum+(Number(item.quantity)||0),0);
     $('#dp-order-detail').innerHTML=`
       <header class="dp-order-heading dp-state-${esc(order.status)}"><div><span class="eyebrow">Don Pieros Pizza · Comanda</span><h2 id="dp-order-title">${order.source==='staff_walk_in'?'Venta individual':'Pedido'} ${esc(order.sequence||String(order.id).split('-').at(-1))}</h2><p><time>${esc(date(order.createdAt))}</time></p></div><span class="dp-status-actions"><span class="dp-status dp-detail-status">${labels[order.status]||esc(order.status)}</span>${productAddButton(order)}</span></header>
@@ -397,8 +399,18 @@
       try{
         const value=String(order.paymentValue).replace(/^\s*🔑\s*/u,'').trim();
         await api().copyText(value);
+        if(!copyPayment.isConnected||!$('#dp-order-dialog').open)return;
+        clearTimeout(paymentCopyTimer);
+        copyPayment.style.minWidth=copyPayment.getBoundingClientRect().width+'px';
+        copyPayment.querySelector('span').textContent='Copiado';
         copyPayment.dataset.copied='';copyPayment.title='Copiado';copyPayment.setAttribute('aria-label','Dato copiado. Volver a copiar');
-        notify('Dato de pago copiado.');
+        paymentCopyTimer=setTimeout(()=>{
+          paymentCopyTimer=0;
+          if(!copyPayment.isConnected)return;
+          copyPayment.querySelector('span').textContent=order.paymentValue;
+          delete copyPayment.dataset.copied;copyPayment.style.minWidth='';
+          copyPayment.title='Copiar dato de pago';copyPayment.setAttribute('aria-label','Copiar dato de '+order.paymentMethod);
+        },1000);
       }catch(_){notify('No se pudo copiar. Selecciona el dato para copiarlo manualmente.',true);}
       finally{copyPayment.disabled=false;}
     };

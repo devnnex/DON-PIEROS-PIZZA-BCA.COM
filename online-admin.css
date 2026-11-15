@@ -176,6 +176,10 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 #dp-order-dialog .dp-payment-copy span { overflow-wrap:anywhere; user-select:text; }
 #dp-order-dialog .dp-payment-copy svg { width:18px; height:18px; color:#1765ce; }
 #dp-order-dialog .dp-payment-copy[data-copied] svg { color:#168344; }
+#dp-order-dialog .dp-payment-copy[data-copied],#dp-order-dialog .dp-payment-copy[data-copied]:hover { color:#168344; justify-content:space-between; }
+#dp-order-dialog .dp-payment-copy[data-copied] span { animation:paymentCopiedFeedback 1s ease both; }
+@keyframes paymentCopiedFeedback { 0% { opacity:0; transform:translateY(2px); } 15%,85% { opacity:1; transform:translateY(0); } 100% { opacity:0; transform:translateY(-2px); } }
+@media(prefers-reduced-motion:reduce) { #dp-order-dialog .dp-payment-copy[data-copied] span { animation:none; } }
 #dp-order-dialog .dp-payment-copy:hover { color:#1765ce; }
 #dp-order-dialog .dp-payment-copy:focus-visible { outline:2px solid #1765ce; outline-offset:3px; }
 #dp-order-dialog .dp-order-actions { margin-top:12px; padding-top:12px; gap:8px; }

@@ -42,6 +42,10 @@ test('comandas web y de mesero: resumen arriba, acciones juntas y tiempo despleg
    await dialog.locator('[data-dp-copy-payment]').click();
    assert.equal(await page.evaluate(()=>window.copiedPayment),'@yadir31202','Copia la llave sin el icono decorativo.');
    assert.equal(await dialog.locator('[data-dp-copy-payment] svg').count(),1,'El portapapeles es visible junto al dato.');
+   assert.equal(await dialog.locator('[data-dp-copy-payment] span').innerText(),'Copiado');
+   assert.equal(await dialog.locator('[data-dp-copy-payment]').evaluate(n=>getComputedStyle(n).color),'rgb(22, 131, 68)');
+   await page.waitForFunction(()=>document.querySelector('[data-dp-copy-payment] span')?.textContent==='🔑 @yadir31202');
+   assert.equal(await dialog.locator('[data-dp-copy-payment]').evaluate(n=>n.hasAttribute('data-copied')),false,'Tras un segundo vuelve a mostrar la llave.');
    assert.equal(await dialog.locator('.order-time-disclosure').evaluate(n=>n.open),false);
    assert.equal(await dialog.locator('#dp-order-time-form').isVisible(),false);
    assert.equal(await dialog.locator('#dp-change-order-stage').count(),0,'No hay selector de estado ocupando espacio sobre las acciones.');

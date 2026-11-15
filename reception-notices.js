@@ -25,6 +25,7 @@
     // An arrival must preserve the section and any work currently in progress.
   }
   function show({key, kind, title, detail, action}) {
+    if (kind === 'request') return;
     if (!key || announced.has(key)) return;
     announced.add(key);
     const card = document.createElement('article');
@@ -62,6 +63,9 @@
     });
   }
   function syncRequests(requests, {label, body, accept, open}) {
+    // Customer requests are persistent cards in Solicitudes activas. Floating
+    // notices remain reserved for orders and waiter comandas.
+    requests = requests.filter(request => request.request_source === 'waiter');
     const pending = new Set(requests.map(request => 'request:' + request.id));
     for (const key of notices.keys()) if (key.startsWith('request:') && !pending.has(key)) dismiss(key);
     for (const request of requests) show({key:'request:' + request.id, kind:request.request_source==='waiter'?'waiter':'request', title:label(request),

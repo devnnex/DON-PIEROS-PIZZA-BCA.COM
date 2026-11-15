@@ -126,7 +126,7 @@ const App = (() => {
   const REQUEST_LABELS = {
     waiter: "Llamar mesero",
     bill: "Ver cuenta",
-    other: "Canción solicitada"
+    other: "Solicitud de mesa"
   };
 
   const REQUEST_ICONS = {
@@ -494,7 +494,7 @@ const App = (() => {
     sb: null,
     readBudget: createReadBudget(),
     page: "",
-    pizzeriaService: document.body.dataset.service === "pizzeria",
+    pizzeriaService: true,
     business: null,
     tables: [],
     categories: [],
@@ -3423,7 +3423,8 @@ const App = (() => {
     const chat = $("#assistantChat");
     const suggestions = $("#assistantSuggestions");
     if (!chat || !suggestions) return;
-    const songMode = state.assistantMode === "song";
+    if (state.pizzeriaService) state.assistantMode = "bar";
+    const songMode = !state.pizzeriaService && state.assistantMode === "song";
     const eyebrow = $("#assistantEyebrow");
     const title = $("#assistantTitle");
     const modeIcon = $("#assistantModeIcon");
@@ -3436,6 +3437,7 @@ const App = (() => {
       ? "Nombre exacto de la canción y artista"
       : "Ej: Queremos una pizza hawaiana";
     if (toggle) {
+      toggle.hidden = state.pizzeriaService;
       toggle.classList.toggle("is-active", songMode);
       toggle.innerHTML = songMode ? `${icon("message-circle", 22)}<span>Volver al chat</span>` : `${icon("music-2", 22)}<span>Pedir canción</span>`;
     }
@@ -3482,6 +3484,7 @@ const App = (() => {
   };
 
   const activateSongRequestMode = () => {
+    if (state.pizzeriaService) { state.assistantMode = "bar"; renderAssistant(); return; }
     state.assistantMode = state.assistantMode === "song" ? "bar" : "song";
     if (state.assistantMode === "song" && !state.assistantThreads.song.length) state.assistantThreads.song = [{ role: "bot", text: "Escribe el nombre exacto de la canción y el artista para solicitarla.", local: true }];
     state.assistantMessages = state.assistantThreads[state.assistantMode];
@@ -4189,6 +4192,7 @@ const App = (() => {
   };
 
   const handleSongRequest = async (message) => {
+    if (state.pizzeriaService) return handleAssistantMessage(message);
     const song = String(message || "").trim().replace(/\s+/g, " ").slice(0, 180);
     if (!song) return;
     if (!state.currentTable) {
@@ -4615,7 +4619,7 @@ const App = (() => {
 
   const requestKind = (request) => {
     if (request.request_source === "waiter") return "comanda";
-    if (isSongRequest(request)) return "song";
+    if (!state.pizzeriaService && isSongRequest(request)) return "song";
     return request.request_type === "other" && String(request.message || "").trim() ? "chat" : request.request_type;
   };
 
@@ -4677,7 +4681,7 @@ const App = (() => {
     if (request.request_type === "waiter") return `${table} solicita al mesero.`;
     if (request.request_type === "bill") return `${table} solicita la cuenta.`;
     if (!message) return `${table} necesita ayuda.`;
-    if (isSongRequest(request)) {
+    if (!state.pizzeriaService && isSongRequest(request)) {
       const song = message.includes(":") ? message.split(":").slice(1).join(":").trim() : message;
       return `${table} solicita la canción ${song.replace(/[.!?]+$/, "")}.`;
     }
@@ -5602,21 +5606,22 @@ const App = (() => {
     const receptionRequests = activeRequests().filter(request => state.currentUser?.role !== "waiter"
       || request.request_source !== "waiter" || request.requested_by_user_id !== state.currentUser?.id);
     window.DonPierosReception?.syncRequests(receptionRequests, {
-      label: request => `${request.request_source === 'waiter' ? 'Nueva comanda de mesero' : isSongRequest(request) ? 'Canción solicitada' : REQUEST_LABELS[request.request_type] || "Nueva solicitud"} · ${tableLabel(request.restaurant_tables)}`,
+      label: request => `${request.request_source === 'waiter' ? 'Nueva comanda de mesero' : REQUEST_LABELS[request.request_type] || "Nueva solicitud"} · ${tableLabel(request.restaurant_tables)}`,
       body: request => requestOrigin(request).kind === "waiter"
         ? `Pedido tomado por ${requestOrigin(request).name}\n${requestBody(request) || "Revisa el pedido de la mesa."}`
         : requestBody(request) || "El cliente está esperando atención.",
       accept: id => acceptRequest(id),
       open: id => window.DonPierosWaiter?.openRequest(id)
     });
-    const board=window.DonPierosReceptionBoard;
-    const alerts = groupedActiveRequests().filter(request=>!board||board.matches('requests',request));
-    if(board)alerts.sort(board.compare);
+    // Active table requests have their own filter, independently of the order
+    // board. They stay in this panel until an acceptance is confirmed.
+    if (state.alertFilter === 'song') state.alertFilter = 'all';
+    const alerts = groupedActiveRequests();
     const visibleAlerts = state.alertFilter === "all"
       ? alerts
       : alerts.filter((request) => request.kind === state.alertFilter);
     const renderSignature = JSON.stringify([state.alertFilter, visibleAlerts.map((request) =>
-      [request.kind, request.request_ids, requestOrigin(request), request.entries.map((entry) => [entry.id, entry.message, entry.created_at])])]);
+      [request.kind, request.request_ids, request.table_id, request.restaurant_tables, requestOrigin(request), request.entries.map((entry) => [entry.id, entry.message, entry.created_at])])]);
     box.classList.toggle("has-alerts", alerts.length > 0);
     const alertCards = visibleAlerts
       .map(
@@ -5634,7 +5639,7 @@ const App = (() => {
                   }
                 </div>
                 <div>
-                  <span>${request.request_source === "waiter" ? "Comanda de mesero" : request.kind === "song" ? "Canción solicitada" : request.kind === "chat" ? "Chat / pedido" : (REQUEST_LABELS[request.request_type] || request.request_type)}</span>
+                  <span>${request.request_source === "waiter" ? "Comanda de mesero" : request.kind === "chat" ? "Mensaje de mesa" : (REQUEST_LABELS[request.request_type] || request.request_type)}</span>
                   <h3><mark class="alert-table-name">${escapeHTML(tableLabel(request.restaurant_tables))}</mark></h3>
                   ${request.kind === "chat" || request.request_source === "waiter" ? `<small class="alert-origin${requestOrigin(request).kind === "waiter" ? " is-waiter" : ""}">${requestOrigin(request).kind === "waiter" ? `Pedido de mesero · ${escapeHTML(requestOrigin(request).name)}` : "Cliente · En línea"}</small>` : ""}
                   ${request.message && !parseBillMessage(request.message) ? `<p>${escapeHTML(requestBody(request))}</p>` : ""}

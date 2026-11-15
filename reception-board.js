@@ -14,9 +14,10 @@
   }
   function compare(a,b){const date=row=>Date.parse(row.createdAt||row.created_at||row.opened_at||'')||0,direction=state.sort==='newest'?-1:1;return direction*(date(a)-date(b)||(Number(a.sequence)||0)-(Number(b.sequence)||0))||String(a.id).localeCompare(String(b.id));}
   function refresh(){
-    for(const [id,source] of [['dp-dashboard-orders','online'],['dp-table-comandas','table'],['individualSalesPanel','individual'],['alertsPanel','requests'],['requestsHeading','requests']]){
+    for(const [id,source] of [['dp-dashboard-orders','online'],['dp-table-comandas','table'],['individualSalesPanel','individual']]){
       const node=$(id);if(node)node.classList.toggle('reception-filter-hidden',state.source!=='all'&&state.source!==source);
     }
+    for(const id of ['alertsPanel','requestsHeading'])$(id)?.classList.remove('reception-filter-hidden');
     const tables=$('tablesGrid');if(tables)tables.classList.toggle('reception-filter-hidden',!['all','table'].includes(state.source));
     const tablesPanel=document.querySelector('.dashboard-tables-panel');if(tablesPanel){tablesPanel.classList.toggle('reception-filter-hidden',!['all','table','individual'].includes(state.source));tablesPanel.querySelector('.section-head')?.classList.toggle('reception-filter-hidden',state.source==='individual');}
     try{sessionStorage.setItem('dp-reception-filters-v2',JSON.stringify(state));}catch(_){}
