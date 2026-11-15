@@ -17,6 +17,8 @@ test('las solicitudes permanecen en su panel, independientemente de filtros y no
    document.body.classList.add('admin-authenticated');document.querySelectorAll('[data-admin-section="dashboard"]').forEach(n=>n.classList.add('section-active'));
    const now=new Date().toISOString();
    window.requestRows=[{id:'call-1',table_id:'t1',request_type:'waiter',status:'pending',created_at:now,restaurant_tables:{table_name:'Mesa 1'}},{id:'message-2',table_id:'t2',request_type:'other',message:'Necesitamos servilletas',status:'pending',created_at:now,restaurant_tables:{table_name:'Mesa 2'}}];
+   requestRows.push({id:'staff-comanda',table_id:'t1',request_type:'other',request_source:'waiter',requested_by_name:'Laura',status:'pending',message:'Comanda para cocina',created_at:now,restaurant_tables:{table_name:'Mesa 1'}});
+   window.DonPierosWaiter={sync(){},openRequest:async id=>{window.openedWaiterRequest=id;return true;}};
    window.writes=[];window.partialSnapshot=false;
    Object.assign(requestTest.state,{page:'admin',currentUser:{id:'boss',role:'boss',full_name:'Caja'},authToken:'test',activeAdminSection:'dashboard',business:{business_name:'Prueba'},tables:[{id:'t1',table_name:'Mesa 1',is_active:true},{id:'t2',table_name:'Mesa 2',is_active:true}],sessions:[],requests:structuredClone(requestRows)});
    requestTest.state.sb={rpc:async(name,payload)=>{
@@ -39,7 +41,16 @@ test('las solicitudes permanecen en su panel, independientemente de filtros y no
   assert.equal(await page.locator('#alertsPanel .alert-card').count(),2);
   assert.equal(await page.locator('#requestsHeading').isVisible(),true);
   assert.equal(await page.locator('#alertsPanel').isVisible(),true,'El filtro de pedidos no oculta las solicitudes.');
-  assert.equal(await page.locator('.dp-reception-notice').count(),0,'Las solicitudes de clientes no son notificaciones flotantes.');
+  assert.equal(await page.locator('#alertsPanel [data-alert-card="staff-comanda"]').count(),0,'Las comandas del mesero no se mezclan con solicitudes del cliente.');
+  assert.equal(await page.locator('#alertFilter [value="comanda"]').count(),0);
+  assert.equal(await page.locator('.dp-reception-notice:not(.is-waiter):not(.is-individual):not(.is-online)').count(),0,'Las solicitudes de clientes no son notificaciones flotantes.');
+  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),1,'La notificación de comanda del mesero continúa funcionando.');
+  await page.locator('.dp-reception-notice.is-waiter button').click();
+  assert.equal(await page.evaluate(()=>window.openedWaiterRequest),'staff-comanda');
+  assert.equal(await page.evaluate(()=>writes.length),0,'Ver una comanda no acepta solicitudes de los clientes.');
+  await page.evaluate(()=>DonPierosReception.show({key:'order:individual-test',kind:'individual',title:'Venta individual',detail:'Comanda de Laura',action:async()=>{}}));
+  assert.equal(await page.locator('.dp-reception-notice.is-individual').count(),1,'Las ventas individuales conservan su notificación.');
+  assert.equal(await page.locator('#alertsPanel .alert-card').count(),2);
   assert.doesNotMatch(await page.locator('#requestsHeading').innerText(),/canci[oó]n/i);
   assert.match(await page.locator('[data-alert-card="message-2"]').innerText(),/Mensaje de mesa/);
   await page.clock.install();

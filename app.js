@@ -5613,10 +5613,11 @@ const App = (() => {
       accept: id => acceptRequest(id),
       open: id => window.DonPierosWaiter?.openRequest(id)
     });
-    // Active table requests have their own filter, independently of the order
-    // board. They stay in this panel until an acceptance is confirmed.
-    if (state.alertFilter === 'song') state.alertFilter = 'all';
-    const alerts = groupedActiveRequests();
+    // Only customers at a table belong in this persistent panel. Staff comandas
+    // keep their existing reception cards, notifications and voice announcements.
+    if (['song','comanda'].includes(state.alertFilter)) state.alertFilter = 'all';
+    const alerts = groupedActiveRequests().filter(request => request.table_id
+      && (!request.request_source || request.request_source === 'client'));
     const visibleAlerts = state.alertFilter === "all"
       ? alerts
       : alerts.filter((request) => request.kind === state.alertFilter);
