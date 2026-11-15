@@ -6,7 +6,7 @@ test('impresión remota: dos navegadores, confirmación perdida y un solo envío
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'});
  const receiverId='11111111-1111-4111-8111-111111111111',secret='s'.repeat(43),jobs=new Map(),ledger=new Map(),heartbeats=new Set(),errors=[];
- let available=true,spools=0,loseSubmit=true,loseReceipt=true,missing=false;
+ let available=true,spools=0,loseSubmit=true,loseReceipt=true,missing=false,nativeSessions=0;
  const backend=async(name,args)=>{
   if(missing)return {error:{code:'PGRST202',message:'Could not find the function'}};
   if(name==='dp_print_heartbeat'){heartbeats.add(args.p_device_id);return {data:{ok:true}};}
@@ -28,14 +28,15 @@ test('impresión remota: dos navegadores, confirmación perdida y un solo envío
    await page.route('http://127.0.0.1:8767/**',async route=>{
     const headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'*'};
     if(route.request().method()==='OPTIONS')return route.fulfill({headers,body:''});
-    if(route.request().url().endsWith('/status'))return route.fulfill({headers,json:{ready:receiver,id:receiverId,secret,label:'PC Cocina',printer:'POS 80'}});
+    if(route.request().url().endsWith('/status'))return route.fulfill({headers,json:{ready:!!receiver,native:receiver==='native',id:receiverId,secret,label:'PC Cocina',printer:'POS 80'}});
     const body=route.request().postDataJSON();assert.equal(body.secret,secret);
+    if(route.request().url().endsWith('/session')){assert.equal(body.token,'valid');assert.equal(body.url,'https://bxyvxbutjlvoconfsjub.supabase.co');nativeSessions++;return route.fulfill({headers,json:{ok:true}});}
     if(!ledger.has(body.id)){spools++;ledger.set(body.id,{status:'spooled'});}
     if(loseReceipt){loseReceipt=false;return route.abort('connectionfailed');}
     return route.fulfill({headers,json:ledger.get(body.id)});
    });
    await page.goto(`http://127.0.0.1:${server.address().port}/admin.html`);
-   await page.evaluate(()=>{window.notices=[];window.token='valid';window.DonPierosAdmin={getToken:()=>token,getUser:()=>({role:'boss'}),notify:(...args)=>notices.push(args),db:{rpc:(name,args)=>backendRpc(name,args)}};});
+   await page.evaluate(()=>{window.notices=[];window.token='valid';window.DON_PIEROS_CONFIG={supabaseUrl:'https://bxyvxbutjlvoconfsjub.supabase.co',supabaseAnonKey:'public-key'};window.DonPierosAdmin={getToken:()=>token,getUser:()=>({role:'boss'}),notify:(...args)=>notices.push(args),db:{rpc:(name,args)=>backendRpc(name,args)}};});
    await page.addScriptTag({path:path.join(root,'remote-print.js')});return page;
   }
   const receiver=await setup(true),sender=await setup(false);
@@ -64,6 +65,9 @@ test('impresión remota: dos navegadores, confirmación perdida y un solo envío
    const result=await DonPierosThermal.print(popup,80);const ready=popup.document.body.dataset.thermalPdfReady;popup.close();return {width:result.width,ready,remote:!!result.remote};
   });
   assert.deepEqual(localThermal,{width:80,ready:'1',remote:false},'El PDF y su vista habitual siguen funcionando sin receptor.');
+  const native=await setup('native');await native.waitForFunction(()=>!DonPierosRemotePrint.busy);
+  assert.ok(nativeSessions>0,'El navegador renueva la autorización del receptor nativo.');
+  await native.close();
   missing=true;
   assert.equal(await sender.evaluate(()=>DonPierosRemotePrint.status()),null,'Sin la migración no se interrumpe la impresión habitual.');
   assert.deepEqual(errors,[]);

@@ -7,6 +7,10 @@ $mutex = New-Object Threading.Mutex($false,'Local\DonPierosPrintReceiver')
 if (!$mutex.WaitOne(0)) { exit }
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback,8767)
 $utf8 = [Text.UTF8Encoding]::new($false)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$script:remoteSession=$null
+$script:nextCloud=[DateTime]::MinValue
+$script:nextHeartbeat=[DateTime]::MinValue
 function Save-Receipt($file,$receipt) {
  $temp = $file+'.tmp'
  [IO.File]::WriteAllText($temp,($receipt | ConvertTo-Json -Compress),$utf8)
@@ -48,10 +52,37 @@ function Print-Job($job) {
  Save-Receipt $file $receipt
  return $receipt
 }
+function Cloud-Rpc($name,$values) {
+ $session=$script:remoteSession
+ $values['auth_token']=$session.token
+ return Invoke-RestMethod -UseBasicParsing -Uri ($session.url+'/rest/v1/rpc/'+$name) -Method Post -TimeoutSec 8 -ContentType 'application/json; charset=utf-8' -Headers @{apikey=$session.key} -Body ($values | ConvertTo-Json -Compress -Depth 8)
+}
+function Poll-Cloud {
+ if(!$script:remoteSession -or $script:remoteSession.expires -lt [DateTime]::UtcNow){$script:remoteSession=$null;return}
+ if([DateTime]::UtcNow -lt $script:nextCloud){return}
+ $script:nextCloud=[DateTime]::UtcNow.AddSeconds(2)
+ try{
+  if([DateTime]::UtcNow -ge $script:nextHeartbeat){
+   if(!(Printer-Ready)){return}
+   $null=Cloud-Rpc 'dp_print_heartbeat' @{p_device_id=$script:remoteSession.deviceId;p_label=$settings.label;p_receiver_id=$settings.id;p_secret=$settings.secret;p_printer=$settings.printer}
+   $script:nextHeartbeat=[DateTime]::UtcNow.AddSeconds(15)
+  }
+  $result=Cloud-Rpc 'dp_print_claim' @{p_receiver_id=$settings.id;p_secret=$settings.secret}
+  if(!$result.job){return}
+  $receipt=Print-Job @{id=$result.job.id;pdf=$result.job.pdf;secret=$settings.secret}
+  $null=Cloud-Rpc 'dp_print_finish' @{p_receiver_id=$settings.id;p_secret=$settings.secret;p_job_id=$result.job.id;p_status=$receipt.status;p_error=$receipt.error}
+ }catch{
+  # Do not log session tokens or receipt contents. A subsequent claim reconciles
+  # the same id against the on-disk ledger, including a lost cloud acknowledgment.
+  $script:nextCloud=[DateTime]::UtcNow.AddSeconds(5)
+ }
+}
 try {
  $listener.Start()
  $requests=0
  while ($true) {
+  Poll-Cloud
+  if(!$listener.Pending()){Start-Sleep -Milliseconds 200;continue}
   $client=$listener.AcceptTcpClient()
   try {
    $client.ReceiveTimeout=5000;$client.SendTimeout=5000;$stream=$client.GetStream()
@@ -72,14 +103,22 @@ try {
    elseif($method -eq 'OPTIONS'){$result=@{ok=$true}}
    elseif($headers['x-don-pieros-print'] -ne '1'){$code=403;$result=@{error='Cabecera requerida.'}}
    elseif($method -eq 'GET' -and $route -eq '/status'){
-    $result=@{id=$settings.id;secret=$settings.secret;label=$settings.label;printer=$settings.printer;ready=(Printer-Ready)}
-   }elseif($method -eq 'POST' -and $route -eq '/print'){
+    $result=@{id=$settings.id;secret=$settings.secret;label=$settings.label;printer=$settings.printer;ready=(Printer-Ready);native=$true}
+   }elseif($method -eq 'POST' -and $route -in @('/print','/session')){
     $length=0
     if(![int]::TryParse($headers['content-length'],[ref]$length) -or $length -lt 1 -or $length -gt 8390000){throw 'Tamano no permitido.'}
     $body=New-Object byte[] $length;$offset=0
     while($offset -lt $length){$read=$stream.Read($body,$offset,$length-$offset);if(!$read){throw 'Solicitud incompleta.'};$offset+=$read}
     $job=$utf8.GetString($body) | ConvertFrom-Json
-    $result=Print-Job $job
+    if($route -eq '/session'){
+     $device=[guid]::Empty
+     if($job.secret -cne $settings.secret -or ![guid]::TryParse([string]$job.deviceId,[ref]$device) -or
+      $job.url -cne 'https://bxyvxbutjlvoconfsjub.supabase.co' -or [string]::IsNullOrEmpty($job.key) -or [string]::IsNullOrEmpty($job.token)){throw 'Sesion no autorizada.'}
+     # Authentication is kept only in RAM. Browser renewals keep a 90-second
+     # lease, enough for a background browser's one-minute timer throttling.
+     $script:remoteSession=@{token=[string]$job.token;key=[string]$job.key;url=[string]$job.url;deviceId=$device.ToString();expires=[DateTime]::UtcNow.AddSeconds(90)}
+     $result=@{ok=$true}
+    }else{$result=Print-Job $job}
    }else{$code=404;$result=@{error='Ruta no disponible.'}}
    $payload=$utf8.GetBytes(($result | ConvertTo-Json -Depth 6 -Compress))
    $cors=''

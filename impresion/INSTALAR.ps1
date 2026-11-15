@@ -35,7 +35,7 @@ if ($old.id -and $old.secret) { $id=$old.id; $secret=$old.secret } else {
 }
 @{id=$id;secret=$secret;printer=$printer;engine=$engine;label=$env:COMPUTERNAME} | ConvertTo-Json | Set-Content -LiteralPath $settingsFile -Encoding UTF8
 $receiver = Join-Path $printRoot 'RECEPTOR.ps1'
-Invoke-WebRequest -UseBasicParsing 'https://devnnex.github.io/DON-PIEROS-PIZZA-BCA.COM/impresion/RECEPTOR.ps1' -OutFile $receiver
+Invoke-WebRequest -UseBasicParsing 'https://devnnex.github.io/DON-PIEROS-PIZZA-BCA.COM/impresion/RECEPTOR.ps1?v=20261114-v83' -OutFile $receiver
 $startup = [Environment]::GetFolderPath('Startup')
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut((Join-Path $startup 'Don Pieros - Impresora.lnk'))

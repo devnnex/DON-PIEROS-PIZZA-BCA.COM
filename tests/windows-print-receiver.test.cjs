@@ -8,7 +8,17 @@ test('receptor Windows: origen, secreto y registro persistente evitan duplicados
  const built=spawnSync('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',compile],{encoding:'utf8'});
  assert.equal(built.status,0,built.stderr);
  const wrapper=path.join(temp,'run.ps1');
+ const cloudFile=path.join(temp,'cloud.json');fs.writeFileSync(cloudFile,JSON.stringify({job:null}));
  fs.writeFileSync(wrapper,`function Get-CimInstance { [pscustomobject]@{Name='POS Simulada';WorkOffline=$false;PrinterStatus=3} }
+function Invoke-RestMethod {
+ param([switch]$UseBasicParsing,$Uri,$Method,$TimeoutSec,$ContentType,$Headers,$Body)
+ $stateFile='${cloudFile.replace(/'/g,"''")}'
+ $state=Get-Content -LiteralPath $stateFile -Raw | ConvertFrom-Json
+ if($Uri.EndsWith('/dp_print_heartbeat')){return @{ok=$true}}
+ if($Uri.EndsWith('/dp_print_claim')){return @{job=$state.job}}
+ if($Uri.EndsWith('/dp_print_finish')){$payload=$Body | ConvertFrom-Json;@{job=$null;status=$payload.p_status} | ConvertTo-Json | Set-Content -LiteralPath $stateFile;return @{ok=$true}}
+ throw 'RPC inesperado'
+}
 & '${path.join(__dirname,'../impresion/RECEPTOR.ps1').replace(/'/g,"''")}'`);
  const child=spawn('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',wrapper],{env:{...process.env,LOCALAPPDATA:temp},stdio:'pipe'});let stderr='';child.stderr.on('data',b=>stderr+=b);child.stdout.on('data',b=>stderr+=b);
  const request=(route,body,origin='https://devnnex.github.io')=>fetch('http://127.0.0.1:8767'+route,{method:body?'POST':'GET',headers:{Origin:origin,'X-Don-Pieros-Print':'1',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(3000)});
@@ -28,6 +38,12 @@ test('receptor Windows: origen, secreto y registro persistente evitan duplicados
   assert.equal(fs.readFileSync(path.join(root,'spooled.txt'),'utf8'),'one\n');
   await assert.rejects(request('/print',{...job,id:'55555555-5555-4555-8555-555555555555',secret:'bad'}));
   assert.equal(fs.readFileSync(path.join(root,'spooled.txt'),'utf8'),'one\n');
+  fs.writeFileSync(cloudFile,JSON.stringify({job:{id:'66666666-6666-4666-8666-666666666666',pdf:job.pdf,title:'Comanda remota'}}));
+  const lease=await(await request('/session',{secret:settings.secret,deviceId:settings.id,url:'https://bxyvxbutjlvoconfsjub.supabase.co',key:'public-key',token:'test-session'})).json();
+  assert.equal(lease.ok,true);
+  for(let i=0;i<40;i++){if(JSON.parse(fs.readFileSync(cloudFile,'utf8').replace(/^\uFEFF/,'' )).status==='spooled')break;await new Promise(r=>setTimeout(r,150));}
+  assert.equal(JSON.parse(fs.readFileSync(cloudFile,'utf8').replace(/^\uFEFF/,'' )).status,'spooled','El receptor procesa la cola sin temporizadores del navegador.');
+  assert.equal(fs.readFileSync(path.join(root,'spooled.txt'),'utf8'),'one\none\n');
  }finally{
   child.kill();await new Promise(resolve=>child.once('exit',resolve));
   // Only this mkdtemp-created fixture directory; no installed receiver is touched.

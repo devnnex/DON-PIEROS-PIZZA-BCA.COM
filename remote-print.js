@@ -25,6 +25,12 @@
   }
   const token=api()?.getToken?.();
   await rpc('dp_print_heartbeat',{p_device_id:deviceId,p_label:local?.label||label(),p_receiver_id:local?.id||null,p_secret:local?.secret||null,p_printer:local?.printer||null},token);
+  if(local?.native){
+   try{
+    await localRequest('/session',{secret:local.secret,token,deviceId,url:window.DON_PIEROS_CONFIG?.supabaseUrl,key:window.DON_PIEROS_CONFIG?.supabaseAnonKey});
+    local.nativeReady=true;
+   }catch(_){local.nativeReady=false;}
+  }
   lastBeat=Date.now();
  }
  async function tick(){
@@ -34,7 +40,7 @@
   busy=true;
   try{
    await heartbeat();
-   if(!local)return;
+   if(!local||local.nativeReady)return;
    const receiver=local;
    const result=await rpc('dp_print_claim',{p_receiver_id:receiver.id,p_secret:receiver.secret},token);
    if(!result?.job)return;
