@@ -25,6 +25,7 @@
   let orderEpoch=0,activeCount=0;
   let catalogLoading=null,ordersReloadRequested=false,catalogEpoch=0,ordersController=null,dashboardRevision='',ordersView='';
   const receivedOrderSignals=new Map();
+  let openedCheck='';
   const searchState={dashboard:{query:'',status:'active'},list:{query:'',status:'active'}};
   const searchCache=new Map(),searchJobs=new Map();
   const searchText=new WeakMap();
@@ -246,6 +247,7 @@
           detail:sourceLabel(order)+' · '+fulfillmentLabel(order.fulfillment)+'\n'+order.items.map(item=>item.quantity+' × '+item.name).join(', ')+'\n'+money(order.total),action:()=>openOrder(order.id)});
         else if(['cobrada','cancelada','despachada','eliminada'].includes(order.status))queue?.dismiss(key);
       }
+      checkOpenedOrders();
       if(activeChanged){void ensureSearchRows('dashboard');void ensureSearchRows('list');}
       $('#dp-orders-status').textContent='Conectado · Recepción automática activa · '+window.DonPierosDates.time(Date.now());
     }catch(error){if(controller.signal.aborted||controller!==ordersController)return;$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}
@@ -449,6 +451,7 @@
     dialog.querySelector('.dp-dialog-card').scrollTop=0;
     if(!dialog.open)dialog.showModal();
     window.DonPierosReception?.mark?.('order:'+id,'viewed');
+    signal('order-opened',id);
     return true;
   }
   window.addEventListener('donpieros-reception-filter',()=>{
@@ -674,13 +677,13 @@
     try{deletions().enqueue('catalog-'+kind,id,{kind,id,version:item.version,image_path:item.image_path});catalogEpoch++;renderCatalog();notify('Registro retirado. Se está sincronizando.');}
     catch(error){notify('No pudimos guardar la solicitud de eliminación. '+friendly(error),true);}
   }
-  function signal(event,orderId){
+  function signal(event,orderId,extra={}){
     if(event==='catalog-changed')window.dispatchEvent(new CustomEvent('donpieros-catalog-change',{detail:{payments:catalog?.payments?.filter(item=>!deletions()?.hidden('catalog-payments',item.id))}}));
-    const payload={at:Date.now(),...(orderId?{orderId}:{})};
+    const payload={at:Date.now(),...(orderId?{orderId}:{}),...extra};
     if(channel)void channel.send({type:'broadcast',event,payload}).catch(()=>{});
     // Send outside the Apps Script save, without holding up the editor. HTTP
     // also wakes peers when this browser's socket has not joined yet.
-    if(orderId){
+    if(orderId||event==='order-opened-check'||event==='order-opened-sync'){
       const config=window.DON_PIEROS_CONFIG;
       void fetch(config.supabaseUrl+'/realtime/v1/api/broadcast',{method:'POST',keepalive:true,
         headers:{apikey:config.supabaseAnonKey,'Content-Type':'application/json'},
@@ -691,6 +694,31 @@
     const payload={orderId,at:Date.now()};
     try{localStorage.setItem('don_pieros_order_received_v1',JSON.stringify(payload));}catch(_){}
     if(channel)void channel.send({type:'broadcast',event:'order-received',payload}).catch(()=>{});
+  }
+  function receiveOpenedOrder(message){
+    if(!canOrders())return;
+    const payload=message?.payload;
+    if(!payload||!Number.isFinite(payload.at))return;
+    // This signal only clears a floating notice. Orders, totals, table
+    // assignments and open dialogs continue to come from authenticated reads.
+    window.DonPierosReception?.openedOrder?.(payload.orderId);
+  }
+  function checkOpenedOrders(){
+    if(!canOrders())return;
+    const ids=window.DonPierosReception?.pendingOrderIds?.()||[],signature=ids.join('|');
+    if(signature===openedCheck)return;openedCheck=signature;
+    for(let offset=0;offset<ids.length;offset+=100)signal('order-opened-check',null,{ids:ids.slice(offset,offset+100)});
+  }
+  function receiveOpenedCheck(message){
+    const payload=message?.payload;
+    if(!canOrders()||!payload||!Number.isFinite(payload.at)||!Array.isArray(payload.ids)||payload.ids.length>100)return;
+    const ids=window.DonPierosReception?.openedOrderIds?.(payload.ids)||[];
+    if(ids.length)signal('order-opened-sync',null,{ids});
+  }
+  function receiveOpenedSync(message){
+    const payload=message?.payload;
+    if(!canOrders()||!payload||!Number.isFinite(payload.at)||!Array.isArray(payload.ids)||payload.ids.length>100)return;
+    for(const id of payload.ids)window.DonPierosReception?.openedOrder?.(id);
   }
   async function receiveOrderSignal(message){
     if(!canOrders())return;
@@ -738,7 +766,7 @@
     if(connectedToken!==token){if(connectedToken)window.DonPierosReception?.reset();connectedToken=token;revision='';dashboardRevision='';ordersView='';firstLoad=true;newestOrderSequence=0;orderEpoch++;activeCount=0;orderWrites.clear();catalogWrites.clear();pendingAvailability.clear();seenOrderIds.clear();receivedOrderSignals.clear();searchEpoch++;searchCache.clear();searchJobs.clear();
       if(channel)void api().db.removeChannel(channel);
       individualRevision='';individualKnownSignature='';
-      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'individual-changed'},()=>{individualRevision='';void loadOrders(false,true);}).on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).on('broadcast',{event:'catalog-changed'},()=>{if(canMenu())void loadCatalog();window.dispatchEvent(new Event('donpieros-catalog-change'));}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders())void loadOrders(true);});
+      channel=api().db.channel('don-pieros-orders-live').on('broadcast',{event:'individual-changed'},()=>{individualRevision='';void loadOrders(false,true);}).on('broadcast',{event:'order-created'},receiveOrderSignal).on('broadcast',{event:'order-opened'},receiveOpenedOrder).on('broadcast',{event:'order-opened-check'},receiveOpenedCheck).on('broadcast',{event:'order-opened-sync'},receiveOpenedSync).on('broadcast',{event:'order-updated'},message=>{if(message?.payload?.orderId)void receiveOrderSignal(message);else void loadOrders(true,true);}).on('broadcast',{event:'catalog-changed'},()=>{if(canMenu())void loadCatalog();window.dispatchEvent(new Event('donpieros-catalog-change'));}).subscribe(status=>{if(status==='SUBSCRIBED'&&canOrders()){openedCheck='';void loadOrders(true);checkOpenedOrders();}});
       if(canMenu())void loadCatalog();
     }
     if(canOrders())void loadOrders();

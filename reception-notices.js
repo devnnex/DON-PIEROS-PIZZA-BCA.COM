@@ -17,7 +17,7 @@
     const complete = [...entries.values()].filter(entry => entry.complete).sort((a,b) => b.ordinal-a.ordinal);
     for (const entry of complete.slice(2000)) entries.delete(entry.key);
     const value = JSON.stringify([...entries.values()].map(({node,action,...record}) => record.complete
-      ? {key:record.key,kind:record.kind,createdAt:record.createdAt,ordinal:record.ordinal,complete:true} : record));
+      ? {key:record.key,kind:record.kind,createdAt:record.createdAt,ordinal:record.ordinal,complete:true,accepted:!!record.accepted,dismissed:!!record.dismissed} : record));
     if (value === saved) return;
     try { localStorage.setItem(storageKey(), value); saved = value; } catch (_) { /* Keep the live queue if storage is unavailable. */ }
   }
@@ -45,7 +45,7 @@
     const card = entry.node;
     card.querySelector('strong').textContent = entry.title;
     card.querySelector('p').textContent = entry.detail;
-    card.querySelector('.dp-notice-progress').textContent = 'Pendiente: abrir comanda';
+    card.querySelector('.dp-notice-progress').textContent = entry.kind === 'waiter' ? 'Pendiente: agregar a la mesa' : 'Pendiente: abrir comanda';
     card.querySelector('button').disabled = !entry.action && !handlers.has(entry.kind);
   }
   function createCard(entry) {
@@ -97,8 +97,16 @@
       entry = {key,kind,title:'',detail:'',createdAt:createdAt || new Date().toISOString(),ordinal:++ordinal,viewed:false,printed:false,accepted:false,complete:false,node:null,action:null};
       entries.set(key,entry);
     }
-    if (entry.complete) return;
-    const changed = fresh || title && String(title) !== entry.title || detail && String(detail) !== entry.detail
+    if (entry.complete) {
+      // Previous releases dismissed on opening. Only an authoritative pending
+      // comanda may restore that notice; confirmed assignments never reappear.
+      if (kind === 'waiter' && !accepted && !entry.accepted && !entry.dismissed) entry.complete = false;
+      else {
+        if (kind === 'waiter' && accepted && !entry.accepted) { entry.accepted = true; persist(); }
+        return;
+      }
+    }
+    const changed = fresh || !entry.node || title && String(title) !== entry.title || detail && String(detail) !== entry.detail
       || createdAt && createdAt !== entry.createdAt || accepted && !entry.accepted;
     const couldOpen = Boolean(entry.action || handlers.has(entry.kind));
     if (action) entry.action = action;
@@ -116,17 +124,23 @@
     }
   }
   function finish(entry) {
-    if (entry.viewed) entry.complete = true;
+    if (entry.kind === 'waiter' ? entry.accepted : entry.viewed) entry.complete = true;
   }
   function mark(key,step) {
     if (!['viewed','printed','accepted'].includes(step) || !activate()) return;
-    const entry = entries.get(key); if (!entry || entry.complete || entry[step]) return;
+    const entry = entries.get(key); if (!entry || entry[step] || entry.complete && step !== 'accepted') return;
     entry[step] = true; finish(entry); render(); persist();
   }
   function dismiss(key) {
     if (!activate()) return;
     const entry = entries.get(key); if (!entry || entry.complete) return;
-    entry.complete = true; render(); persist();
+    entry.complete = true; entry.dismissed = true; render(); persist();
+  }
+  function openedOrder(id) {
+    if (typeof id !== 'string' || !/^DP-[a-zA-Z0-9-]{1,80}$/.test(id) || !activate()) return;
+    const entry = entries.get('order:'+id);
+    if (!entry || entry.complete || entry.kind === 'waiter') return;
+    entry.viewed = true; finish(entry); render(); persist();
   }
   function register(kind,handler) { handlers.set(kind,handler); if (activate()) render(); }
   function syncRequests(requests,{label,body,accept,open}) {
@@ -134,7 +148,8 @@
     requests.filter(request => request.request_source === 'waiter')
       .sort((a,b) => (Date.parse(a.created_at)||0)-(Date.parse(b.created_at)||0)).forEach(request => {
         const key='request:'+request.id;
-        if (!entries.has(key)) show({key,kind:'waiter',title:label(request),detail:body(request),createdAt:request.created_at,
+        const entry = entries.get(key);
+        if (!entry || entry.complete && !entry.accepted && !entry.dismissed) show({key,kind:'waiter',title:label(request),detail:body(request),createdAt:request.created_at,
           action:() => open ? open(request.id) : accept(request.id)});
       });
     // A missing or partial snapshot is not an acceptance or a successful print.
@@ -147,13 +162,15 @@
         if (!valid(record)) continue;
         let entry = entries.get(record.key);
         if (!entry) { entry = {...record,action:null,node:null}; entries.set(record.key,entry); }
-        else for (const step of ['viewed','printed','accepted','complete']) if (record[step]) entry[step] = true;
+        else for (const step of ['viewed','printed','accepted','complete','dismissed']) if (record[step]) entry[step] = true;
         ordinal = Math.max(ordinal,Number(record.ordinal)||0); finish(entry);
       }
       render(); persist();
     } catch (_) { /* Ignore incomplete storage writes from another tab. */ }
   });
-  window.DonPierosReception = {show,dismiss,mark,register,syncRequests,reveal,
+  window.DonPierosReception = {show,dismiss,mark,openedOrder,register,syncRequests,reveal,
+    pendingOrderIds() { return activate() ? [...entries.values()].filter(entry => entry.key.startsWith('order:') && !entry.complete).map(entry => entry.key.slice(6)).sort() : []; },
+    openedOrderIds(ids) { return activate() ? ids.filter(id => typeof id === 'string' && /^DP-[a-zA-Z0-9-]{1,80}$/.test(id) && entries.get('order:'+id)?.complete) : []; },
     has(key) { return activate() && Boolean(entries.get(key) && !entries.get(key).complete); },
     reset() { clearScreen(); scope=''; }
   };

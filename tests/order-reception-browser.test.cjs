@@ -136,7 +136,7 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   await page.locator('.dp-reception-notice.is-waiter button').click();
   assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true);
   assert.equal(await page.evaluate(()=>fixture.accepted),0,'Aceptar la notificación solo abre la comanda.');
-  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),0,'El aviso se retira al abrir correctamente el modal.');
+  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),1,'Abrir el modal conserva el aviso hasta asignar la mesa.');
   assert.equal(await page.locator('[data-dw-accept-order="comanda-1"]').isVisible(),true);
   await page.locator('#dw-kitchen-dialog [data-dw-close]').click();
   await page.locator('#dw-kitchen-dialog').waitFor({state:'hidden'});
@@ -146,7 +146,7 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   await page.locator('[data-dw-print-order]').click();
   assert.match(await page.evaluate(()=>fixture.printed[0]),/Pizza mesero/);
   assert.equal(await page.evaluate(()=>fixture.accepted),0,'Imprimir no asigna el consumo.');
-  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),0,'Imprimir no vuelve a mostrar un aviso ya abierto.');
+  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),1,'Imprimir no retira el aviso de una mesa sin asignar.');
   await page.waitForTimeout(100);
   assert.equal(await page.locator('#dw-kitchen-dialog').evaluate(node=>node.open),true,'Terminar de preparar la impresión mantiene abierta la comanda pendiente.');
   await page.locator('[data-dw-print-order]').click();
@@ -157,7 +157,7 @@ test('recepción: retiro persistente con reintentos, revisión e impresión ante
   await page.locator('#dw-kitchen-dialog').waitFor({state:'hidden'});
   await page.reload();await initialize();
   await page.waitForSelector('[data-dw-open-comanda="comanda-1"]');
-  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),0,'Recargar no devuelve el aviso que ya abrió la comanda pendiente.');
+  assert.equal(await page.locator('.dp-reception-notice.is-waiter').count(),1,'Recargar conserva el aviso hasta que se confirme la asignación.');
   await page.evaluate(()=>fixture.sessions[0].session_items.push({id:'existing-line',status:'served',waiter_comanda_id:'previous-order',quantity:1,unit_price:12000}));
   await page.locator('[data-dw-open-comanda="comanda-1"]').first().click();
   assert.equal(await page.locator('[data-dw-accept-order="comanda-1"]').isVisible(),true,'Cerrar tras imprimir tampoco oculta la asignación pendiente.');
