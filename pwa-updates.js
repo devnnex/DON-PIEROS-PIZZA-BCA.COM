@@ -17,7 +17,7 @@
     // Feature modules can defer a reload while there is unsaved work.
     const event = new Event('don-pieros-before-update', { cancelable: true });
     if (!window.dispatchEvent(event)) return;
-    if (document.querySelector('dialog[open],details[open],form[aria-busy="true"]') || window.DonPierosRemotePrint?.busy) return;
+    if (document.querySelector('dialog[open],details[open],form[aria-busy="true"]')) return;
     for (const form of dirtyForms) {
       if (!form.isConnected) dirtyForms.delete(form);
       else if (form.getClientRects().length) return;

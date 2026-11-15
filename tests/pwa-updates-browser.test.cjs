@@ -46,12 +46,7 @@ test('cada navegador detecta la publicación automáticamente, incluso sin servi
    await page.waitForFunction(()=>document.querySelector('meta[name="app-version"]').content==='qa2');
    assert.equal(await page.evaluate(()=>localStorage.getItem('venta-pendiente')),'conservar');
   }
-  await pages[0].evaluate(()=>{window.DonPierosRemotePrint={busy:true};});
   marker=published='qa3';
-  await pages[1].waitForFunction(()=>document.querySelector('meta[name="app-version"]').content==='qa3');
-  await new Promise(resolve=>setTimeout(resolve,600));
-  assert.equal(await pages[0].locator('meta[name="app-version"]').getAttribute('content'),'qa2','Una impresión pendiente pospone la actualización.');
-  await pages[0].evaluate(()=>{DonPierosRemotePrint.busy=false;});
   for(const page of pages)await page.waitForFunction(()=>document.querySelector('meta[name="app-version"]').content==='qa3');
   let navigations=0;pages[0].on('framenavigated',()=>navigations++);
   await new Promise(resolve=>setTimeout(resolve,600));

@@ -72,11 +72,6 @@
   }
   async function print(target,width=80){
     const result=await createPdf(target,width),doc=target.document;
-    const remote=await window.DonPierosRemotePrint?.send(result.pdf,doc.title||'Comprobante Don Pieros Pizza');
-    if(remote){
-      doc.body.replaceChildren();const notice=doc.createElement('p');notice.textContent='Enviado a la impresora del equipo receptor.';doc.body.append(notice);
-      target.close?.();return {...result,...remote};
-    }
     result.pdf.autoPrint();
     const url=URL.createObjectURL(result.pdf.output('blob'));
     const previous=activeUrls.get(target);if(previous)URL.revokeObjectURL(previous);activeUrls.set(target,url);
