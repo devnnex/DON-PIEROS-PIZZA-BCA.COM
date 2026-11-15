@@ -12,13 +12,13 @@ const assert=require('node:assert/strict');const {chromium}=require('playwright-
  await client.screenshot({path:'artifacts/informacion-local-color.png'});await client.locator('[data-category="Pizzas sencillas"]').click();
  assert.equal(await client.locator('[data-product]').count(),7);await client.locator('[data-product]').filter({hasText:'Pizza Hawaiana'}).click();
  assert.equal(await client.locator('#add-product').getAttribute('aria-disabled'),'true');assert.equal(await client.locator('#product-overlay').isVisible(),true);
- await client.locator('#add-product').click({force:true});assert.equal(await client.locator('.modifier-attention[aria-invalid="true"]').count(),2);
+ await client.locator('#add-product').click({force:true});assert.equal(await client.locator('.modifier-attention[aria-invalid="true"]').count(),1);
  await client.waitForFunction(()=>getComputedStyle(document.querySelector('.modifier-attention')).borderTopColor==='rgb(229, 57, 53)');
  assert.equal(await client.locator('.modifier-attention').first().evaluate(node=>getComputedStyle(node).borderTopColor),'rgb(229, 57, 53)');
  assert.equal(await client.locator('.requirement-badge.is-pending').first().evaluate(node=>getComputedStyle(node).color),'rgb(180, 35, 24)');
  assert.equal(await client.locator('#nav-cart .cart-count').innerText(),'0');
- await client.locator('.option').filter({hasText:'Mediana · 37 × 37 cm'}).click();await client.locator('.option').filter({hasText:'Hawaiana'}).click();assert.match(await client.locator('#detail-total').innerText(),/58.000/);
- assert.equal(await client.locator('.modifier.is-complete').count(),2);assert.equal(await client.locator('.modifier-attention').count(),0);
+ await client.locator('.option').filter({hasText:'Mediana · 37 × 37 cm'}).click();assert.match(await client.locator('#detail-total').innerText(),/58.000/);
+ assert.equal(await client.locator('.modifier.is-complete').count(),1);assert.equal(await client.locator('.modifier-attention').count(),0);
  await client.waitForFunction(()=>getComputedStyle(document.querySelector('.modifier.is-complete')).borderTopColor==='rgb(22, 163, 106)');
  assert.equal(await client.locator('.modifier.is-complete').first().evaluate(node=>getComputedStyle(node).borderTopColor),'rgb(22, 163, 106)');
  assert.match(await client.locator('.requirement-badge').first().innerText(),/✓ Correcto/);
@@ -50,5 +50,5 @@ const assert=require('node:assert/strict');const {chromium}=require('playwright-
  await client.emulateMedia({reducedMotion:'reduce'});await client.locator('#add-product').click({force:true});
  assert.equal(await client.locator('#toast').evaluate(node=>getComputedStyle(node).animationName),'none');
  assert.equal(await client.locator('.modifier-attention').first().evaluate(node=>getComputedStyle(node).animationName),'none');
- await browser.close();console.log('Carta inicial: categorías, selección obligatoria de tamaño, segunda mitad igual, precio correcto y agotado bloqueado: OK.');
+ await browser.close();console.log('Carta inicial: categorías, selección obligatoria de tamaño, sencilla completa de un sabor, precio correcto y agotado bloqueado: OK.');
 })().catch(error=>{console.error(error);process.exit(1);});

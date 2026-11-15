@@ -223,6 +223,30 @@
     });
   }
 
+  function clientProductDetails(product, modifiers) {
+    const key = value => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase();
+    const flavor = key(product.name).replace(/^pizza\s+/, '');
+    let automaticFlavor = false;
+    const groups = modifiers.map(modifier => {
+      if (key(product.category) !== 'pizzas sencillas' || key(modifier.source) !== 'sabor pizza sencilla'
+        || modifier.max !== 1 || modifier.min > 1 || modifier.options.some(option => option.price)) return modifier;
+      const ownFlavor = modifier.options.find(option => key(option.name) === flavor);
+      if (!ownFlavor) return modifier;
+      automaticFlavor = true;
+      // The existing server still validates this catalog group. Send the same
+      // flavor for the whole pizza without asking the customer for a second half.
+      return { ...modifier, automaticOptionId: ownFlavor.id };
+    });
+    let description = String(product.description || '').replace(/\s+/g, ' ').trim();
+    const legacy = description.match(/^Primera mitad:\s*(.+?)\.\s*Elige el sabor de la segunda mitad;\s*puede ser el mismo\.?$/i);
+    if (automaticFlavor && legacy && key(legacy[1]) === flavor) description = 'Un solo sabor: ' + legacy[1].trim() + '.';
+    if (groups.some(group => key(group.source) === 'sabor pizza combinada' && group.min === 2)) {
+      description = description.replace(/^Elige 2 sabores de pizza de la carta:\s*mitad y mitad\./i, 'Dos sabores de la carta, mitad y mitad.')
+        .replace(/\.\s*Disponible en\s+/i, '. ');
+    }
+    return { description, modifiers: groups };
+  }
+
   function applyStoreData(data) {
       if(!Array.isArray(data))data=[{data:data.products},{data:data.toppings},{data:data.payments},{data:data.neighborhoods}];
       const [productResult,toppingResult,paymentResult,neighborhoodResult] = data;
@@ -230,8 +254,8 @@
       toppingCatalog = toppingRows;
       products = (productResult.data || []).map(row => ({
         id:row.id,name:row.name,category:row.category,price:Number(row.price),image:window.DonPierosImages.resolve(row),isExampleImage:!window.DonPierosImages.hasOwn(row),
-        description:row.description,badge:row.badge,featured:row.featured,available:row.available,
-        sort_order:row.sort_order,modifiers:buildModifiers(row.modifiers,toppingRows)
+        badge:row.badge,featured:row.featured,available:row.available,sort_order:row.sort_order,
+        ...clientProductDetails(row,buildModifiers(row.modifiers,toppingRows))
       }));
       paymentMethods = (paymentResult.data || []).filter(item => item.available !== false);
       neighborhoods = (neighborhoodResult.data || []).filter(item => item.available !== false);
@@ -299,7 +323,7 @@
     </article>`).join('');
   }
 
-  function defaultSelections(product) { const values = {}; (product.modifiers || []).forEach(modifier => { values[modifier.id] = []; }); return values; }
+  function defaultSelections(product) { const values = {}; (product.modifiers || []).forEach(modifier => { values[modifier.id] = modifier.automaticOptionId ? [modifier.automaticOptionId] : []; }); return values; }
   function selectedUnitPrice() { return state.active ? state.active.price + (state.active.modifiers || []).reduce((sum,modifier) => sum + (state.selections[modifier.id] || []).reduce((groupSum,id) => groupSum + (modifier.options.find(item => item.id === id)?.price || 0),0),0) : 0; }
   function groupIsComplete(modifier) { return !modifier.required || (state.selections[modifier.id] || []).length >= (modifier.min || 1); }
   function firstMissingGroup() { return (state.active?.modifiers || []).find(modifier => !groupIsComplete(modifier)); }
@@ -313,7 +337,8 @@
     if (item) {
       (product.modifiers || []).forEach(modifier => {
         const allowed = new Set(modifier.options.map(entry => entry.id));
-        state.selections[modifier.id] = (item.selections?.[modifier.id] || []).filter(id => allowed.has(id));
+        const selected = (item.selections?.[modifier.id] || []).filter(id => allowed.has(id));
+        if (selected.length || !modifier.automaticOptionId) state.selections[modifier.id] = selected;
       });
     }
     state.quantity = item?.quantity || 1;
@@ -322,7 +347,7 @@
   }
   function renderProductDetail() {
     const product = state.active; if (!product) return;
-    const modifiers = (product.modifiers || []).map(modifier => `<fieldset class="modifier" data-modifier="${escapeHtml(modifier.id)}" tabindex="-1"><legend>${escapeHtml(modifier.name)}<small class="requirement-badge ${modifier.required && !groupIsComplete(modifier) ? 'is-pending' : ''}">${modifier.required ? 'Obligatorio' : `Opcional${modifier.max ? ` · Máx. ${modifier.max}` : ''}`}</small></legend>${modifier.options.map(item => {
+    const modifiers = (product.modifiers || []).filter(modifier => !modifier.automaticOptionId || (state.selections[modifier.id] || []).some(id => id !== modifier.automaticOptionId)).map(modifier => `<fieldset class="modifier" data-modifier="${escapeHtml(modifier.id)}" tabindex="-1"><legend>${escapeHtml(modifier.name)}<small class="requirement-badge ${modifier.required && !groupIsComplete(modifier) ? 'is-pending' : ''}">${modifier.required ? 'Obligatorio' : `Opcional${modifier.max ? ` · Máx. ${modifier.max}` : ''}`}</small></legend>${modifier.options.map(item => {
       const checked = (state.selections[modifier.id] || []).includes(item.id);
       return `<label class="option"><span><input type="${modifier.type === 'single' ? 'radio' : 'checkbox'}" name="${escapeHtml(modifier.id)}" value="${escapeHtml(item.id)}" data-group="${escapeHtml(modifier.id)}" ${checked ? 'checked' : ''}>${escapeHtml(item.name)}</span><em>${item.price ? `+${money(item.price)}` : 'Incluido'}</em></label>`;
     }).join('')}</fieldset>`).join('');
