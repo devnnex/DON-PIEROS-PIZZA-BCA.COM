@@ -1831,6 +1831,11 @@ function dpDispatch_(request) {
   }
   requireSection_(user,'inventory');
   if (action === 'dp_admin_catalog') return dpCatalog_(true);
+  if (action === 'dp_save_delivery_sector') {
+    requireManager_(user);
+    validateOrigin_(request.origin);
+    return dpSaveDeliverySector_(payload,user);
+  }
   if (action === 'dp_save_catalog') return dpSaveCatalog_(payload,user);
   if (action === 'dp_delete_catalog') return dpDeleteCatalog_(payload,user);
   throw new Error('Acción no permitida.');
@@ -1919,12 +1924,84 @@ function dpWithLock_(callback) {
   try{return callback();}finally{lock.releaseLock();}
 }
 
+var DP_DELIVERY_SECTORS = [
+  [6000,'Colombia|Aguas Claras|Buenos Aires|Galán|Inscredial|Las Margaritas|Olaya Herrera|Palmira|Parnaso|Pueblo Nuevo|Torcoroma|Ciprés de Lago|Ciudad Bolívar|Isla del Zapato|Miradores del Cacique|Galán 2|Recreo|Tres Unidos|Urbanización La Magdalena|Uribe Uribe|Lavanderas|Colinas Hospital'],
+  [6000,'Sector Comercial|Edificios|Clínicas y Hospitales|Centros Comerciales|Conjuntos Cerrados|Universidades|Sector La 36|Arenal|Campana|Cardales|Primero de Mayo|Antonia Santos|San Judas|Las Américas|Santa Ana|Campo Alegre|Internacional|Yarima|San Francisco|Miraflores|Cañaveral|La Tora|Malvinas|Sector La Y|Floresta|Libertad|Floresta Baja|Villa Luz|Alto de los Ángeles|Barrio Independencia'],
+  [7000,'Progreso|Provivienda|Versalles|Alcázar|Obras Públicas|Coviva 1 y 2|20 de Enero 1, 2 y 3|Santa Isabel|Belén|Los Ficus|Esperanza|Nueva Esperanza|Cristo Rey|Ciudadela|Cortijillo|Cincuentenario|Bosques del Cincuentenario|Refugio|Los Pinos|Planada del Cerro|Bella Vista|Simón Bolívar|Palmar|Reserva Cardales|Limonar|Naranjos|Mandarinos|Sector Bambú'],
+  [8000,'Campestre|María Eugenia|Altos del Campestre|Campín|Nuevo Horizonte|Corales|Paraíso|Minas del Parioso|Retén|9 de Abril|Vivero|Siena 37|Bosques de la Cira|Aguas de Barranca|Buena Vista y Gorgona|San Silvestre|La Paz|Villareliz 1 y 2|Colinas del Norte|Boston|Granjas|Alomos|20 de Agosto|Campo Hermoso|Jerusalén|Nariño|20 de Julio|Pumarrosos|Rosario|Yariguíes|25 de Agosto'],
+  [9000,'22 de Marzo|Terrazas|Ciudad del Sol|Prados de Argelia|Villa Mary|Hotel Miramar'],
+  [20000,'Puente Yondó|Puerta 11|Campo Gala|Genezared'],
+  [36000,'Yondó|Centro|Llanito']
+];
+
+function dpDeliveryKey_(value) {
+  return normalizeSearch_(value).replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim()
+    .replace(/^(?:ur|urbanizacion) /,'').replace(/^(?:b|barrio) /,'');
+}
+
+function dpDeliveryRates_() {
+  var saved=JSON.parse(PropertiesService.getScriptProperties().getProperty('DP_DELIVERY_RATES_V1')||'{}');
+  return DP_DELIVERY_SECTORS.map(function(sector,index){
+    var id=index+1;
+    return {id:id,fee:saved[id]?saved[id].fee:sector[0],version:saved[id]?saved[id].version:0};
+  });
+}
+
+function dpIsSectorNeighborhood_(item) {
+  var key=dpDeliveryKey_(item.name);
+  return /^dp-sector-/.test(String(item.id||''))||DP_DELIVERY_SECTORS.some(function(sector){
+    return sector[1].split('|').some(function(name){return dpDeliveryKey_(name)===key;});
+  });
+}
+
+function dpDeliveryNeighborhoods_(rows,rates) {
+  var byName=Object.create(null),result=[];
+  rates.forEach(function(rate){
+    DP_DELIVERY_SECTORS[rate.id-1][1].split('|').forEach(function(name,index){
+      var item={id:'dp-sector-'+rate.id+'-'+(index+1),name:name,delivery_fee:rate.fee,
+        available:true,sort_order:rate.id*100+index,version:rate.version,delivery_sector:rate.id};
+      byName[dpDeliveryKey_(name)]=item;
+      result.push(item);
+    });
+  });
+  rows.forEach(function(row){
+    var item=byName[dpDeliveryKey_(row.name)];
+    if(item && !item.legacy){item.id=row.id;item.legacy=true;}
+    else if(!item)result.push(row);
+  });
+  result.forEach(function(item){delete item.legacy;});
+  return result;
+}
+
+function dpSaveDeliverySector_(payload,user) {
+  var id=payload.sectorId,fee=payload.fee;
+  if(!Number.isInteger(id)||id<1||id>DP_DELIVERY_SECTORS.length||
+      !Number.isInteger(fee)||fee<0||fee>100000000)throw new Error('Sector o tarifa de domicilio inválidos.');
+  return dpWithLock_(function(){
+    var properties=PropertiesService.getScriptProperties();
+    var saved=JSON.parse(properties.getProperty('DP_DELIVERY_RATES_V1')||'{}');
+    var current=saved[id]||{fee:DP_DELIVERY_SECTORS[id-1][0],version:0};
+    if(payload.version!==current.version)throw new Error('La tarifa cambió. Actualiza Barrios antes de guardar.');
+    saved[id]={fee:fee,version:current.version+1};
+    properties.setProperty('DP_DELIVERY_RATES_V1',JSON.stringify(saved));
+    dpInvalidateCatalog_();
+    appendAudit_('WEB_DELIVERY_RATE_SAVE','sector-'+id,user.full_name,'OK',current.fee+' → '+fee);
+    return {ok:true,sector:{id:id,fee:fee,version:saved[id].version}};
+  });
+}
+
 function dpCatalog_(admin) {
   var cache = CacheService.getScriptCache(), cached = !admin && cache.get('DP_CATALOG');
   if(cached) return JSON.parse(cached);
   var result={ok:true,revision:PropertiesService.getScriptProperties().getProperty('DP_CATALOG_REVISION') || '0'};
   ['products','toppings','payments','neighborhoods'].forEach(function(key){
-    result[key]=dpRows_(key).filter(function(row){return admin || key==='products' || row.available;}).sort(function(a,b){return a.sort_order-b.sort_order || String(a.name).localeCompare(String(b.name));});
+    var rows=dpRows_(key);
+    if(key==='neighborhoods'){
+      var rates=dpDeliveryRates_();
+      rows=dpDeliveryNeighborhoods_(rows,rates);
+      if(admin)result.deliverySectors=rates;
+    }
+    result[key]=rows.filter(function(row){return admin || key==='products' || row.available;}).sort(function(a,b){return a.sort_order-b.sort_order || String(a.name).localeCompare(String(b.name));});
   });
   if(!admin) {try {cache.put('DP_CATALOG',JSON.stringify(result),30);}catch(_){} }
   return result;
@@ -1941,6 +2018,8 @@ function dpSaveCatalog_(payload,user) {
   return dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(definition.name),values=sheet.getDataRange().getValues();
     var item=payload.item || {}, rows=dpObjects_(key,values.slice(1)), old=rows.filter(function(row){return row.id===item.id;})[0];
+    if(key==='neighborhoods'&&(dpIsSectorNeighborhood_(item)||old&&dpIsSectorNeighborhood_(old)))
+      throw new Error('Edita la tarifa desde el sector del barrio.');
     if(!old&&Number(item.version)>0)throw new Error('Este registro fue eliminado. Actualiza el menú.');
     if(old && Number(item.version)!==old.version)throw new Error('Otra persona editó este registro. Actualiza antes de guardar.');
     var saved={id:old ? old.id : /^[a-f0-9-]{36}$/i.test(String(item.id||'')) ? item.id : Utilities.getUuid(),name:dpText_(item.name,120),available:item.available!==false,sort_order:Number(item.sort_order)||0,version:(old ? old.version : 0)+1};
@@ -1972,6 +2051,9 @@ function dpSaveCatalog_(payload,user) {
 
 function dpDeleteCatalog_(payload,user) {
   if(['products','toppings','payments','neighborhoods'].indexOf(payload.kind)<0)throw new Error('Catálogo inválido.');
+  if(payload.kind==='neighborhoods'&&dpDeliveryNeighborhoods_(dpRows_('neighborhoods'),dpDeliveryRates_()).some(function(item){
+    return item.id===payload.id&&item.delivery_sector;
+  }))throw new Error('Los barrios del catálogo de sectores se administran desde su sector.');
   return dpWithLock_(function(){
     var sheet=getSpreadsheet_().getSheetByName(DP_TABLES[payload.kind].name),values=sheet.getDataRange().getValues();
     for(var i=1;i<values.length;i++)if(String(values[i][0])===payload.id){

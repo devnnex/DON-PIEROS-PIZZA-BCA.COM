@@ -163,8 +163,15 @@
     $('#dp-prev').onclick=()=>{offset=Math.max(0,offset-60);void loadOrders(true);};$('#dp-next').onclick=()=>{offset+=60;void loadOrders(true);};
     $('#dp-menu-refresh').onclick=()=>void loadCatalog();$('#dp-add-item').onclick=()=>openItem();
     $('#dp-menu-category').onchange=renderCatalog;
-    $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(!button)return;catalogKind=button.dataset.catalog;$$('[data-catalog]').forEach(b=>{b.classList.toggle('active',b===button);b.setAttribute('aria-pressed',String(b===button));});renderCatalog();};
+    $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(button)selectCatalogKind(button.dataset.catalog);};
+    window.addEventListener('donpieros-open-catalog',event=>selectCatalogKind(event.detail));
+    if(location.hash==='#barrios'&&canMenu())selectCatalogKind('neighborhoods');
     $('#dp-item-form').onsubmit=saveItem;
+    $('#dp-catalog-list').addEventListener('submit',event=>{
+      if(!event.target.matches('[data-dp-sector-rate]'))return;
+      event.preventDefault();
+      void saveDeliveryRate(event.target);
+    });
     document.addEventListener('click',e=>{
       if(e.target.closest('[data-dp-close]'))e.target.closest('dialog')?.close();
       const edit=e.target.closest('[data-dp-edit]');if(edit)openItem(catalog[catalogKind].find(item=>item.id===edit.dataset.dpEdit));
@@ -542,6 +549,15 @@
     });
   }
 
+  function selectCatalogKind(kind){
+    catalogKind=kind;
+    $$('#dp-catalog-tabs [data-catalog]').forEach(button=>{
+      const active=button.dataset.catalog===kind;
+      button.classList.toggle('active',active);
+      button.setAttribute('aria-pressed',String(active));
+    });
+    renderCatalog();
+  }
   async function loadCatalog(){
     if(!canMenu())return;
     if(catalogLoading)return catalogLoading;
@@ -568,6 +584,39 @@
   }
   function applyCatalogItem(kind,item){catalogEpoch++;catalog[kind]=[...(catalog[kind]||[]).filter(row=>row.id!==item.id),item].sort((a,b)=>a.sort_order-b.sort_order||String(a.name).localeCompare(String(b.name)));}
   function removeCatalogPhoto(path,message){void api().db.storage.from('product-images').remove([path]).then(({error})=>{if(error)notify(message,true);}).catch(()=>notify(message,true));}
+  function renderDeliverySectors(rows) {
+    return `<div class="dp-sector-grid">${catalog.deliverySectors.map(sector=>`
+      <section class="dp-sector">
+        <h3>Sector ${esc(sector.id)} <span>${money(sector.fee)}</span></h3>
+        <ul>${rows.filter(item=>item.delivery_sector===sector.id).map(item=>`<li>${esc(item.name)}</li>`).join('')}</ul>
+        <form data-dp-sector-rate="${esc(sector.id)}">
+          <label>Tarifa del sector (COP)<input name="fee" type="number" inputmode="numeric" min="0" max="100000000" step="1" value="${esc(sector.fee)}" required></label>
+          <button type="submit" class="ghost">Guardar tarifa</button>
+        </form>
+      </section>`).join('')}</div>`;
+  }
+  async function saveDeliveryRate(form) {
+    const sector=catalog?.deliverySectors?.find(item=>item.id===Number(form.dataset.dpSectorRate));
+    const button=form.querySelector('button');
+    if(!sector||button.disabled)return;
+    button.disabled=true;
+    $('#dp-menu-status').textContent='Guardando tarifa…';
+    try{
+      const result=await request('dp_save_delivery_sector',{sectorId:sector.id,version:sector.version,fee:form.elements.fee.valueAsNumber});
+      catalogEpoch++;
+      catalog.deliverySectors=catalog.deliverySectors.map(item=>item.id===sector.id?result.sector:item);
+      catalog.neighborhoods=catalog.neighborhoods.map(item=>item.delivery_sector===sector.id?
+        {...item,delivery_fee:result.sector.fee,version:result.sector.version}:item);
+      window.DonPierosPerformance?.write('admin-catalog:'+api().getUser()?.id,catalog,'local');
+      renderCatalog();
+      $('#dp-menu-status').textContent='Tarifa guardada para el sector '+sector.id+'.';
+      signal('catalog-changed');
+    }catch(error){
+      $('#dp-menu-status').textContent=friendly(error);
+      notify(friendly(error),true);
+      void loadCatalog();
+    }finally{button.disabled=false;}
+  }
   function renderCatalog(){
     $('#webmenu').dataset.catalogKind=catalogKind;
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
@@ -577,6 +626,12 @@
     select.innerHTML='<option value="">Todas las categorías</option>'+categories.map(c=>`<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(c)}</option>`).join('');$('#dp-category-filter').hidden=catalogKind!=='products';
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);
     const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
+    if(catalogKind==='neighborhoods'&&Array.isArray(catalog.deliverySectors)){
+      const custom=rows.filter(item=>!item.delivery_sector);
+      $('#dp-catalog-list').innerHTML=renderDeliverySectors(rows)+(custom.length?
+        `<section class="dp-category-section"><h3>Barrios adicionales</h3><div class="dp-menu-grid">${custom.map(card).join('')}</div></section>`:'');
+      return;
+    }
     $('#dp-catalog-list').innerHTML=rows.length?(catalogKind==='products'?categories.filter(c=>rows.some(p=>p.category===c)).map(c=>`<section class="dp-category-section"><h3>${esc(c)} <small>${rows.filter(p=>p.category===c).length}</small></h3><div class="dp-menu-grid">${rows.filter(p=>p.category===c).map(card).join('')}</div></section>`).join(''):`<div class="dp-menu-grid">${rows.map(card).join('')}</div>`):'<div class="dp-empty">Sin registros. Agrega el primero para comenzar.</div>';
     $$('[data-dp-edit]').forEach(button=>{const id=button.dataset.dpEdit;if(!pendingAvailability.has(id)&&!catalogWrites.get(catalogKind+':'+id)?.pending)return;const card=button.closest('.dp-menu-card');card.setAttribute('aria-busy','true');card.querySelectorAll('button').forEach(control=>{control.disabled=true;});});
   }

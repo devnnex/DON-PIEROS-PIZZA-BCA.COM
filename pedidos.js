@@ -484,12 +484,11 @@
     if (state.cartStep === 'checkout') {
       const selectedPayment = paymentMethods.find(method => method.id === state.payment);
       const paymentInfo = selectedPayment ? `<div class="payment-info"><div>${selectedPayment.account_value?`<small>Dato para pagar</small><strong>${escapeHtml(selectedPayment.account_value)}</strong>`:''}<span>${escapeHtml(selectedPayment.instructions || 'Confirma los datos del pago con el negocio por WhatsApp.')}</span></div>${selectedPayment.account_value ? '<button type="button" id="copy-payment" aria-label="Copiar dato de pago">▣</button>' : ''}</div>` : '';
-      const neighborhoodOptions = neighborhoods.map(item => `<option value="${escapeHtml(item.name)}"></option>`).join('');
       const deliveryFields = state.fulfillment === 'delivery' ? '<div class="delivery-fields">'
         + checkoutField('address','Dirección','placeholder="Calle, carrera, número y detalles" minlength="5" maxlength="120" autocomplete="street-address"')
-        + '<div class="neighborhood-suggestions" id="neighborhood-suggestions"></div>'
-        + checkoutField('neighborhood','Barrio','aria-describedby="neighborhood-help" list="neighborhood-list" placeholder="Escribe tu barrio o elige uno" minlength="2" maxlength="60" autocomplete="off"','Puedes escribir tu barrio o elegir uno de la lista.')
-        + '<datalist id="neighborhood-list">'+neighborhoodOptions+'</datalist></div>' : '';
+        + '<div class="neighborhood-suggestions" id="neighborhood-suggestions" role="group" aria-label="Barrios sugeridos"></div>'
+        + checkoutField('neighborhood','Barrio','aria-describedby="neighborhood-help" placeholder="Escribe tu barrio o elige uno" minlength="2" maxlength="60" autocomplete="off"','Puedes escribir tu barrio o elegir una sugerencia.')
+        + '</div>' : '';
       root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido? <small class="checkout-field-status" aria-live="polite">Obligatorio</small></legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''} required><span><b>⌂</b><strong>Recoger en local</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="dinein" ${state.fulfillment === 'dinein' ? 'checked' : ''} required><span><b>♧</b><strong>Comer en el local</strong><small>Sin cobro de caja</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''} required><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}${checkoutField('name','Nombre completo','placeholder="¿A nombre de quién?" minlength="2" maxlength="60" autocomplete="name"')}${checkoutField('phone','Teléfono','type="tel" inputmode="tel" placeholder="313 718 3666" maxlength="25" autocomplete="tel-national" aria-describedby="phone-help"','10 dígitos. Puedes escribirlos juntos o separados por espacios.')}${checkoutField('notes','Indicaciones especiales <span class="checkout-note-count"><span id="note-count">'+state.customer.notes.length+'</span>/180</span>','')}<fieldset class="checkout-choice payment-choice"><legend>Método de pago <small class="checkout-field-status" aria-live="polite">Obligatorio</small></legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''} required><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${packagingFee()?`<div class="summary-packaging"><span>Cajas para llevar</span><span>${money(packagingFee())}</span></div>`:''}${state.fulfillment === 'delivery' ? `<div><span>Domicilio</span><span id="checkout-delivery-fee">${state.selectedNeighborhood ? money(deliveryFee()) : 'Por confirmar'}</span></div>` : ''}<div class="total"><strong id="checkout-total-label">${deliveryFeePending()?'Total de productos y cajas':'Total'}</strong><strong id="checkout-total">${money(total())}</strong></div></div></form>`;
       if (state.fulfillment === 'delivery') {
         $('[data-checkout-field=address]',root).append($('#neighborhood-suggestions'));
@@ -512,11 +511,44 @@
     state.selectedNeighborhood = neighborhoods.find(item => neighborhoodKey(item.name) === normalized) || null;
     state.customer.neighborhood = state.selectedNeighborhood?.name || String(value || '');
   }
-  function renderAddressSuggestions(value) {
+  function deliveryWords(value) {
+    return neighborhoodKey(value).replace(/[^a-z0-9 ]/g,' ').trim()
+      .replace(/^(?:b|barrio|ur|urbanizacion)\s+/,'').split(/\s+/).filter(Boolean);
+  }
+  function oneDeliveryTypo(word,expected) {
+    if(word.length<4||Math.abs(word.length-expected.length)>1)return false;
+    if(word.length>expected.length)return oneDeliveryTypo(expected,word);
+    let index=0;
+    while(index<word.length&&word[index]===expected[index])index++;
+    if(word.length!==expected.length)return word.slice(index)===expected.slice(index+1);
+    return word.slice(index+1)===expected.slice(index+1)||
+      word[index]===expected[index+1]&&word[index+1]===expected[index]&&word.slice(index+2)===expected.slice(index+2);
+  }
+  function deliveryMatch(query,name) {
+    let best=0;
+    for(let start=0;start<query.length;start++){
+      const count=Math.min(name.length,query.length-start);
+      let score=0,typos=0;
+      for(let i=0;i<count;i++){
+        const word=query[start+i],expected=name[i];
+        if(word===expected)score+=8;
+        else if(i===count-1&&start+i===query.length-1&&word.length>=2&&expected.startsWith(word))score+=4;
+        else if(typos===0&&oneDeliveryTypo(word,expected)){score+=2;typos++;}
+        else {score=0;break;}
+      }
+      if(score&&count<name.length&&start+count!==query.length)continue;
+      if(score&&count===name.length)score+=3;
+      best=Math.max(best,score);
+    }
+    if(!best&&query.length===1&&query[0].length>=3&&name.slice(1).some(word=>word.startsWith(query[0])))return 1;
+    return best;
+  }
+  function renderAddressSuggestions(value,field) {
     const root = $('#neighborhood-suggestions'); if (!root) return;
-    const query = value.trim().toLocaleLowerCase('es');
-    if (query.length < 2) { root.innerHTML = ''; return; }
-    const matches = neighborhoods.filter(item => item.name.toLocaleLowerCase('es').includes(query) || query.includes(item.name.toLocaleLowerCase('es'))).slice(0,5);
+    $(`[data-checkout-field=${field}]`).append(root);
+    const query=deliveryWords(value);
+    const matches=neighborhoods.map(item=>({item,score:deliveryMatch(query,deliveryWords(item.name))}))
+      .filter(match=>match.score>0).sort((a,b)=>b.score-a.score).slice(0,5).map(match=>match.item);
     root.innerHTML = matches.map(item => `<button type="button" data-neighborhood="${escapeHtml(item.id)}"><span>${escapeHtml(item.name)}</span><strong>${money(item.delivery_fee)}</strong></button>`).join('');
   }
   function chooseNeighborhood(id) {
@@ -630,8 +662,11 @@
     if (event.target.name === 'payment') { state.payment = event.target.value; renderCart(); return; }
     state.customer[event.target.name] = event.target.value;
     if (event.target.name === 'notes') $('#note-count').textContent = event.target.value.length;
-    if (event.target.name === 'address') renderAddressSuggestions(event.target.value);
-    if (event.target.name === 'neighborhood') { setNeighborhood(event.target.value); updateDeliverySummary(); }
+    if (event.target.name === 'address') renderAddressSuggestions(event.target.value,'address');
+    if (event.target.name === 'neighborhood') {
+      setNeighborhood(event.target.value); updateDeliverySummary();
+      renderAddressSuggestions(event.target.value,'neighborhood');
+    }
     updateCheckoutValidation();
   });
   $('#cart-action').addEventListener('click', event => { if (event.target.closest('#go-checkout')) { state.cartStep = 'checkout'; renderCart(); } if (event.target.closest('#confirm-order')) void confirmOrder(); });

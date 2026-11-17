@@ -4,6 +4,37 @@ const root=path.resolve(__dirname,'..'),read=name=>fs.readFileSync(path.join(roo
 const snapshot={window:{}};require('node:vm').runInNewContext(read('catalog-snapshot.js'),snapshot);
 const catalog=snapshot.window.DonPierosCatalogSnapshot.catalog;
 const types={'.js':'application/javascript','.css':'text/css','.html':'text/html','.png':'image/png','.webmanifest':'application/manifest+json'};
+test('domicilio sugiere un barrio desde la dirección y suma la tarifa al seleccionarlo',async()=>{
+ const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_PATH||'C:/Program Files/Google/Chrome/Application/chrome.exe'});
+ try{await serverFor(async base=>{
+  const context=await browser.newContext({viewport:{width:390,height:844},serviceWorkers:'block'}),page=await context.newPage();
+  page.setDefaultTimeout(8000);
+  await context.route('https://script.google.com/**',route=>route.fulfill({json:{...catalog,neighborhoods:[
+   {id:'local',name:'Ciudad Bolívar',delivery_fee:6000,available:true},
+   {id:'distant',name:'Simón Bolívar',delivery_fee:7000,available:true}
+  ]}}));
+  await page.goto(base+'/index.html',{waitUntil:'domcontentloaded'});
+  await page.locator('#welcome-close').click();
+  await page.waitForFunction(()=>document.querySelector('#catalog-connection').hidden);
+  const product=catalog.products.find(item=>item.available&&item.category==='Bebidas'&&!(item.modifiers||[]).length);
+  await page.locator('[data-add="'+product.id+'"]').click();
+  await page.locator('#add-product').click();
+  await page.locator('#nav-cart').click();
+  await page.locator('#go-checkout').click();
+  await page.locator('label:has([name="fulfillment"][value="delivery"])').click();
+  await page.locator('[name="address"]').fill('Calle 12 #34-56, Ciudad Bolviar');
+  const option=page.locator('#neighborhood-suggestions button').first();
+  assert.match(await option.textContent(),/Ciudad Bolívar.*6[.,]000/);
+  await option.click();
+  assert.equal(await page.locator('[name="neighborhood"]').inputValue(),'Ciudad Bolívar');
+  assert.match(await page.locator('#checkout-delivery-fee').textContent(),/6[.,]000/);
+  const amount=id=>page.locator(id).textContent().then(value=>Number(value.replace(/\D/g,'')));
+  assert.equal(await amount('#checkout-total'),product.price+6000);
+  await page.locator('[name="neighborhood"]').fill('simon boli');
+  assert.match(await page.locator('#neighborhood-suggestions button').first().textContent(),/Simón Bolívar.*7[.,]000/);
+  await context.close();
+ });}finally{await browser.close();}
+});
 async function serverFor(run){
  const server=http.createServer((req,res)=>{const name=new URL(req.url,'http://local').pathname.slice(1)||'index.html',file=path.resolve(root,name);if(!file.startsWith(root+path.sep)||!fs.existsSync(file)){res.writeHead(404);return res.end();}res.setHeader('Content-Type',(types[path.extname(file)]||'text/plain')+';charset=utf-8');res.end(fs.readFileSync(file));});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));try{await run('http://127.0.0.1:'+server.address().port);}finally{await new Promise(resolve=>server.close(resolve));}
@@ -66,7 +97,7 @@ test('Menú online muestra la copia al abrir; el diseño nuevo afecta solamente 
    window.DonPierosAdmin={getUser:()=>({id:'qa',role:'boss'}),getToken:()=> 'qa',db:{rpc:async()=>({data:false})}};
    window.DonPierosDates={dateTime:String};window.DonPierosLanguage={message:String};
   });
-  await page.addScriptTag({content:read('online-admin.js').replace('  mount();setInterval(tick,3000);void tick();','  mount();window.catalogLoadForQA=loadCatalog;')});
+  await page.addScriptTag({content:read('online-admin.js').replace('setInterval(tick,3000);void tick();','window.catalogLoadForQA=loadCatalog;')});
   await page.evaluate(()=>{document.querySelector('#webmenu').classList.add('section-active');void catalogLoadForQA();});
   await page.waitForFunction(()=>document.querySelectorAll('#dp-catalog-list .dp-menu-card').length>0);
   assert.equal(held.length,1,'Una verificacion privada en segundo plano');
@@ -75,9 +106,26 @@ test('Menú online muestra la copia al abrir; el diseño nuevo afecta solamente 
   await page.locator('[data-catalog="toppings"]').click();
   assert.equal(await page.locator('#webmenu').getAttribute('data-catalog-kind'),'toppings');
   assert.equal(await page.locator('#dp-catalog-list [data-dp-edit]').first().evaluate(el=>getComputedStyle(el).backgroundColor),'rgb(247, 242, 230)');
-  await held.shift().fulfill({json:catalog});
+  await held.shift().fulfill({json:{...catalog,deliverySectors:[
+   {id:1,fee:6000,version:0},{id:2,fee:6000,version:0}
+  ],neighborhoods:[
+   {id:'galan',name:'Galán',delivery_fee:6000,delivery_sector:1,available:true},
+   {id:'arenal',name:'Arenal',delivery_fee:6000,delivery_sector:2,available:true}
+  ]}});
   await page.waitForFunction(()=>document.querySelector('#dp-menu-status').textContent.startsWith('Menú actualizado'));
   assert.equal(await page.evaluate(()=>DonPierosPerformance.read('admin-catalog:qa',10000,'local').products.length),catalog.products.length);
+  await page.evaluate(()=>window.dispatchEvent(new CustomEvent('donpieros-open-catalog',{detail:'neighborhoods'})));
+  const firstSector=page.locator('.dp-sector').first();
+  assert.match(await firstSector.textContent(),/Sector 1.*Galán/s);
+  await firstSector.locator('[name="fee"]').fill('6500');
+  await firstSector.getByRole('button',{name:'Guardar tarifa'}).click();
+  await page.waitForFunction(()=>document.querySelector('#dp-menu-status').textContent==='Guardando tarifa…');
+  const save=held.shift();
+  assert.deepEqual(save.request().postDataJSON().payload,{sectorId:1,version:0,fee:6500});
+  await save.fulfill({json:{ok:true,sector:{id:1,fee:6500,version:1}}});
+  await page.getByText('Tarifa guardada para el sector 1.').waitFor();
+  assert.match(await firstSector.locator('h3').textContent(),/6[.,]500/);
+  assert.match(await page.locator('.dp-sector').nth(1).locator('h3').textContent(),/6[.,]000/);
   await context.close();
  });}finally{await browser.close();}
 });

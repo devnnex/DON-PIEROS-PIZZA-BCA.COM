@@ -1040,7 +1040,7 @@ const App = (() => {
     if (Array.isArray(user?.permissions)) return [...new Set(user.permissions.filter((section) => ADMIN_SECTION_KEYS.includes(section)))];
     return [...ADMIN_SECTION_KEYS];
   };
-  const canAccessAdminSection = (section, user = state.currentUser) => normalizedUserPermissions(user).includes(({onlineorders:"dashboard",webmenu:"inventory"})[section] || section);
+  const canAccessAdminSection = (section, user = state.currentUser) => normalizedUserPermissions(user).includes(({onlineorders:"dashboard",webmenu:"inventory",barrios:"inventory"})[section] || section);
   const firstAllowedAdminSection = (user = state.currentUser) => normalizedUserPermissions(user)[0] || "service";
   const canDeleteRecords = () => isBoss();
 
@@ -1055,6 +1055,8 @@ const App = (() => {
     syncAdminSectionAccess();
     if (section === "tips" && !tipsEnabled()) section = canAccessAdminSection("accounts") ? "accounts" : firstAllowedAdminSection();
     if (!canAccessAdminSection(section)) section = firstAllowedAdminSection();
+    const navigationSection = section;
+    if (section === "barrios") section = "webmenu";
     if (state.activeAdminSection !== section) window.dispatchEvent(new Event('donpieros-section-change'));
     state.activeAdminSection = section;
     $$("[data-admin-section]").forEach((el) => {
@@ -1062,7 +1064,7 @@ const App = (() => {
     });
     $$(".admin-sidebar nav a").forEach((link) => {
       const target = link.getAttribute("href")?.replace("#", "");
-      const active = target === section;
+      const active = target === navigationSection;
       link.classList.toggle("active", active);
       if (active) link.setAttribute("aria-current", "page");
       else link.removeAttribute("aria-current");
@@ -1104,6 +1106,9 @@ const App = (() => {
     }
     if (section === "users") renderUsers();
     if (section === "assistant") renderAdminAi();
+    if (section === "webmenu") window.dispatchEvent(new CustomEvent('donpieros-open-catalog',{
+      detail:navigationSection === "barrios" ? "neighborhoods" : "products"
+    }));
     if (typeof paintRowsProgressively === "function") paintRowsProgressively.resume?.();
   };
 

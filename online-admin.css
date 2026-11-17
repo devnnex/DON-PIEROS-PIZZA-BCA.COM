@@ -193,3 +193,13 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
   #dp-order-dialog .dp-order-actions .dp-whatsapp-order { grid-column:auto; }
   #dp-order-dialog .dp-order-heading h2 { font-size:22px; }
 }
+
+.dp-sector-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.dp-sector { display: flex; flex-direction: column; border: 1px solid #a19770; border-radius: .65rem; overflow: hidden; }
+.dp-sector h3 { display: flex; justify-content: space-between; gap: .75rem; margin: 0; padding: .7rem .85rem; background: #fce74e; color: #241e0d; font-size: 1rem; }
+.dp-sector h3 span { white-space: nowrap; }
+.dp-sector ul { list-style: none; margin: 0 0 auto; padding: 0; }
+.dp-sector li { padding: .35rem .85rem; min-height: 1.9rem; border-bottom: 1px solid #a1977055; }
+.dp-sector form { display: grid; gap: .5rem; padding: .8rem; }
+.dp-sector label { display: grid; gap: .35rem; }
+.dp-sector input { min-width: 0; width: 100%; }

@@ -52,11 +52,41 @@ test('los precios vienen de Sheets, la orden se guarda una vez y la cola cuenta 
  const third=h.call('createOrder',{order:h.order(p)});assert.equal(third.ordersAhead,1);assert.equal(third.queuePosition,2);
 });
 test('domicilios y medios de pago se validan contra la hoja',()=>{
- const h=harness(),p=h.product(),n=h.save('neighborhoods',{name:'Centro',delivery_fee:4000,available:true});
+ const h=harness(),p=h.product(),n=h.save('neighborhoods',{name:'Barrio de prueba',delivery_fee:4000,available:true});
  const order=h.order(p,{fulfillment:'delivery',address:'Calle 10 # 2-30',neighborhoodId:n.id,deliveryFee:4000,subtotal:1});
  const result=h.call('createOrder',{order});assert.equal(result.ok,true);assert.equal(result.total,29000);assert.equal(result.subtotal,25000);
  assert.equal(h.call('createOrder',{order:h.order(p,{paymentId:'cuenta-falsa'})}).ok,false);
  assert.equal(h.call('createOrder',{order:h.order(p,{fulfillment:'delivery',address:'Calle 1',neighborhoodId:n.id,deliveryFee:0})}).ok,false);
+});
+test('precarga siete sectores y solo cambia la tarifa con sesión autorizada y versión vigente',()=>{
+ const h=harness(), product=h.product();
+ h.sheets.get('Barrios_Web').appendRow(['legacy-galan','Galán',3000,true,0,1]);
+ const baseline=h.call('dp_admin_catalog');
+ assert.deepEqual(baseline.deliverySectors.map(s=>s.fee),[6000,6000,7000,8000,9000,20000,36000]);
+ assert.deepEqual(baseline.deliverySectors.map(s=>baseline.neighborhoods.filter(n=>n.delivery_sector===s.id).length),[22,30,28,31,6,4,3]);
+ const galan=baseline.neighborhoods.find(n=>n.name==='Galán');
+ assert.equal(galan.id,'legacy-galan');assert.equal(galan.delivery_fee,6000);
+ const payload={sectorId:1,fee:7500,version:0};
+ for(const token of ['', 'waiter', 'limited'])assert.equal(h.call('dp_save_delivery_sector',payload,token).ok,false);
+ assert.equal(h.call('dp_save_delivery_sector',{...payload,fee:1.5}).ok,false);
+ assert.equal(h.call('dp_save_catalog',{kind:'neighborhoods',item:{...galan,delivery_fee:1}}).ok,false);
+ assert.equal(h.call('dp_delete_catalog',{kind:'neighborhoods',id:galan.id,version:1}).ok,false);
+ const delivery={fulfillment:'delivery',address:'Calle 5 #20-10',neighborhoodId:galan.id,deliveryFee:6000};
+ assert.equal(h.call('createOrder',{order:h.order(product,{...delivery,deliveryFee:1})}).ok,false);
+ const original=h.call('createOrder',{order:h.order(product,delivery)});
+ assert.equal(original.deliveryFee,6000);
+ assert.equal(h.call('dp_get_catalog',{},'').neighborhoods.find(n=>n.id===galan.id).delivery_fee,6000);
+ assert.equal(h.call('dp_save_delivery_sector',payload).ok,true);
+ assert.equal(h.call('dp_save_delivery_sector',payload).ok,false);
+ const refreshed=h.call('dp_get_catalog',{},'');
+ assert.equal(refreshed.deliverySectors,undefined);
+ assert.ok(refreshed.neighborhoods.filter(n=>n.delivery_sector===1).every(n=>n.delivery_fee===7500));
+ assert.ok(refreshed.neighborhoods.filter(n=>n.delivery_sector===2).every(n=>n.delivery_fee===6000));
+ assert.equal(h.call('createOrder',{order:h.order(product,delivery)}).ok,false);
+ const updated=h.call('createOrder',{order:h.order(product,{...delivery,deliveryFee:7500})});
+ assert.equal(updated.deliveryFee,7500);assert.equal(updated.total,32500);
+ const saved=h.call('dp_get_orders',{status:'active'}).orders.find(o=>o.id===original.orderId);
+ assert.equal(saved.deliveryFee,6000);assert.equal(saved.neighborhood,'Galán');
 });
 test('los adicionales requieren disponibilidad y se recalculan en el servidor',()=>{
  const h=harness(),extra=h.save('toppings',{name:'Queso',kind:'Extra',price:3000,available:true});
