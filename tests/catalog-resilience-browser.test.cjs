@@ -24,14 +24,15 @@ test('domicilio sugiere un barrio desde la dirección y suma la tarifa al selecc
   await page.locator('label:has([name="fulfillment"][value="delivery"])').click();
   await page.locator('[name="address"]').fill('Calle 12 #34-56, Ciudad Bolviar');
   const option=page.locator('#neighborhood-suggestions button').first();
-  assert.match(await option.textContent(),/Ciudad Bolívar.*6[.,]000/);
+  assert.equal(await option.textContent(),'Ciudad Bolívar');
   await option.click();
   assert.equal(await page.locator('[name="neighborhood"]').inputValue(),'Ciudad Bolívar');
-  assert.match(await page.locator('#checkout-delivery-fee').textContent(),/6[.,]000/);
+  assert.doesNotMatch(await page.locator('.summary').textContent(),/Domicilio/);
+  assert.doesNotMatch(await page.locator('#neighborhood-help').textContent(),/6[.,]000/);
   const amount=id=>page.locator(id).textContent().then(value=>Number(value.replace(/\D/g,'')));
   assert.equal(await amount('#checkout-total'),product.price+6000);
   await page.locator('[name="neighborhood"]').fill('simon boli');
-  assert.match(await page.locator('#neighborhood-suggestions button').first().textContent(),/Simón Bolívar.*7[.,]000/);
+  assert.equal(await page.locator('#neighborhood-suggestions button').first().textContent(),'Simón Bolívar');
   await context.close();
  });}finally{await browser.close();}
 });

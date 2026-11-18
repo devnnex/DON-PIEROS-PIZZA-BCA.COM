@@ -10102,7 +10102,11 @@ const App = (() => {
       : Number(totals.total || 0);
     const suggestedTip = !invoice && tipsEnabled() ? tipAmountFor(baseTotal) : 0;
     const receiptTotal = invoice ? Number(totals.total || baseTotal + chargedTip) : baseTotal + suggestedTip;
-    const items = (invoice?.items || session.session_items || []).filter((item) => item.status !== "cancelled");
+    const webOrderId = invoice?.webOrderId || session.web_order_id;
+    const items = (invoice?.items || session.session_items || []).filter((item) =>
+      item.status !== "cancelled" &&
+      !(webOrderId && !item.menu_item_id && item.item_name === "Domicilio")
+    );
     const isPaid = Boolean(invoice);
     const receiptNumber = invoice?.number || `FACT-${sessionReference(session)}`;
     const issuedAt = new Date(invoice?.createdAt || Date.now());
@@ -10155,8 +10159,7 @@ const App = (() => {
         <div class="meta">
           <span>Documento:</span><strong>${escapeHTML(receiptNumber)}</strong>
           <span>Origen:</span><strong>${escapeHTML(sessionLabel(session))}</strong>
-          <span>Entrega:</span><strong>${invoice?.fulfillment==='delivery'?'Domicilio':items.some(item=>globalThis.DonPierosPackaging?.read(item.notes).fulfillment==='pickup')?'Recoger en local':'Para comer en mesa'}</strong>
-          ${invoice?.deliveryFeePending||session.delivery_fee_pending?'<span>Domicilio:</span><strong>Por confirmar</strong>':''}
+          <span>Entrega:</span><strong>${(invoice?.fulfillment || session.fulfillment)==='delivery'?'Domicilio':items.some(item=>globalThis.DonPierosPackaging?.read(item.notes).fulfillment==='pickup')?'Recoger en local':'Para comer en mesa'}</strong>
           ${neighborhood?`<span>Barrio:</span><strong style="white-space:pre-wrap">${escapeHTML(neighborhood)}</strong>`:''}
           ${deliveryAddress?`<span>Dirección:</span><strong style="white-space:pre-wrap">${escapeHTML(deliveryAddress)}</strong>`:''}
           <span>Fecha:</span><strong>${window.DonPierosDates.date(issuedAt)}</strong>

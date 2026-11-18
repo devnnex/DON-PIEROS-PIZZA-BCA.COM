@@ -24,18 +24,22 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
     await page.goto('http://127.0.0.1:' + server.address().port);
     await page.addScriptTag({ content: `
       const state={business:{business_name:'Don Pieros Pizza'}};
-      const escapeHTML=String, sessionTotals=()=>({subtotal:58000,total:58000});
+      const escapeHTML=String, sessionTotals=()=>({subtotal:64000,total:64000});
       const tipsEnabled=()=>false, sessionPaid=()=>0, sessionLabel=()=> 'Mesa 1', sessionReference=()=> '123';
       const money=value=>'$'+value, roleLabel=String, paymentMethodLabel=String;
       window.DonPierosDates={date:()=> '06/11/2026',time:()=> '18:00'};
       ${section('thermalReceiptHtml', 'printThermalReceipt')}
       window.receipt=thermalReceiptHtml;
     ` });
-    const session = { id: 'account', customer_phone: '3001234567', session_items: [{ item_name: 'Pizza', quantity: 2, unit_price: 25000 }, { item_name: 'Gaseosa', quantity: 2, unit_price: 4000 }] };
+    const session = { id: 'account', web_order_id: 'DP-123', fulfillment: 'delivery', customer_phone: '3001234567', session_items: [
+      { item_name: 'Pizza', quantity: 2, unit_price: 25000 },
+      { item_name: 'Gaseosa', quantity: 2, unit_price: 4000 },
+      { id: 'account-delivery', item_name: 'Domicilio', quantity: 1, unit_price: 6000 }
+    ] };
     const heights = new Map();
     for (const paid of [false, true]) for (const width of [80, 58]) for (const viewportHeight of [500, 1200]) {
       await page.setViewportSize({ width: 420, height: viewportHeight });
-      const html = await page.evaluate(({ session, paid }) => receipt(session, paid ? { number: 'F-1', totals: { subtotal: 58000, total: 58000 }, payments: [] } : null), { session, paid });
+      const html = await page.evaluate(({ session, paid }) => receipt(session, paid ? { number: 'F-1', webOrderId: 'DP-123', totals: { subtotal: 64000, total: 64000 }, items: session.session_items, payments: [] } : null), { session, paid });
       const popup = await browser.newPage({ viewport: { width: 420, height: viewportHeight } });
       await popup.goto('http://127.0.0.1:' + server.address().port);
       await popup.setContent(html, { waitUntil: 'domcontentloaded' });
@@ -52,6 +56,8 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
           pageHeight: pdf.internal.pageSize.getHeight() };
       }, width);
       const label = `${paid ? 'factura' : 'precuenta'} ${width}mm / pantalla ${viewportHeight}`;
+      assert.doesNotMatch(await popup.locator('.items').innerText(), /Domicilio/);
+      assert.equal(await popup.locator('strong.total').innerText(), '$64000');
       assert.ok(result.logoReady, label + ': logo cargado antes de medir y crear el PDF');
       assert.match(await popup.locator('.meta').first().innerText(),/Teléfono:\s*3001234567/,label+': teléfono impreso');
       assert.ok(result.nitGap >= -0.1 && result.nitGap <= 8, label + ': NIT inmediatamente debajo del negocio');
