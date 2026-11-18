@@ -176,8 +176,8 @@
     $('#checkout-total-label').textContent=deliveryFeePending() ? 'Total de productos y cajas' : 'Total';
     $('#checkout-total').textContent=money(total());
     const help=$('#neighborhood-help');
-    if(help)help.textContent=state.selectedNeighborhood ? 'Barrio seleccionado.' : 'Si no encontramos tu barrio, confirmaremos el domicilio por WhatsApp.';
-    $('#confirm-order').textContent='Confirmar pedido · '+money(total())+(deliveryFeePending()?' + domicilio por confirmar':'');
+    if(help)help.textContent=state.selectedNeighborhood ? '' : 'Si tu barrio no aparece, elige el más cercano de la lista.';
+    $('#confirm-order').textContent=deliveryFeePending()?'Elegir barrio para confirmar':'Confirmar pedido · '+money(total());
   }
   function total() { return subtotal() + packagingFee() + deliveryFee(); }
   function productById(id) { return products.find(product => product.id === id) || state.cart.find(item => item.productId === id)?.productSnapshot; }
@@ -440,11 +440,12 @@
     $$('[data-checkout-field]', form).forEach(label => {
       const name=label.dataset.checkoutField, field=$(`[name="${name}"]`,label), value=field.value.trim();
       const valid=name==='phone' ? /^[\d\s]+$/.test(value)&&value.replace(/\D/g,'').length===10
+        : name==='neighborhood' ? Boolean(state.selectedNeighborhood)
         : name==='notes' ? value.length>0&&value.length<=180 : value.length >= (name==='address'?5:2);
       label.classList.toggle('is-complete',valid);
       $('.checkout-field-status',label).textContent=valid?'✓ Correcto':name==='notes'?'Opcional':'Obligatorio';
       field.setAttribute('aria-invalid',String(Boolean(value)&&!valid));
-      field.setCustomValidity(valid||name==='notes'?'':name==='phone'?'Escribe un teléfono de 10 dígitos. Puedes separarlos con espacios.':'Completa este campo.');
+      field.setCustomValidity(valid||name==='notes'?'':name==='phone'?'Escribe un teléfono de 10 dígitos. Puedes separarlos con espacios.':name==='neighborhood'?'Elige un barrio de la lista.':'Completa este campo.');
     });
     ['fulfillment','payment'].forEach(name => {
       const group=$(`[name="${name}"]`,form)?.closest('fieldset');if(!group)return;
@@ -485,7 +486,8 @@
       const deliveryFields = state.fulfillment === 'delivery' ? '<div class="delivery-fields">'
         + checkoutField('address','Dirección','placeholder="Calle, carrera, número y detalles" minlength="5" maxlength="120" autocomplete="street-address"')
         + '<div class="neighborhood-suggestions" id="neighborhood-suggestions" role="group" aria-label="Barrios sugeridos"></div>'
-        + checkoutField('neighborhood','Barrio','aria-describedby="neighborhood-help" placeholder="Escribe tu barrio o elige uno" minlength="2" maxlength="60" autocomplete="off"','Puedes escribir tu barrio o elegir una sugerencia.')
+        + checkoutField('neighborhood','Barrio','aria-describedby="neighborhood-help" placeholder="Escribe tu barrio o elige uno" maxlength="120" autocomplete="off"','Si tu barrio no aparece, elige el más cercano de la lista.')
+        + `<details id="neighborhood-directory"><summary>Ver todos los barrios</summary><select id="neighborhood-picker" aria-label="Barrios disponibles"><option value="">Selecciona un barrio</option>${[...neighborhoods].sort((a,b)=>a.name.localeCompare(b.name,'es')).map(item=>`<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('')}</select></details>`
         + '</div>' : '';
       root.innerHTML = `<form class="checkout" id="checkout-form"><fieldset class="checkout-choice"><legend>¿Cómo quieres recibir tu pedido? <small class="checkout-field-status" aria-live="polite">Obligatorio</small></legend><div class="choice-grid"><label><input type="radio" name="fulfillment" value="pickup" ${state.fulfillment === 'pickup' ? 'checked' : ''} required><span><b>⌂</b><strong>Recoger en local</strong><small>En Don Pieros Pizza</small></span></label><label><input type="radio" name="fulfillment" value="dinein" ${state.fulfillment === 'dinein' ? 'checked' : ''} required><span><b>♧</b><strong>Comer en el local</strong><small>Sin cobro de caja</small></span></label><label><input type="radio" name="fulfillment" value="delivery" ${state.fulfillment === 'delivery' ? 'checked' : ''} required><span><b>⌖</b><strong>Domicilio</strong><small>En tu dirección</small></span></label></div></fieldset>${deliveryFields}${checkoutField('name','Nombre completo','placeholder="¿A nombre de quién?" minlength="2" maxlength="60" autocomplete="name"')}${checkoutField('phone','Teléfono','type="tel" inputmode="tel" placeholder="313 718 3666" maxlength="25" autocomplete="tel-national" aria-describedby="phone-help"','10 dígitos. Puedes escribirlos juntos o separados por espacios.')}${checkoutField('notes','Indicaciones especiales <span class="checkout-note-count"><span id="note-count">'+state.customer.notes.length+'</span>/180</span>','')}<fieldset class="checkout-choice payment-choice"><legend>Método de pago <small class="checkout-field-status" aria-live="polite">Obligatorio</small></legend><div class="payment-grid">${paymentMethods.map(method => `<label><input type="radio" name="payment" value="${escapeHtml(method.id)}" ${state.payment === method.id ? 'checked' : ''} required><span>${escapeHtml(method.name)}</span></label>`).join('')}</div></fieldset>${paymentInfo}<div class="summary"><div><span>Subtotal</span><span>${money(subtotal())}</span></div>${packagingFee()?`<div class="summary-packaging"><span>Cajas para llevar</span><span>${money(packagingFee())}</span></div>`:''}<div class="total"><strong id="checkout-total-label">${deliveryFeePending()?'Total de productos y cajas':'Total'}</strong><strong id="checkout-total">${money(total())}</strong></div></div></form>`;
       if (state.fulfillment === 'delivery') {
@@ -493,7 +495,7 @@
         const wrapper = document.createElement('div'); wrapper.id = 'checkout-location'; wrapper.innerHTML = delivery.markup(); $('.delivery-fields', root).after(wrapper);
       }
       const receipt = document.createElement('section'); receipt.id = 'checkout-receipt'; receipt.className = 'receipt-checkout-card'; receipt.innerHTML = receiptMarkup(); ($('.payment-info', root) || $('.payment-choice', root)).after(receipt);
-      action.innerHTML = `<button id="confirm-order" ${state.receiptBusy ? 'disabled' : ''}>Confirmar pedido · ${money(total())}${deliveryFeePending()?' + domicilio por confirmar':''}</button>`; updateDeliverySummary(); updateCheckoutValidation(); return;
+      action.innerHTML = `<button id="confirm-order" ${state.receiptBusy ? 'disabled' : ''}></button>`; updateDeliverySummary(); updateCheckoutValidation(); return;
     }
     if (!state.cart.length) { root.innerHTML = '<div class="cart-empty"><i>♢</i><h3>Tu pedido está vacío</h3><p>Explora el menú y agrega algo delicioso.</p><button id="explore-menu">Explorar el menú</button></div>'; action.innerHTML = ''; return; }
     const issues = cartAvailabilityIssues();
@@ -571,7 +573,10 @@
       return toast('Revisa tu pedido', 'Un producto o topping dejó de estar disponible.');
     }
     if (state.fulfillment === 'delivery' && state.customer.address.trim().length<5) return guideCheckoutField('[name="address"]','Completa el domicilio','Ingresa una dirección completa para continuar.');
-    if (state.fulfillment === 'delivery' && state.customer.neighborhood.trim().length<2) return guideCheckoutField('[name="neighborhood"]','Completa el barrio','Escribe tu barrio o elige uno de la lista.');
+    if (deliveryFeePending()) {
+      $('#neighborhood-directory').open=true;
+      return guideCheckoutField('[name="neighborhood"]','Elige un barrio de la lista','Si tu barrio no aparece, elige el más cercano.');
+    }
     if (state.customer.name.trim().length<2) return guideCheckoutField('[name="name"]','Completa tus datos','Ingresa al menos dos letras de tu nombre para continuar.');
     if (digits.length !== 10 || !/^[\d\s]+$/.test(state.customer.phone.trim())) return guideCheckoutField('[name="phone"]','Revisa tu teléfono','Escribe exactamente 10 dígitos. Puedes separarlos con espacios, por ejemplo: 313 718 3666.');
     if (!state.payment) return guideCheckoutField('[name="payment"]','Selecciona el pago','Elige un método de pago para continuar.');
@@ -668,7 +673,10 @@
     updateCheckoutValidation();
   });
   $('#cart-action').addEventListener('click', event => { if (event.target.closest('#go-checkout')) { state.cartStep = 'checkout'; renderCart(); } if (event.target.closest('#confirm-order')) void confirmOrder(); });
-  $('#cart-content').addEventListener('change', event => { if (event.target.name === 'receiptFile') void selectReceipt(event.target.files?.[0]); });
+  $('#cart-content').addEventListener('change', event => {
+    if (event.target.name === 'receiptFile') void selectReceipt(event.target.files?.[0]);
+    if (event.target.id === 'neighborhood-picker') chooseNeighborhood(event.target.value);
+  });
   $('#favorites').addEventListener('click', () => {state.favoritesOnly=!state.favoritesOnly;$('#favorites').classList.toggle('active',state.favoritesOnly);state.category='Todo el menú';renderCategories();renderProducts();$('#menu').scrollIntoView({behavior:'smooth'});});
   $('#profile').addEventListener('click', () => toast('Perfil','Tus pedidos se coordinan con Don Pieros Pizza por WhatsApp.'));
   document.body.classList.add('modal-open');

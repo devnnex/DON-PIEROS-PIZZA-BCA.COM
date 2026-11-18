@@ -23,7 +23,7 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   await page.locator('#checkout-form [name=address]').waitFor();
   const field=name=>page.locator(`[data-checkout-field=${name}]`);
   for(const name of ['address','neighborhood','name','phone'])assert.equal(await field(name).locator('.checkout-field-status').innerText(),'Obligatorio');
-  for(const [name,value] of [['address','Calle 10 # 20-30'],['neighborhood','Barrio nuevo'],['name','Cliente prueba']]){
+  for(const [name,value] of [['address','Calle 10 # 20-30'],['neighborhood','Barrio conocido'],['name','Cliente prueba']]){
    await field(name).locator('input').fill(value);assert.equal(await field(name).locator('.checkout-field-status').innerText(),'✓ Correcto');
   }
   const phone=field('phone').locator('input');
@@ -41,18 +41,26 @@ const {chromium}=require('playwright-core'),{harness}=require('../tests/helpers/
   assert.ok(geometry.helpTop>=geometry.inputBottom,JSON.stringify(geometry));assert.equal(geometry.overflows,false);
   assert.equal(await page.locator('.summary-packaging').evaluate(el=>getComputedStyle(el).backgroundColor),'rgba(0, 0, 0, 0)');
   const checkoutTotal=async()=>Number((await page.locator('#checkout-total').innerText()).replace(/\D/g,''));
+  await field('neighborhood').locator('input').fill('');
   const pendingTotal=await checkoutTotal();
   await field('neighborhood').locator('input').fill('Barrio conocido');
   assert.equal(await checkoutTotal(),pendingTotal+6000);
   assert.doesNotMatch(await page.locator('.summary').innerText(),/Domicilio/);
   await field('neighborhood').locator('input').fill('Barrio nuevo');
   assert.equal(await checkoutTotal(),pendingTotal);
-  assert.match(await page.locator('#confirm-order').innerText(),/domicilio por confirmar/);
+  assert.match(await page.locator('#confirm-order').innerText(),/Elegir barrio/);
+  await page.locator('#confirm-order').click();
+  assert.equal(submissions,0,'Un barrio que no figura en la lista impide enviar el pedido');
+  assert.equal(await page.locator('#neighborhood-directory').evaluate(node=>node.open),true);
+  const address=await field('address').locator('input').inputValue();
+  await page.locator('#neighborhood-picker').selectOption({label:'Barrio conocido'});
+  assert.equal(await field('address').locator('input').inputValue(),address);
+  assert.equal(await checkoutTotal(),pendingTotal+6000);
   await field('neighborhood').scrollIntoViewIfNeeded();fs.mkdirSync('artifacts',{recursive:true});await page.screenshot({path:'artifacts/checkout-campos-movil.png'});
   await page.setViewportSize({width:320,height:740});await page.waitForTimeout(100);
   assert.equal(await page.evaluate(()=>document.querySelector('#neighborhood-help').getBoundingClientRect().top>=document.querySelector('[name=neighborhood]').getBoundingClientRect().bottom),true);
   await page.locator('#confirm-order').click();await page.locator('.success-celebration').waitFor();assert.equal(submissions,1);
-  const saved=h.call('dp_get_orders').orders[0];assert.equal(saved.phone,'3137183666');assert.equal(saved.paymentMethod,'Transferencia Nequi');assert.equal(saved.deliveryFeePending,true);assert.equal(saved.packagingFee,2000);
+  const saved=h.call('dp_get_orders').orders[0];assert.equal(saved.phone,'3137183666');assert.equal(saved.paymentMethod,'Transferencia Nequi');assert.equal(saved.deliveryFeePending,false);assert.equal(saved.deliveryFee,6000);assert.equal(saved.packagingFee,2000);
   assert.deepEqual(await page.evaluate(()=>JSON.parse(localStorage.getItem('don-pieros-cart-v2'))),[],'El pedido confirmado limpia el carrito guardado');
   assert.equal(await page.locator('#header-cart .cart-count').innerText(),'0');
   const whatsapp=new URL(await page.locator('.success-celebration .dp-whatsapp').getAttribute('href'));

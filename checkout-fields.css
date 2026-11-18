@@ -12,3 +12,5 @@
 .store-details .store-whatsapp{flex-wrap:wrap;gap:5px}
 .store-whatsapp a{color:inherit;font-weight:750;text-underline-offset:3px;white-space:nowrap}
 #checkout-form .neighborhood-suggestions { position: static; margin-top: .25rem; }
+#neighborhood-directory summary { cursor: pointer; padding-block: .5rem; }
+#neighborhood-picker { width: 100%; min-height: 44px; font-size: 16px; }
