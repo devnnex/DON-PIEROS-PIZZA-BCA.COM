@@ -537,11 +537,16 @@
       <div class="order-number">${order.source==='staff_walk_in'?'VENTA INDIVIDUAL':'PEDIDO'} ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p>${esc(sourceLabel(order))}</p><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
       <div class="rule"></div><p><strong>PREPARAR · ${units} ${units===1?'UNIDAD':'UNIDADES'}</strong></p>
-      ${orderDetails().groupComandaItems(order.items).map(item=>`<section class="kitchen-item"><h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3><p>Precio unitario: ${money(item.unitPrice)}<br>Productos: ${money(Number(item.unitPrice)*Number(item.quantity))}${item.packagingUnitFee?`<br>ANEXO: CAJA ${esc(item.packagingSize)}: ${money(item.packagingUnitFee)} c/u · ${money(Number(item.packagingUnitFee)*Number(item.quantity))}`:''}<br>Total de la línea: ${money((Number(item.unitPrice)+Number(item.packagingUnitFee||0))*Number(item.quantity))}</p>${item.selections.length?`<ul class="options">${window.DonPierosOrderLabels.compact(item.selections).map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}</section>`).join('')}
+      ${order.items.map(item=>`<section class="kitchen-item">
+        <h3>${Number(item.quantity)||0} × ${esc(item.name)}</h3>
+        <p>${money(item.unitPrice)} c/u${Number(item.packagingUnitFee)>0?`<br>Caja: ${money(item.packagingUnitFee)} c/u`:''}</p>
+        ${item.selections?.length?`<ul class="options">${window.DonPierosOrderLabels.compact(item.selections).map(selection=>{const option=window.DonPierosThermal.sizeOption(kitchenSelection(selection));return `<li class="${option.isSize?'size-option':''}">${option.html}</li>`;}).join('')}</ul>`:''}
+        ${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}
+      </section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
       <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio: Por confirmar</p>':''}
       <p>Productos: <strong>${money(order.subtotal)}</strong></p>${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}${order.fulfillment==='delivery'&&!order.deliveryFeePending?`<p>Domicilio: <strong>${money(order.deliveryFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS Y CAJAS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
-      </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',orderDetails().groupComandaItems(order.items),order.notes,order);
+      </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',order.items,order.notes,order);
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
     return window.DonPierosThermal.print(popup,width).then(()=>window.DonPierosReception?.mark?.('order:'+order.id,'printed')).catch(error=>{
