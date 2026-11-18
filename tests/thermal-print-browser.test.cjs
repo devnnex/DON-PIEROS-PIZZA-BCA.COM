@@ -46,13 +46,18 @@ test('impresión habitual: PDF de 58 y 80 mm, vista abierta y diálogo de impres
     }));
     const nativePrint=DonPierosThermal.print,nativeAddImage=jspdf.jsPDF.API.addImage;
     const rasterRows=new Set();
-    let headings,firstLine,total,body,slices=0;
+    let headings,firstLine,total,body,slices=0,deliveryLabels,mixedLabels;
     try{
      DonPierosThermal.print=(popup,paperWidth)=>{
       const doc=popup.document,lines=[...doc.querySelectorAll('.kitchen-item')];
       headings=lines.map(line=>line.querySelector('h3').textContent);
       firstLine=lines[0].textContent;total=doc.querySelector('.total-amount').textContent;
       body=doc.querySelector('.kitchen-ticket').textContent;
+      deliveryLabels=lines.filter(line=>[...line.querySelectorAll('p')].some(p=>p.textContent.trim()==='Domicilio')).length;
+      const mixed=document.implementation.createHTMLDocument('');
+      mixed.body.innerHTML='<div class="fulfillment">Domicilio</div><article><h3>Pizza</h3></article><article><h3>Bebida</h3></article>';
+      DonPierosOrderDetails.prepareComanda(mixed,'article',[{fulfillment:'delivery'},{fulfillment:'pickup'}],'');
+      mixedLabels=[...mixed.querySelectorAll('article')].map(line=>line.textContent.includes('Domicilio'));
       [...lines,doc.querySelector('.total')].forEach((line,index)=>{
        const marker=doc.createElement('span');
        marker.style.cssText='position:absolute;left:9px;width:8px;height:8px;background:rgb('+String(30+index*3)+',100,220)';
@@ -74,13 +79,17 @@ test('impresión habitual: PDF de 58 y 80 mm, vista abierta y diálogo de impres
       neighborhood:'Centro',createdAt:'2026-11-17',items,subtotal:915000,packagingFee:1500,deliveryFee:6000,
       total:922500,paymentMethod:'Efectivo'},width);
     }finally{DonPierosThermal.print=nativePrint;jspdf.jsPDF.API.addImage=nativeAddImage;}
-    return {headings,firstLine,total,body,slices,rasterRows:[...rasterRows].sort((a,b)=>a-b)};
+    return {headings,firstLine,total,body,slices,deliveryLabels,mixedLabels,rasterRows:[...rasterRows].sort((a,b)=>a-b)};
    },width);
    assert.equal(order.headings.length,60);
    assert.deepEqual(order.headings.slice(0,2),['2 × Porción hawaiiana','1 × Porción hawaiiana']);
    assert.match(order.firstLine,/\$15000 c\/u\s*Caja: \$500 c\/u/);
    assert.doesNotMatch(order.body,/Precio unitario|ANEXO|Total de la línea/);
    assert.match(order.total,/\$922500/);
+   assert.match(order.body,/Cajas:\s*\$1500/);
+   assert.match(order.body,/Domicilio:\s*\$6000/);
+   assert.equal(order.deliveryLabels,0);
+   assert.deepEqual(order.mixedLabels,[true,false]);
    assert.ok(order.slices>1);
    assert.deepEqual(order.rasterRows,Array.from({length:61},(_,index)=>index),'Cada producto y el total llegan a los píxeles del PDF.');
   }

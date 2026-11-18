@@ -203,3 +203,11 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 .dp-sector form { display: grid; gap: .5rem; padding: .8rem; }
 .dp-sector label { display: grid; gap: .35rem; }
 .dp-sector input { min-width: 0; width: 100%; }
+
+.dp-neighborhood-filter { display:grid; grid-template-columns:minmax(0,2fr) minmax(10rem,1fr); gap:.55rem .9rem; align-items:end; margin:.75rem 0; padding:.85rem 1rem; border:1px solid #e0d6b9; border-radius:14px; background:#fbf7ec; color:#2b2417; }
+.dp-neighborhood-filter[hidden] { display:none; }
+.dp-neighborhood-filter label { display:grid; gap:.35rem; min-width:0; font-weight:700; }
+.dp-neighborhood-filter :is(input,select) { width:100%; min-height:44px; padding:.55rem .75rem; border:1px solid #cfc2a1; border-radius:9px; background:#fff; color:#222; font-size:16px; }
+.dp-neighborhood-filter :is(input,select):focus-visible { outline:2px solid #806619; outline-offset:2px; }
+#dp-neighborhood-count { grid-column:1/-1; margin:0; color:#5c4e32; font-size:.85rem; }
+@media (max-width: 540px) { .dp-neighborhood-filter { grid-template-columns:1fr; } }

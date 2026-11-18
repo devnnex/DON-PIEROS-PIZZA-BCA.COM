@@ -120,7 +120,13 @@
           <button type="button" data-catalog="payments" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h3"/></svg>Pagos</button>
           <button type="button" data-catalog="neighborhoods" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></svg>Barrios</button>
         </div><div><button class="ghost" id="dp-menu-refresh" type="button">↻ Actualizar</button> <button class="primary" id="dp-add-item" type="button">＋ Agregar</button></div></div>
-        <label class="dp-category-filter" id="dp-category-filter"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></svg>Categoría</span><select id="dp-menu-category"><option value="">Todas las categorías</option></select></label><p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
+        <label class="dp-category-filter" id="dp-category-filter"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6 7v6l-4 2v-8Z"/></svg>Categoría</span><select id="dp-menu-category"><option value="">Todas las categorías</option></select></label>
+        <div class="dp-neighborhood-filter" id="dp-neighborhood-filter" hidden>
+          <label><span>Buscar barrio</span><input type="search" id="dp-neighborhood-query" placeholder="Ej.: Ciudad Bolívar" autocomplete="off"></label>
+          <label><span>Sector</span><select id="dp-neighborhood-sector"><option value="">Todos los sectores</option>${Array.from({length:7},(_,i)=>`<option value="${i+1}">Sector ${i+1}</option>`).join('')}<option value="0">Sin sector</option></select></label>
+          <p id="dp-neighborhood-count" role="status"></p>
+        </div>
+        <p id="dp-menu-status" role="status"></p><div id="dp-catalog-list"></div>
       </section>`);
     $('#alertsPanel').insertAdjacentHTML('afterend','<div id="dp-dashboard-orders" class="dp-dashboard-orders"></div>');
     document.body.insertAdjacentHTML('beforeend',`<dialog id="dp-order-dialog" class="dp-dialog" aria-labelledby="dp-order-title"><div class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><div id="dp-order-detail"></div></div></dialog><dialog id="dp-item-dialog" class="dp-dialog"><form id="dp-item-form" class="dp-dialog-card"><button class="dp-close" type="button" data-dp-close aria-label="Cerrar">×</button><span class="eyebrow">Menú online</span><h2 id="dp-item-title"></h2><div id="dp-item-fields"></div><p id="dp-item-error" role="alert"></p><div class="dp-form-actions"><button class="ghost" type="button" data-dp-close>Cancelar</button><button class="primary" id="dp-item-save" type="submit">Guardar</button></div></form></dialog>`);
@@ -163,6 +169,8 @@
     $('#dp-prev').onclick=()=>{offset=Math.max(0,offset-60);void loadOrders(true);};$('#dp-next').onclick=()=>{offset+=60;void loadOrders(true);};
     $('#dp-menu-refresh').onclick=()=>void loadCatalog();$('#dp-add-item').onclick=()=>openItem();
     $('#dp-menu-category').onchange=renderCatalog;
+    $('#dp-neighborhood-query').oninput=renderCatalog;
+    $('#dp-neighborhood-sector').onchange=renderCatalog;
     $('#dp-catalog-tabs').onclick=e=>{const button=e.target.closest('[data-catalog]');if(button)selectCatalogKind(button.dataset.catalog);};
     window.addEventListener('donpieros-open-catalog',event=>selectCatalogKind(event.detail));
     if(location.hash==='#barrios'&&canMenu())selectCatalogKind('neighborhoods');
@@ -525,14 +533,14 @@
       @page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}
       html{background:#fff}body{font:${width===58?'12':'14'}px/1.4 Arial,Helvetica,sans-serif;color:#000;background:#fff;margin:0;padding:0;width:${width}mm}
       .kitchen-ticket{border:1px solid #000;padding:2mm}.brand-logo{display:block;width:28mm;height:22mm;object-fit:contain;margin:0 auto 2mm}
-      h1{font-size:${width===58?'15':'17'}px;line-height:1.15;text-align:center;margin:0 0 5px}h2{font-size:18px;margin:7px 0}p{margin:5px 0;overflow-wrap:anywhere}
-      .center{text-align:center}.rule{border-top:1px dashed #000;margin:6px 0}.order-number{font-size:20px;font-weight:900;text-align:center;margin:8px 0}
-      .fulfillment{border:2px solid #000;padding:7px 3px;text-align:center;font-weight:900;margin:10px 0}.customer{font-weight:800;font-size:15px}
-      .kitchen-item{border-bottom:1px dashed #000;padding:6px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item h3{font-size:${width===58?'17':'20'}px;line-height:1.25;margin:0 0 7px;overflow-wrap:anywhere}
-      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'14':'16'}px;font-weight:700;margin:5px 0;overflow-wrap:anywhere}
+      h1{font-size:${width===58?'15':'17'}px;line-height:1.15;text-align:center;margin:0 0 4px}h2{font-size:18px;margin:5px 0}p{margin:3px 0;overflow-wrap:anywhere}
+      .center{text-align:center}.rule{border-top:1px dashed #000;margin:4px 0}.order-number{font-size:20px;font-weight:900;text-align:center;margin:5px 0}
+      .fulfillment{border:2px solid #000;padding:4px 3px;text-align:center;font-weight:900;margin:5px 0}.customer{font-weight:800;font-size:15px}
+      .kitchen-item{border-bottom:1px dashed #000;padding:4px 0;break-inside:avoid;page-break-inside:avoid}.kitchen-item:last-of-type{border-bottom:0}.kitchen-item h3{font-size:${width===58?'17':'20'}px;line-height:1.25;margin:0 0 3px;overflow-wrap:anywhere}
+      .options{padding-left:17px;margin:0}.options li{font-size:${width===58?'14':'16'}px;font-weight:700;margin:2px 0;overflow-wrap:anywhere}
       ${window.DonPierosThermal.sizeStyle}
       .notes{border:2px solid #000;padding:8px;margin:13px 0;break-inside:avoid;page-break-inside:avoid}.notes strong{display:block;font-size:14px}.notes p{white-space:pre-wrap;font-weight:700}
-      .total{font-size:12px;font-weight:900}.total-amount{display:block;font-size:21px}.total-amount small{font-size:10px}.payment{border-top:1px solid #000;padding-top:8px;font-weight:700}footer{font-size:12px;font-weight:900;text-align:center;margin-top:8px}
+      .total{display:flex;justify-content:space-between;align-items:baseline;gap:4px;font-size:12px;font-weight:900}.total-amount{font-size:21px;white-space:nowrap}.total-amount small{font-size:10px}.payment{border-top:1px solid #000;padding-top:4px;font-weight:700}
       </style></head><body><main class="kitchen-ticket"><img class="brand-logo" src="${esc(new URL('images/don-pieros-logo.png',location.href).href)}" alt="Don Pieros Pizza"><h1>DON PIEROS PIZZA</h1><p class="center"><strong>${order.source==='staff_walk_in'?'COMANDA · VENTA INDIVIDUAL':'COMANDA DE COCINA'}</strong></p>
       <div class="order-number">${order.source==='staff_walk_in'?'VENTA INDIVIDUAL':'PEDIDO'} ${esc(order.sequence||String(order.id).split('-').at(-1))}</div><p class="center">${esc(order.id)}</p><p class="center">${esc(date(order.createdAt))}</p>
       <div class="fulfillment">${fulfillmentLabel(order.fulfillment)}</div><p>${esc(sourceLabel(order))}</p><p class="customer">${esc(order.customerName)}</p>${order.phone?`<p>Teléfono: ${esc(order.phone)}</p>`:''}
@@ -544,8 +552,10 @@
         ${item.notes?`<p class="line-notes">${esc(item.notes)}</p>`:''}
       </section>`).join('')}
       ${order.notes?`<section class="notes"><strong>INDICACIONES PARA COCINA</strong><p>${esc(order.notes)}</p></section>`:''}
-      <div class="rule"></div>${order.deliveryFeePending?'<p>Domicilio: Por confirmar</p>':''}
-      <p>Productos: <strong>${money(order.subtotal)}</strong></p>${order.packagingFee?`<p>Cajas para llevar: <strong>${money(order.packagingFee)}</strong></p>`:''}${order.fulfillment==='delivery'&&!order.deliveryFeePending?`<p>Domicilio: <strong>${money(order.deliveryFee)}</strong></p>`:''}<p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS Y CAJAS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
+      <div class="rule"></div><p>Productos: <strong>${money(order.subtotal)}</strong></p>
+      ${order.packagingFee?`<p>Cajas: <strong>${money(order.packagingFee)}</strong></p>`:''}
+      ${order.fulfillment==='delivery'||order.deliveryFeePending||Number(order.deliveryFee)>0?`<p>Domicilio: <strong>${order.deliveryFeePending?'Por confirmar':money(order.deliveryFee)}</strong></p>`:''}
+      <p class="total">${order.deliveryFeePending?'TOTAL DE PRODUCTOS Y CAJAS':'TOTAL'}:<span class="total-amount">${money(order.total)} <small>COP</small></span></p><p class="payment">Pago: ${esc(order.paymentMethod)}</p>
       </main></body></html>`);d.close();orderDetails().prepareComanda(d,'.kitchen-item',order.items,order.notes,order);
     // Measure the complete receipt before printing; paper height grows with all
     // products and notes instead of clipping to a fixed page or a tiny viewport.
@@ -589,8 +599,15 @@
   }
   function applyCatalogItem(kind,item){catalogEpoch++;catalog[kind]=[...(catalog[kind]||[]).filter(row=>row.id!==item.id),item].sort((a,b)=>a.sort_order-b.sort_order||String(a.name).localeCompare(String(b.name)));}
   function removeCatalogPhoto(path,message){void api().db.storage.from('product-images').remove([path]).then(({error})=>{if(error)notify(message,true);}).catch(()=>notify(message,true));}
-  function renderDeliverySectors(rows) {
-    return `<div class="dp-sector-grid">${catalog.deliverySectors.map(sector=>`
+  function neighborhoodSector(item) {
+    if(item.delivery_sector)return Number(item.delivery_sector);
+    if(Array.isArray(catalog.deliverySectors))return 0;
+    // Registros cargados mediante Agregar barrio: cada sector ocupa su rango de orden.
+    const order=Number(item.sort_order),sector=Math.floor(order/100);
+    return Number.isInteger(order)&&order%100<([22,30,28,31,6,4,3][sector-1]||0)?sector:0;
+  }
+  function renderDeliverySectors(rows,sectors) {
+    return `<div class="dp-sector-grid">${sectors.map(sector=>`
       <section class="dp-sector">
         <h3>Sector ${esc(sector.id)} <span>${money(sector.fee)}</span></h3>
         <ul>${rows.filter(item=>item.delivery_sector===sector.id).map(item=>`<li>${esc(item.name)}</li>`).join('')}</ul>
@@ -624,16 +641,30 @@
   }
   function renderCatalog(){
     $('#webmenu').dataset.catalogKind=catalogKind;
+    $('#dp-neighborhood-filter').hidden=catalogKind!=='neighborhoods';
     if(!catalog){$('#dp-catalog-list').innerHTML='<div class="dp-empty">Actualiza el menú para ver y editar tus productos.</div>';return;}
     let rows=(catalog[catalogKind]||[]).filter(item=>!deletions()?.hidden('catalog-'+catalogKind,item.id));
     if(catalogKind==='products'&&window.DonPierosMenuOrder)rows=window.DonPierosMenuOrder.products(rows);
     const select=$('#dp-menu-category'),selected=select.value,categories=window.DonPierosMenuOrder?.categories(catalog.products||[])||[...new Set((catalog.products||[]).map(p=>p.category))];
     select.innerHTML='<option value="">Todas las categorías</option>'+categories.map(c=>`<option value="${esc(c)}" ${c===selected?'selected':''}>${esc(c)}</option>`).join('');$('#dp-category-filter').hidden=catalogKind!=='products';
     if(catalogKind==='products'&&select.value)rows=rows.filter(item=>item.category===select.value);
+    const sector=$('#dp-neighborhood-sector').value;
+    const terms=normalize($('#dp-neighborhood-query').value).split(' ').filter(Boolean);
+    if(catalogKind==='neighborhoods'){
+      rows=rows.filter(item=>(sector===''||neighborhoodSector(item)===Number(sector))&&
+        terms.every(term=>normalize(item.name).includes(term)));
+      $('#dp-neighborhood-count').textContent=`${rows.length} ${rows.length===1?'barrio':'barrios'}`;
+      if(!rows.length&&(terms.length||sector!=='')){
+        $('#dp-catalog-list').innerHTML='<div class="dp-empty">No hay barrios que coincidan con la búsqueda.</div>';
+        return;
+      }
+    }
     const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
     if(catalogKind==='neighborhoods'&&Array.isArray(catalog.deliverySectors)){
       const custom=rows.filter(item=>!item.delivery_sector);
-      $('#dp-catalog-list').innerHTML=renderDeliverySectors(rows)+(custom.length?
+      const sectors=catalog.deliverySectors.filter(item=>(sector===''||item.id===Number(sector))&&
+        (!terms.length||rows.some(row=>row.delivery_sector===item.id)));
+      $('#dp-catalog-list').innerHTML=renderDeliverySectors(rows,sectors)+(custom.length?
         `<section class="dp-category-section"><h3>Barrios adicionales</h3><div class="dp-menu-grid">${custom.map(card).join('')}</div></section>`:'');
       return;
     }

@@ -127,6 +127,20 @@ test('Menú online muestra la copia al abrir; el diseño nuevo afecta solamente 
   await page.getByText('Tarifa guardada para el sector 1.').waitFor();
   assert.match(await firstSector.locator('h3').textContent(),/6[.,]500/);
   assert.match(await page.locator('.dp-sector').nth(1).locator('h3').textContent(),/6[.,]000/);
+  await page.locator('#dp-neighborhood-query').fill('galan');
+  assert.equal(await page.locator('.dp-sector').count(),1);
+  assert.equal(await page.locator('#dp-neighborhood-count').textContent(),'1 barrio');
+  await page.locator('#dp-neighborhood-sector').selectOption('2');
+  assert.match(await page.locator('#dp-catalog-list').textContent(),/No hay barrios/);
+  await page.locator('#dp-neighborhood-query').fill('');
+  assert.match(await page.locator('.dp-sector').textContent(),/Arenal/);
+  await page.locator('#dp-menu-refresh').click();
+  await held.shift().fulfill({json:{...catalog,neighborhoods:[
+   {id:'galan',name:'Galán',delivery_fee:6000,sort_order:100,available:true},
+   {id:'arenal',name:'Arenal',delivery_fee:6000,sort_order:200,available:true}
+  ]}});
+  await page.locator('.dp-menu-card').waitFor();
+  assert.equal(await page.locator('.dp-menu-card h3').allTextContents().then(names=>names.join()),'Arenal');
   await context.close();
  });}finally{await browser.close();}
 });

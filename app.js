@@ -10103,6 +10103,8 @@ const App = (() => {
     const suggestedTip = !invoice && tipsEnabled() ? tipAmountFor(baseTotal) : 0;
     const receiptTotal = invoice ? Number(totals.total || baseTotal + chargedTip) : baseTotal + suggestedTip;
     const webOrderId = invoice?.webOrderId || session.web_order_id;
+    const individualSale = invoice?.orderSource === 'staff_walk_in' || session.order_source === 'staff_walk_in' ||
+      (!webOrderId && (invoice?.saleChannel === 'walk_in' || session.sale_channel === 'walk_in'));
     const items = (invoice?.items || session.session_items || []).filter((item) =>
       item.status !== "cancelled" &&
       !(webOrderId && !item.menu_item_id && item.item_name === "Domicilio")
@@ -10139,6 +10141,7 @@ const App = (() => {
         .meta, .totals, .item { margin-right: 6mm; }
         .meta { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); }
         .totals, .item { grid-template-columns: minmax(0, 1fr) fit-content(65%); }
+        .item.item-individual { grid-template-columns: minmax(0, 1fr); }
         .totals > strong, .item > strong { text-align: right; white-space: normal; }
         .meta > strong, .totals > strong, .item > strong { position: relative; left: -6px; }
         @media print { body { margin: 0 auto; padding: 0; width: 72mm; color: #000 !important; font-weight: 800 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
@@ -10171,7 +10174,16 @@ const App = (() => {
         </div>
         <div class="rule"></div>
         <div class="items">
-          ${items.map(item=>{const packing=globalThis.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);const fee=packing?.fee||0,price=Number(item.unit_price)-fee,quantity=Number(item.quantity||0),observation=String(packing?.notes||'').trim();return `<div class="item"><span>${quantity} x ${escapeHTML(item.item_name)}<small>${money(price)} c/u</small>${observation?`<small class="item-observation">${escapeHTML(observation.toLocaleUpperCase('es-CO'))}</small>`:''}${fee?`<small class="item-addon">ANEXO: CAJA ${escapeHTML(globalThis.DonPierosPackaging.sizes[packing.size])} · ${money(fee)} c/u</small>`:''}</span><strong>${money((price+fee)*quantity)}</strong></div>`;}).join("") || "<div class=\"center\">Sin consumos</div>"}
+          ${items.map(item=>{
+            const packing=globalThis.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+            const fee=packing?.fee||0,price=Number(item.unit_price)-fee,quantity=Number(item.quantity||0),observation=String(packing?.notes||'').trim();
+            const boxLabel=individualSale?'Caja:':`ANEXO: CAJA ${escapeHTML(globalThis.DonPierosPackaging?.sizes[packing?.size]||'')} ·`;
+            return `<div class="item${individualSale?' item-individual':''}"><span>${quantity} x ${escapeHTML(item.item_name)}
+              <small>${money(price)} c/u</small>
+              ${observation?`<small class="item-observation">${escapeHTML(observation.toLocaleUpperCase('es-CO'))}</small>`:''}
+              ${fee?`<small class="item-addon">${boxLabel} ${money(fee)} c/u</small>`:''}
+              </span>${individualSale?'':`<strong>${money((price+fee)*quantity)}</strong>`}</div>`;
+          }).join("") || "<div class=\"center\">Sin consumos</div>"}
         </div>
         <div class="rule"></div>
         <div class="totals">
@@ -10404,6 +10416,7 @@ const App = (() => {
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
     const kitchenItems=window.DonPierosOrderDetails?.groupComandaItems(session.session_items.filter(line=>line.status!=='cancelled'))||session.session_items.filter(line=>line.status!=='cancelled');
     const kitchenLines=kitchenItems.map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
+    const allDelivery=kitchenLines.every(line=>window.DonPierosOrderDetails?.itemFulfillment(line,session.fulfillment)==='delivery');
     const articles=kitchenLines.map(line=>{
       const labels=window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean));
       const knownLabels=window.DonPierosOrderLabels.compact(line.waiter_options?.labels||[]),known=new Set(knownLabels);
@@ -10411,15 +10424,16 @@ const App = (() => {
       const selections=labels.filter(note=>known.has(note)),flavors=selections.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
       const others=selections.filter(note=>!flavors.includes(note));
       const noteHtml=note=>{const option=window.DonPierosThermal.sizeOption(note);return '<p class="'+(option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes')+'">'+option.html+'</p>';};
-      const fulfillment=line.waiter_options?.fulfillment||line.packing.fulfillment||session.fulfillment||'';
+      const fulfillment=window.DonPierosOrderDetails?.itemFulfillment(line,session.fulfillment)||line.packing.fulfillment;
       const delivery=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';
-      const box=line.packing.packagingUnitFee?'<p class="packing-line">ANEXO: CAJA '+escapeHTML(line.packing.packagingSize)+' · '+money(line.packing.packagingUnitFee)+' c/u · '+money(line.packing.packagingTotal)+'</p>':'';
+      const box=line.packing.packagingUnitFee?'<p class="packing-line">Caja: '+money(line.packing.packagingUnitFee)+' c/u</p>':'';
       return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(observation?'<p class="line-notes">'+escapeHTML(observation.toLocaleUpperCase('es-CO'))+'</p>':'')+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+box+'</article>';
     }).join('');
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
     popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
     if(session.customer_phone)popup.document.querySelector('.customer')?.insertAdjacentHTML('beforeend','<br>Teléfono: '+escapeHTML(session.customer_phone));
+    if(allDelivery)popup.document.querySelector('.customer')?.insertAdjacentHTML('afterend','<p class="fulfillment">Domicilio</p>');
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes,session);
     popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
     popup.document.querySelectorAll('article').forEach(article=>{

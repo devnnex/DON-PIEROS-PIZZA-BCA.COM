@@ -22,6 +22,7 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
   try {
     const page = await browser.newPage();
     await page.goto('http://127.0.0.1:' + server.address().port);
+    await page.addScriptTag({ path: path.join(root, 'packaging.js') });
     await page.addScriptTag({ content: `
       const state={business:{business_name:'Don Pieros Pizza'}};
       const escapeHTML=String, sessionTotals=()=>({subtotal:64000,total:64000});
@@ -36,6 +37,17 @@ test('precuentas y facturas mantienen el NIT junto al negocio y el papel termina
       { item_name: 'Gaseosa', quantity: 2, unit_price: 4000 },
       { id: 'account-delivery', item_name: 'Domicilio', quantity: 1, unit_price: 6000 }
     ] };
+    const individual=await page.evaluate(()=>{
+      const items=[{item_name:'Porción',quantity:2,unit_price:15500,notes:DonPierosPackaging.note('','porcion','delivery')}];
+      const session={id:'individual',sale_channel:'walk_in',session_items:items};
+      const html=receipt(session,{number:'F-2',saleChannel:'walk_in',items,totals:{subtotal:31000,total:31000}});
+      const doc=new DOMParser().parseFromString(html,'text/html');
+      return {item:doc.querySelector('.item').textContent,total:doc.querySelector('strong.total').textContent};
+    });
+    assert.match(individual.item,/\$15000 c\/u/);
+    assert.match(individual.item,/Caja: \$500 c\/u/);
+    assert.doesNotMatch(individual.item,/ANEXO|\$31000/);
+    assert.equal(individual.total,'$31000');
     const heights = new Map();
     for (const paid of [false, true]) for (const width of [80, 58]) for (const viewportHeight of [500, 1200]) {
       await page.setViewportSize({ width: 420, height: viewportHeight });

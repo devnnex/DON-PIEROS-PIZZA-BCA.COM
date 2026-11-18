@@ -60,6 +60,11 @@
       if(!options.length){const item=items[index]||{},saved=item.packagingSize||(/pizzeta/i.test(item.name||item.item_name||'')?'Pizzeta':''),fallback=/^(Mini|Mediana|Maxi|Super maxi|Pizzeta)$/i.test(saved)?saved:'';if(fallback){const line=doc.createElement('p'),size=doc.createElement('b');line.className='size-option';size.className='size-name';size.textContent=fallback;line.append('Tamaño: ',size);name.before(line);}}
     });
   }
+  function itemFulfillment(item,fallback=''){
+    const packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+    return item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||
+      (packing?.fulfillment==='dinein'&&fallback?fallback:packing?.fulfillment)||fallback;
+  }
   function prepareComanda(doc,selector,items,notes,delivery={}){
     const address=String(delivery.address||delivery.delivery_address||'').trim();
     const neighborhood=String(delivery.neighborhood||'').trim();
@@ -73,6 +78,10 @@
     else if(info.notes){const section=doc.createElement('section');section.className='notes';const title=doc.createElement('b'),text=doc.createElement('p');title.textContent='Observaciones';text.textContent=info.notes;section.append(title,text);doc.querySelector('header,.fulfillment,h2')?.after(section);}
     const first=doc.querySelector(selector),observations=doc.querySelector('.notes');
     if(first&&observations)first.before(observations);
+    const headerFulfillment=doc.querySelector('.fulfillment');
+    const allDelivery=headerFulfillment&&!headerFulfillment.closest(selector)&&
+      /^domicilio$/i.test(headerFulfillment.textContent.trim())&&items?.length&&
+      items.every(item=>itemFulfillment(item,'delivery')==='delivery');
     const style=doc.createElement('style');
     style.textContent='.comanda-underline{color:#000!important;font-weight:900!important;text-decoration-line:underline!important;text-decoration-color:#218653!important;text-decoration-thickness:2px!important;text-underline-offset:3px!important;-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}';
     doc.head.append(style);
@@ -80,7 +89,7 @@
     doc.querySelectorAll('.notes p,.line-notes').forEach(underline);
     doc.querySelectorAll('.fulfillment,p').forEach(node=>{if(/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))underline(node);});
     doc.querySelectorAll(selector).forEach((block,index)=>{
-      const item=items?.[index]||{},packing=root.DonPierosPackaging?.read(item.waiter_line_notes??item.notes);
+      const item=items?.[index]||{};
       const itemAddress=String(item.waiter_options?.address||item.options?.address||'').trim();
       if(itemAddress&&itemAddress!==address){const line=doc.createElement('p');line.className='delivery-address';line.textContent='Dirección: '+itemAddress;line.style.whiteSpace='pre-wrap';line.style.overflowWrap='anywhere';(block.querySelector(':scope > div')||block).append(line);}
       const heading=block.querySelector('h3,div>strong,strong'),lineNotes=[...block.querySelectorAll('.line-notes')];
@@ -89,8 +98,10 @@
         lineNotes.forEach(node=>node.remove());
         if(observation){const note=doc.createElement('p');note.className='line-notes';note.textContent=observation;heading.insertAdjacentElement('afterend',note);}
       }
-      const fulfillment=item.waiter_options?.fulfillment||item.options?.fulfillment||item.fulfillment||packing?.fulfillment;
-      if(fulfillment==='delivery'){
+      if(allDelivery)block.querySelectorAll('p.fulfillment').forEach(line=>{
+        if(/^domicilio$/i.test(line.textContent.trim()))line.remove();
+      });
+      if(!allDelivery&&itemFulfillment(item)==='delivery'){
         const line=[...block.querySelectorAll('p')].find(node=>/^Domicilio(?:\s|$|[·:])/i.test(node.textContent.trim()))||doc.createElement('p');
         if(!line.textContent){line.textContent='Domicilio';underline(line);}
         const heading=block.querySelector('h3,div>strong,strong'),observation=block.querySelector('.line-notes');
@@ -136,5 +147,5 @@
     }
     return items;
   }
-  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,prepareComanda,groupComandaItems,completeTableItems};
+  return {readTime,withTime,sizeParts,durationMs,deadline,decorate,decorateArrival,updateCountdowns,unlockClock,sizeFirst,itemFulfillment,prepareComanda,groupComandaItems,completeTableItems};
 });
