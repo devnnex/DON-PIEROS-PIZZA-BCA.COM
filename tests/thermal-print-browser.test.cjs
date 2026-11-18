@@ -20,10 +20,18 @@ test('impresión habitual: PDF de 58 y 80 mm, vista abierta y diálogo de impres
   for(const file of ['vendor/jspdf.umd.min.js','thermal-print.js'])await page.addScriptTag({path:path.join(root,file)});
   for(const file of ['order-details.js','order-labels.js','packaging.js'])await page.addScriptTag({path:path.join(root,file)});
   const online=fs.readFileSync(path.join(root,'online-admin.js'),'utf8');
+  const waiter=fs.readFileSync(path.join(root,'waiter-orders.js'),'utf8');
+  const admin=fs.readFileSync(path.join(root,'app.js'),'utf8');
   await page.addScriptTag({content:`
    const esc=String,date=String,sourceLabel=()=> 'Carta en línea',fulfillmentLabel=()=> 'Domicilio';
    const money=value=>'$'+value,orderDetails=()=>DonPierosOrderDetails,notify=message=>{throw Error(message);};
+   const details=orderDetails,tableLabel=table=>table.table_name,total=items=>items.reduce((sum,item)=>sum+item.unit_price*item.quantity,0);
+   const state={sessions:[]},sessionHasConsumption=session=>session.session_items.length,persistWalkInDrafts=()=>true;
+   const escapeHTML=esc,individualSaleTitle=()=> 'Venta individual',prettyDateTime=String,sessionTotal=session=>total(session.session_items);
+   window.DonPierosDates={dateTime:String};
    ${online.slice(online.indexOf('  function kitchenSelection('),online.indexOf('  function selectCatalogKind('))}
+   ${waiter.slice(waiter.indexOf('  function renderKitchenPrint('),waiter.indexOf('  async function beginCatalogChoice('))}
+   ${admin.slice(admin.indexOf('  const printIndividualSale ='),admin.indexOf('  const paymentFromForm ='))}
   `});
   for(const width of [58,80]){
    const receipt=await page.evaluate(async width=>{
@@ -92,6 +100,30 @@ test('impresión habitual: PDF de 58 y 80 mm, vista abierta y diálogo de impres
    assert.deepEqual(order.mixedLabels,[true,false]);
    assert.ok(order.slices>1);
    assert.deepEqual(order.rasterRows,Array.from({length:61},(_,index)=>index),'Cada producto y el total llegan a los píxeles del PDF.');
+   const staffTickets=await page.evaluate(async width=>{
+    const nativePrint=DonPierosThermal.print;
+    const items=[{item_name:'Porción',quantity:2,unit_price:15500,notes:DonPierosPackaging.note('Sin cebolla','porcion','delivery')}];
+    const popup=()=>({document:document.implementation.createHTMLDocument('Comanda')});
+    try{
+     DonPierosThermal.print=async target=>({
+      line:target.document.querySelector('article').textContent.replace(/\s+/g,' '),
+      footer:target.document.querySelector('footer').textContent,
+      deliveryLabels:[...target.document.querySelectorAll('.fulfillment')].map(node=>node.textContent)
+     });
+     const table=await renderKitchenPrint(popup(),{table:{table_name:'Mesa 2'},items,notes:'',version:1},width);
+     state.sessions=[{id:'individual',session_items:items,fulfillment:'delivery'}];
+     const individual=await printIndividualSale('individual',popup());
+     return [table,individual];
+    }finally{DonPierosThermal.print=nativePrint;}
+   },width);
+   for(const ticket of staffTickets){
+    assert.match(ticket.line,/\$15000 c\/u\s*Caja: \$500 c\/u/);
+    assert.match(ticket.line,/SIN CEBOLLA/);
+    assert.doesNotMatch(ticket.line,/ANEXO|Total de la línea|\$31000/);
+    assert.match(ticket.footer,/Cajas:\s*\$1000/);
+    assert.match(ticket.footer,/Total:\s*\$31000/);
+    assert.deepEqual(ticket.deliveryLabels,['Domicilio']);
+   }
   }
   assert.ok(requests.every(url=>new URL(url).origin===origin),'Preparar un recibo no consulta otros equipos ni servicios.');
   assert.deepEqual(errors,[]);

@@ -606,11 +606,15 @@
     const order=Number(item.sort_order),sector=Math.floor(order/100);
     return Number.isInteger(order)&&order%100<([22,30,28,31,6,4,3][sector-1]||0)?sector:0;
   }
+  function neighborhoodBadge(item) {
+    const sector=neighborhoodSector(item);
+    return `<span class="dp-neighborhood-badge">${sector?'Sector '+sector:'Sin sector'}</span>`;
+  }
   function renderDeliverySectors(rows,sectors) {
     return `<div class="dp-sector-grid">${sectors.map(sector=>`
       <section class="dp-sector">
         <h3>Sector ${esc(sector.id)} <span>${money(sector.fee)}</span></h3>
-        <ul>${rows.filter(item=>item.delivery_sector===sector.id).map(item=>`<li>${esc(item.name)}</li>`).join('')}</ul>
+        <ul>${rows.filter(item=>item.delivery_sector===sector.id).map(item=>`<li class="dp-sector-neighborhood"><span>${esc(item.name)}</span><strong class="dp-neighborhood-price">${money(item.delivery_fee)}</strong>${neighborhoodBadge(item)}</li>`).join('')}</ul>
         <form data-dp-sector-rate="${esc(sector.id)}">
           <label>Tarifa del sector (COP)<input name="fee" type="number" inputmode="numeric" min="0" max="100000000" step="1" value="${esc(sector.fee)}" required></label>
           <button type="submit" class="ghost">Guardar tarifa</button>
@@ -659,7 +663,19 @@
         return;
       }
     }
-    const card=item=>`<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}">${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}<div><small>${esc(item.category||item.kind||'')}</small><h3>${esc(item.name)}</h3><p>${catalogKind==='products'||catalogKind==='toppings'?money(item.price):catalogKind==='neighborhoods'?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta')}</p><span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span></div><footer>${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}<button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button></footer></article>`;
+    const card=item=>{
+      const neighborhood=catalogKind==='neighborhoods';
+      const price=catalogKind==='products'||catalogKind==='toppings'?money(item.price):neighborhood?money(item.delivery_fee):esc(item.account_value||'Sin dato de cuenta');
+      return `<article class="dp-menu-card ${item.available?'':'dp-menu-unavailable'}${neighborhood?' dp-neighborhood-card':''}">
+        ${catalogKind==='products'?`<img src="${esc(window.DonPierosImages.resolve(item))}" alt="${esc(item.name)}" loading="lazy">`:''}
+        <div>${neighborhood?neighborhoodBadge(item):`<small>${esc(item.category||item.kind||'')}</small>`}
+          <h3>${esc(item.name)}</h3><p${neighborhood?' class="dp-neighborhood-price"':''}>${price}</p>
+          <span class="dp-status">${item.available?'Disponible':'Agotado / desactivado'}</span>
+        </div><footer>
+          ${catalogKind==='products'?`<button class="dp-availability ${item.available?'is-available':''}" data-dp-availability="${esc(item.id)}" type="button">${item.available?'● Disponible':'○ Agotado'}</button>`:''}
+          <button class="ghost" data-dp-edit="${esc(item.id)}">Editar</button><button class="ghost" data-dp-delete="${esc(item.id)}">Eliminar</button>
+        </footer></article>`;
+    };
     if(catalogKind==='neighborhoods'&&Array.isArray(catalog.deliverySectors)){
       const custom=rows.filter(item=>!item.delivery_sector);
       const sectors=catalog.deliverySectors.filter(item=>(sector===''||item.id===Number(sector))&&

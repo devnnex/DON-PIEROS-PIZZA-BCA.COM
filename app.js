@@ -10416,7 +10416,11 @@ const App = (() => {
     let width=80;try{if(localStorage.getItem('don_pieros_order_paper')==='58')width=58;}catch(_){}
     const kitchenItems=window.DonPierosOrderDetails?.groupComandaItems(session.session_items.filter(line=>line.status!=='cancelled'))||session.session_items.filter(line=>line.status!=='cancelled');
     const kitchenLines=kitchenItems.map(line=>({...line,packing:window.DonPierosPackaging.breakdown(line)}));
-    const allDelivery=kitchenLines.every(line=>window.DonPierosOrderDetails?.itemFulfillment(line,session.fulfillment)==='delivery');
+    const labelsForFulfillment={delivery:'Domicilio',pickup:'Para llevar',dinein:'Para comer en el local'};
+    const fulfillmentFor=line=>window.DonPierosOrderDetails?.itemFulfillment(line,session.fulfillment)||line.packing.fulfillment;
+    const firstFulfillment=kitchenLines[0]&&fulfillmentFor(kitchenLines[0]);
+    const commonFulfillment=firstFulfillment&&kitchenLines.every(line=>fulfillmentFor(line)===firstFulfillment)
+      ?labelsForFulfillment[firstFulfillment]:'';
     const articles=kitchenLines.map(line=>{
       const labels=window.DonPierosOrderLabels.compact(line.packing.notes.split(/\r?\n/).filter(Boolean));
       const knownLabels=window.DonPierosOrderLabels.compact(line.waiter_options?.labels||[]),known=new Set(knownLabels);
@@ -10424,16 +10428,16 @@ const App = (() => {
       const selections=labels.filter(note=>known.has(note)),flavors=selections.filter(note=>/^Sabores?\s*(?:\(|:)/i.test(note));
       const others=selections.filter(note=>!flavors.includes(note));
       const noteHtml=note=>{const option=window.DonPierosThermal.sizeOption(note);return '<p class="'+(option.isSize?'size-option':line.waiter_options?.labels?.includes(note)?'':'line-notes')+'">'+option.html+'</p>';};
-      const fulfillment=window.DonPierosOrderDetails?.itemFulfillment(line,session.fulfillment)||line.packing.fulfillment;
-      const delivery=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';
-      const box=line.packing.packagingUnitFee?'<p class="packing-line">Caja: '+money(line.packing.packagingUnitFee)+' c/u</p>':'';
-      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(observation?'<p class="line-notes">'+escapeHTML(observation.toLocaleUpperCase('es-CO'))+'</p>':'')+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+box+'</article>';
+      const delivery=commonFulfillment?'':labelsForFulfillment[fulfillmentFor(line)];
+      const box=line.packing.packagingUnitFee?'<br>Caja: '+money(line.packing.packagingUnitFee)+' c/u':'';
+      const price='<p>'+money(line.packing.unitPrice)+' c/u'+box+'</p>';
+      return '<article><strong>'+line.quantity+' × '+escapeHTML(line.item_name)+'</strong>'+(observation?'<p class="line-notes">'+escapeHTML(observation.toLocaleUpperCase('es-CO'))+'</p>':'')+(delivery?'<p class="fulfillment">'+delivery+'</p>':'')+flavors.map(note=>'<p class="flavor-options">'+escapeHTML(note)+'</p>').join('')+others.map(noteHtml).join('')+price+'</article>';
     }).join('');
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
     popup.document.open();
-    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:5px 0}p{margin:4px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas para llevar: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
+    popup.document.write('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda individual</title><style>@page{size:'+width+'mm auto;margin:0}*{box-sizing:border-box;color:#000;font-weight:800}body{width:'+(width-6)+'mm;margin:0;font:14px/1.25 Arial}header{display:flex;align-items:center;gap:8px}header img{width:24mm;height:24mm;object-fit:contain}h2{font-size:18px;margin:5px 0}article{border-top:1px dashed #000;padding:4px 0}p{margin:3px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-weight:900;text-decoration:underline;text-decoration-color:#218653}.size-option{margin-left:0!important;white-space:normal;font-size:13px}.size-option .size-name{font-size:14px!important}.receipt-totals{border-top:1px dashed #000;padding-top:4px}.receipt-totals p{margin:3px 0}.receipt-totals h2{margin:5px 0}.notes p{margin:4px 0}.customer{margin:5px 0}.flavor-options{font-size:13px}</style></head><body><header><img src="'+escapeHTML(logo)+'" alt="Don Pieros Pizza"><h2>Comanda · '+escapeHTML(individualSaleTitle(session))+'</h2></header><p class="customer">'+escapeHTML(String(session.payer_name||'').toLocaleUpperCase('es-CO'))+'<br>'+escapeHTML(prettyDateTime(session.opened_at))+'</p>'+articles+'<footer class="receipt-totals"><p>Productos: '+money(products)+'</p>'+(boxes?'<p>Cajas: '+money(boxes)+'</p>':'')+'<h2>Total: '+money(sessionTotal(session))+'</h2><p>PENDIENTE DE COBRO</p></footer></body></html>');popup.document.close();
     if(session.customer_phone)popup.document.querySelector('.customer')?.insertAdjacentHTML('beforeend','<br>Teléfono: '+escapeHTML(session.customer_phone));
-    if(allDelivery)popup.document.querySelector('.customer')?.insertAdjacentHTML('afterend','<p class="fulfillment">Domicilio</p>');
+    if(commonFulfillment)popup.document.querySelector('.customer')?.insertAdjacentHTML('afterend','<p class="fulfillment">'+escapeHTML(commonFulfillment)+'</p>');
     window.DonPierosOrderDetails?.prepareComanda(popup.document,'article',kitchenItems,session.order_notes,session);
     popup.document.head.insertAdjacentHTML('beforeend','<style>.size-dimensions{white-space:nowrap;display:inline-block}</style>');
     popup.document.querySelectorAll('article').forEach(article=>{

@@ -211,3 +211,11 @@ body[data-page="admin"] :is(button,a):active{transition-duration:0s}
 .dp-neighborhood-filter :is(input,select):focus-visible { outline:2px solid #806619; outline-offset:2px; }
 #dp-neighborhood-count { grid-column:1/-1; margin:0; color:#5c4e32; font-size:.85rem; }
 @media (max-width: 540px) { .dp-neighborhood-filter { grid-template-columns:1fr; } }
+
+.dp-neighborhood-badge { display:inline-flex; width:max-content; padding:.22rem .55rem; border-radius:99px; background:#f8ebbd; color:#644b06; font-size:.75rem; font-weight:800; }
+.dp-neighborhood-card p.dp-neighborhood-price,.dp-sector-neighborhood .dp-neighborhood-price { font-size:1.25rem; font-weight:900; font-variant-numeric:tabular-nums; }
+.dp-sector-neighborhood { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:.2rem .5rem; }
+.dp-neighborhood-card footer [data-dp-edit] { background:#e9f2ff; border-color:#b4ccec; color:#164989; }
+.dp-neighborhood-card footer [data-dp-delete] { background:#fff0ef; border-color:#e9b9b5; color:#922b28; }
+.dp-neighborhood-card footer [data-dp-edit]:hover { background:#d6e8ff; }
+.dp-neighborhood-card footer [data-dp-delete]:hover { background:#ffdedb; }

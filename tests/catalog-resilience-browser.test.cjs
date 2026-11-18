@@ -141,6 +141,10 @@ test('Menú online muestra la copia al abrir; el diseño nuevo afecta solamente 
   ]}});
   await page.locator('.dp-menu-card').waitFor();
   assert.equal(await page.locator('.dp-menu-card h3').allTextContents().then(names=>names.join()),'Arenal');
+  assert.equal(await page.locator('.dp-neighborhood-badge').textContent(),'Sector 2');
+  assert.equal(await page.locator('.dp-neighborhood-price').evaluate(el=>getComputedStyle(el).fontWeight),'900');
+  const actionColors=await page.locator('.dp-neighborhood-card footer button').evaluateAll(buttons=>buttons.map(button=>getComputedStyle(button).backgroundColor));
+  assert.equal(new Set(actionColors).size,2);
   await context.close();
  });}finally{await browser.close();}
 });

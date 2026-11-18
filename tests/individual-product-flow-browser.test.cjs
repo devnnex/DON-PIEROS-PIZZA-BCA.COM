@@ -173,7 +173,8 @@ test('venta individual: datos persistentes, domicilio con caja y retorno al cat�
   const compact=await printPage.evaluate(()=>({text:document.body.innerText,flavors:document.querySelector('article>strong').nextElementSibling.className,logo:document.querySelector('header img').getAttribute('src'),size:document.querySelector('.size-option').textContent}));
   assert.equal(compact.flavors,'flavor-options');assert.match(compact.text,/LILY SILVA/);assert.match(compact.size,/54 × 54 cm/);
   assert.match(compact.logo,/don-pieros-logo.png/);assert.doesNotMatch(compact.text,/Total de la línea|Caja Super maxi:/);
-  assert.match(compact.text,/ANEXO: CAJA Super maxi.*c\/u/);
+  assert.match(compact.text,/Caja:.*c\/u/);
+  assert.doesNotMatch(compact.text,/ANEXO/);
   assert.equal((compact.text.match(/Productos:/g)||[]).length,1);assert.match(compact.text,/96\.000/);assert.match(compact.text,/4\.000/);
   const compactPdf=await page.evaluate(async paperWidth=>{const result=await DonPierosThermal.createPdf(printTarget,paperWidth);return {data:result.pdf.output('datauristring').split(',')[1],width:result.width};},paperWidth);
   assert.equal(compactPdf.width,paperWidth);fs.writeFileSync(path.join(root,`artifacts/venta-combinada-${paperWidth}mm.pdf`),Buffer.from(compactPdf.data,'base64'));

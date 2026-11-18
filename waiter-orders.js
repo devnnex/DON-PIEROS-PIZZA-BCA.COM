@@ -589,8 +589,9 @@
       const session={...account,session_items:(account.session_items||[]).filter(item=>!removed.has(item.waiter_comanda_id))};
       const tableOrders=listed.data.orders.filter(order=>order.session_id===session.id&&order.table_id===tableId&&!removed.has(order.id)&&order.items.length);
       const items=details().completeTableItems(session,tableOrders).map(item=>{
-        const packing=window.DonPierosPackaging.read(item.waiter_comanda_id||item.pending?item.waiter_line_notes:item.notes);
-        return {...item,waiter_line_notes:packing.notes,packagingSize:window.DonPierosPackaging.sizes[packing.size]||'',packagingUnitFee:packing.fee};
+        const notes=item.waiter_comanda_id||item.pending?item.waiter_line_notes:item.notes;
+        const packing=window.DonPierosPackaging.read(notes);
+        return {...item,waiter_line_notes:notes,packagingSize:window.DonPierosPackaging.sizes[packing.size]||'',packagingUnitFee:packing.fee};
       });
       if(!items.length)throw Error('Esta mesa todavía no tiene productos para imprimir.');
       const notes=tableOrders.map(order=>{const info=details().readTime(order.notes);return [info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).length?`${order.waiter_name||'Comanda'}: `+[info.notes,info.time?'Tiempo estimado: '+info.time:''].filter(Boolean).join(' · '):'';}).filter(Boolean).join('\n');
@@ -620,7 +621,37 @@
     const printItems=groupedItems.map(item=>({...item,packing:window.DonPierosPackaging.breakdown(item)}));
     const productTotal=printItems.reduce((sum,item)=>sum+item.packing.products,0),boxTotal=printItems.reduce((sum,item)=>sum+item.packing.packagingTotal,0);
     const logo=new URL('images/don-pieros-logo.png',location.href).href;
-    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(tableLabel(order.table))}</title><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}body{width:${width-6}mm;margin:0;font:16px/1.45 monospace;color:#000;background:#fff}header img{display:block;width:28mm;height:22mm;object-fit:contain;margin:0 auto}h1{text-align:center;font-size:22px;margin:8px 0}header,footer{text-align:center}article{display:flex;gap:8px;padding:10px 0;border-top:1px dashed #000}article>b{font-size:22px}article div{flex:1}article strong{font-size:19px}p{margin:5px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-size:17px;text-decoration:underline;text-decoration-color:#218653}.notes{border:2px solid #000;padding:8px;margin:12px 0}footer{border-top:1px dashed #000;padding:12px 0}${window.DonPierosThermal.sizeStyle}</style></head><body><header><img src="${esc(logo)}" alt="Don Pieros Pizza"><h1>${esc(tableLabel(order.table))}</h1><p>${complete?'COMANDA COMPLETA DE LA MESA':'Comanda de mesa · v'+Number(order.version)}</p><p>${esc(order.waiter_name)}<br>${esc(window.DonPierosDates.dateTime(order.updated_at))}</p></header>${printItems.map(item=>{const fulfillment=item.waiter_options?.fulfillment||item.packing.fulfillment,label=fulfillment==='delivery'?'Domicilio':fulfillment==='pickup'?'Para llevar':fulfillment==='dinein'?'Para comer en el local':'';const labels=(item.waiter_options?.labels||[]).filter(text=>!['Domicilio','Para llevar','En el local','Para comer en el local'].includes(text));return `<article><b>${Number(item.quantity)} ×</b><div><strong>${esc(item.item_name)}</strong>${item.packing.notes?`<p class="line-notes"><b>${esc(item.packing.notes.toLocaleUpperCase('es-CO'))}</b></p>`:''}${label?`<p class="fulfillment">${label}</p>`:''}${window.DonPierosOrderLabels.compact(labels).map(label=>{const option=window.DonPierosThermal.sizeOption(label);return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;}).join('')}${complete&&item.pending?'<p>Pendiente de aceptar</p>':''}<p>Productos: ${money(item.packing.unitPrice)} c/u · ${money(item.packing.products)}</p>${item.packing.packagingTotal?`<p class="packing-line">ANEXO: CAJA ${esc(item.packing.packagingSize)}: ${item.quantity} × ${money(item.packing.packagingUnitFee)} = ${money(item.packing.packagingTotal)}</p>`:''}<p>Total de la línea: ${money(item.packing.total)}</p></div></article>`;}).join('')}${order.notes?`<section class="notes"><b>Indicaciones para cocina</b><p>${esc(order.notes)}</p></section>`:''}<footer>Productos: ${esc(money(productTotal))}${boxTotal?`<br>Cajas para llevar: ${esc(money(boxTotal))}`:''}<br>Total: ${esc(money(total(order.items)))}</footer></body></html>`);
+    const fulfillmentLabels={delivery:'Domicilio',pickup:'Para llevar',dinein:'Para comer en el local'};
+    const firstFulfillment=details().itemFulfillment(groupedItems[0]||{});
+    const commonFulfillment=firstFulfillment&&groupedItems.every(item=>details().itemFulfillment(item)===firstFulfillment)
+      ?fulfillmentLabels[firstFulfillment]:'';
+    const lines=printItems.map(item=>{
+      const label=commonFulfillment?'':fulfillmentLabels[details().itemFulfillment(item)];
+      const labels=(item.waiter_options?.labels||[]).filter(text=>!['Domicilio','Para llevar','En el local','Para comer en el local'].includes(text));
+      return `<article><b>${Number(item.quantity)} ×</b><div><strong>${esc(item.item_name)}</strong>
+        ${item.packing.notes?`<p class="line-notes">${esc(item.packing.notes.toLocaleUpperCase('es-CO'))}</p>`:''}
+        ${label?`<p class="fulfillment">${label}</p>`:''}
+        ${window.DonPierosOrderLabels.compact(labels).map(label=>{
+          const option=window.DonPierosThermal.sizeOption(label);
+          return `<p class="${option.isSize?'size-option':''}">${option.html}</p>`;
+        }).join('')}
+        ${complete&&item.pending?'<p>Pendiente de aceptar</p>':''}
+        <p>${money(item.packing.unitPrice)} c/u${item.packing.packagingUnitFee?`<br>Caja: ${money(item.packing.packagingUnitFee)} c/u`:''}</p>
+        </div></article>`;
+    }).join('');
+    popup.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Comanda ${esc(tableLabel(order.table))}</title><style>
+      @page{size:${width}mm auto;margin:0}*{box-sizing:border-box;color:#000!important;font-weight:900!important}
+      body{width:${width-6}mm;margin:0;font:16px/1.3 monospace;color:#000;background:#fff}
+      header img{display:block;width:28mm;height:22mm;object-fit:contain;margin:0 auto}
+      h1{text-align:center;font-size:22px;margin:5px 0}header,footer{text-align:center}
+      article{display:flex;gap:6px;padding:5px 0;border-top:1px dashed #000}article>b{font-size:22px}article div{flex:1;min-width:0}article strong{font-size:19px;overflow-wrap:anywhere}
+      p{margin:3px 0;white-space:pre-wrap;overflow-wrap:anywhere}.fulfillment{font-size:17px;text-decoration:underline;text-decoration-color:#218653}
+      .notes{border:2px solid #000;padding:6px;margin:6px 0}footer{border-top:1px dashed #000;padding:5px 0}
+      ${window.DonPierosThermal.sizeStyle}</style></head><body><header><img src="${esc(logo)}" alt="Don Pieros Pizza"><h1>${esc(tableLabel(order.table))}</h1>
+      <p>${complete?'COMANDA COMPLETA DE LA MESA':'Comanda de mesa · v'+Number(order.version)}</p><p>${esc(order.waiter_name)}<br>${esc(window.DonPierosDates.dateTime(order.updated_at))}</p>
+      ${commonFulfillment?`<p class="fulfillment">${commonFulfillment}</p>`:''}</header>
+      ${lines}${order.notes?`<section class="notes"><b>Indicaciones para cocina</b><p>${esc(order.notes)}</p></section>`:''}
+      <footer>Productos: ${money(productTotal)}${boxTotal?`<br>Cajas: ${money(boxTotal)}`:''}<br>Total: ${money(total(order.items))}</footer></body></html>`);
     popup.document.close();details().prepareComanda(popup.document,'article',groupedItems,order.notes,order);return window.DonPierosThermal.print(popup,width);
   }
   async function beginCatalogChoice(replacement=''){
