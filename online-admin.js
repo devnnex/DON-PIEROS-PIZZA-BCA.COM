@@ -266,7 +266,7 @@
       if(activeChanged){void ensureSearchRows('dashboard');void ensureSearchRows('list');}
       $('#dp-orders-status').textContent='Conectado · Recepción automática activa · '+window.DonPierosDates.time(Date.now());
     }catch(error){if(controller.signal.aborted||controller!==ordersController)return;$('#dp-orders-status').textContent=friendly(error);if(force)notify(error.message,true);}
-    finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}}}
+    finally{if(controller===ordersController){busy=false;ordersController=null;if(ordersReloadRequested){ordersReloadRequested=false;void loadOrders(true);}api()?.scheduleStaffCacheRefresh?.();}}
   }
 
   const actionIcon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true" class="dp-action-icon"><path d="${({receipt:'M6 3h12v18l-3-2-3 2-3-2-3 2V3ZM9 7h6M9 11h6',print:'M6 9V3h12v6M6 18H4V9h16v9h-2M6 14h12v7H6zM17 11h.01',trash:'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7'})[name]}"/></svg>`;
@@ -919,6 +919,10 @@
   }
   mount();window.DonPierosReception?.register?.('order',openQueuedOrder);window.DonPierosReception?.register?.('individual',openQueuedOrder);setInterval(tick,3000);void tick();
   window.addEventListener('donpieros-session-change',()=>void tick());
+  window.DonPierosOnlineOrders={isIdleForCache:()=>!canOrders()||
+    (connectedToken===api()?.getToken()&&!firstLoad&&!busy&&activeCount===0&&
+      !dashboardOrders.some(order=>['nueva','atendiendo','lista'].includes(order.status))&&
+      ![...orderWrites.values()].some(write=>write.pending)&&!pendingCheckouts().length)};
   window.addEventListener('storage',event=>{if(event.key!=='don_pieros_order_signal_v1'||!event.newValue)return;try{const notice=JSON.parse(event.newValue);if(Math.abs(Date.now()-notice.at)<15000)receiveOrderSignal(notice);}catch(_){}});
   window.addEventListener('focus',()=>void tick());window.addEventListener('online',()=>void tick());document.addEventListener('visibilitychange',()=>{if(!document.hidden)void tick();});
 })();

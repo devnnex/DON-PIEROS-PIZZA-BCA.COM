@@ -162,7 +162,7 @@
         if(readRevision===writeRevision&&draft?.version&&!draft.pending&&!busy&&!data.orders.some(order=>order.id===draft.id))leaveClosedDraft();
         syncDraftSession();renderAccount();renderReception();if(waiter())renderHome();
       }catch(error){loadError=errorText(error);renderAccount();}
-      finally{loading=null;if(reloadWanted){reloadWanted=false;void loadOrders();}}
+      finally{loading=null;if(reloadWanted){reloadWanted=false;void loadOrders();}api()?.scheduleStaffCacheRefresh?.();}
     })();return loading;
   }
   function openTable(id){
@@ -857,5 +857,8 @@
   window.addEventListener('donpieros-catalog-change',()=>{if(allowed())void loadCatalog();});
   window.addEventListener('donpieros-reception-filter',()=>{managerSignature='';renderReception();});
   window.DonPierosReception?.register?.('waiter',entry=>openRequest(entry.key.slice('request:'.length)));
-  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,printCompleteTable,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady};setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
+  window.DonPierosWaiter={openTable,startTableOrder,chooseIndividualProduct,chooseWebOrderProduct,printCompleteTable,editConsumptionLine,updateConsumedLine,sync,editComanda,openRequest,getSessionObservations,isReady:()=>serviceReady,
+    isIdleForCache:()=>!allowed()||(token===api()?.getToken()&&serviceReady&&!loadError&&!busy&&!loading&&
+      !draft?.pending&&!draft?.items.length&&!orders.some(order=>!order.accepted_at&&order.items.length&&!isRemoved(order)))};
+  setInterval(tick,3000);window.addEventListener('donpieros-session-change',tick);window.addEventListener('focus',tick);tick();
 })();

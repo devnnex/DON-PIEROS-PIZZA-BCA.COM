@@ -5040,6 +5040,36 @@ const App = (() => {
   };
 
   let adminRefreshPending = false;
+  let staffCacheSince=0,staffCacheSession='',staffCacheSnapshotToken='',staffCacheScheduled=false,staffCacheDone=false,staffCacheRetryAt=0;
+  const staffCacheCanRefresh = () => staffCacheSession && staffCacheSession===state.authToken &&
+    staffCacheSnapshotToken===staffCacheSession && navigator.onLine && !document.hidden &&
+    !document.querySelector('dialog[open]') && !state.adminSyncBusy &&
+    !state.sessions.some(session=>session.status==='open') &&
+    !state.requests.some(request=>request.status==='pending') &&
+    window.DonPierosOnlineOrders?.isIdleForCache() && window.DonPierosWaiter?.isIdleForCache() &&
+    !state.paymentProcessing && !checkoutSubmissionBusy && !checkoutRecoveryBusy &&
+    !state.appsScriptOutboxBusy && !state.consumptionDrafts?.length &&
+    !Object.keys(readLocalJson(CHECKOUT_INTENTS_KEY,{})).length &&
+    !readAppsScriptOutbox().length && !readRequestOutbox().length &&
+    !window.DonPierosDeletions?.list?.().some(entry=>entry.state==='pending');
+  const scheduleStaffCacheRefresh = () => {
+    const cache=window.DonPierosPerformance;
+    if(staffCacheDone||staffCacheScheduled||Date.now()<staffCacheRetryAt||!cache?.refreshStaffCatalog||!staffCacheCanRefresh())return;
+    staffCacheScheduled=true;
+    const refresh=async()=>{
+      try{
+        if(!staffCacheCanRefresh())return;
+        await cache.refreshStaffCatalog(staffCacheSince);
+        if(staffCacheCanRefresh()){
+          cache.pruneExpiredStaffCatalogs();
+          staffCacheDone=true;
+        }
+      }catch{staffCacheRetryAt=Date.now()+60000;}
+      finally{staffCacheScheduled=false;}
+    };
+    if(typeof window.requestIdleCallback==='function')window.requestIdleCallback(refresh,{timeout:2000});
+    else window.setTimeout(refresh,300);
+  };
   const refreshAdminNow = async ({ periodic = false } = {}) => {
     if (state.adminSyncBusy) { if (!periodic) adminRefreshPending = true; return false; }
     state.adminSyncBusy = true;
@@ -5051,6 +5081,7 @@ const App = (() => {
     } finally {
       state.adminSyncBusy = false;
       if (adminRefreshPending) { adminRefreshPending = false; window.setTimeout(() => void refreshAdminNow(),0); }
+      scheduleStaffCacheRefresh();
     }
   };
 
@@ -5123,6 +5154,7 @@ const App = (() => {
     else if (!navigator.onLine && typeof readOfflineAdminSnapshot === "function") state.posFeatures = readOfflineAdminSnapshot()?.posFeatures || {};
     if (!snapshot) return false;
     if (!Array.isArray(snapshot.requests) || !Array.isArray(snapshot.sessions)) return false;
+    staffCacheSnapshotToken=readScope;
     if (typeof receiveAdminRequests === "function") receiveAdminRequests(snapshot.requests);
     const livePending = new Set(state.requests.filter((request) => request.status === "pending").map((request) => request.id));
     const knownPending = new Map([...readPendingAdminRequests(), ...state.requests.filter((request) => request.status === "pending")].map((request) => [request.id, request]));
@@ -14095,6 +14127,7 @@ const App = (() => {
     credentialParams.forEach((key) => loginUrl.searchParams.delete(key));
     if (hadCredentialParams) history.replaceState(null, "", `${loginUrl.pathname}${loginUrl.search}${loginUrl.hash}`);
     const pendingScan = new URLSearchParams(location.search).get("scan") || "";
+    staffCacheSince=Date.now();
     await waitForAdminLogin();
     void flushRequestOutbox();
     const bootstrapReady = loadBootstrap();
@@ -14137,6 +14170,7 @@ const App = (() => {
       history.replaceState(null, "", `${cleanUrl.pathname}${cleanUrl.search}#service`);
       await openScannedTable(pendingScan);
     }
+    staffCacheSession=state.authToken;
     // El shell queda visible al instante; el snapshot pesado llega sin bloquear la interfaz.
     void refreshAdminNow();
   };
@@ -14346,7 +14380,7 @@ const App = (() => {
       else if (session) openAccountDetailDialog(session.id);
       else toast("Esta mesa todavía no tiene consumos.", "ok", "table-without-consumption");
     },
-    getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),applyWaiterResult,previewWaiterRemoval,
+    getOperations:()=>({tables:normalTables(),sessions:state.sessions,requests:state.requests}),refreshOperations:()=>refreshAdminNow(),scheduleStaffCacheRefresh,applyWaiterResult,previewWaiterRemoval,
     cancelWaiterRemoval:id=>{state.optimisticRequestStates.delete(id);void refreshAdminNow();},
     notify: toast, copyText: copyTextToClipboard, announceWebOrders, revealReception, alarm: () => { if(state.soundEnabled) void playAlarmToneOnce(); }, bootstrap: () => bootstrapRemoteStorage() };
   window.addEventListener('don-pieros-before-update', event => {

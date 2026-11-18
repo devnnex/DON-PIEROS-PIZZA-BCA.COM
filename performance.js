@@ -80,12 +80,30 @@
     })().finally(() => { catalogLoading = null; });
     return catalogLoading;
   }
+  function refreshStaffCatalog(since) {
+    const age=Date.now()-catalogMemoryAt;
+    return catalogMemory && catalogMemoryAt>=since && age>=0 && age<=catalogAge
+      ? Promise.resolve(catalogMemory) : loadCatalog({force:true});
+  }
+  function pruneExpiredStaffCatalogs() {
+    const cutoff=Date.now()-7*86400000;
+    try {
+      for(let i=localStorage.length-1;i>=0;i--){
+        const key=localStorage.key(i);
+        if(!key?.startsWith(namespace+'admin-catalog:'))continue;
+        try {
+          const record=JSON.parse(localStorage.getItem(key)||'null');
+          if(Number.isFinite(record?.at)&&record.at<cutoff)localStorage.removeItem(key);
+        } catch { /* Leave unreadable entries available for inspection. */ }
+      }
+    } catch { /* Optional cache. */ }
+  }
   window.addEventListener('donpieros-catalog-change',() => {
     catalogRevision++;
     catalogMemory = null;catalogMemoryAt=0;
     remove('staff-public-catalog','local'); remove('catalog','local');
   });
-  window.DonPierosPerformance = Object.freeze({imageUrl,read,write,remove,compressImage,readCatalog,previewCatalog,loadCatalog});
+  window.DonPierosPerformance = Object.freeze({imageUrl,read,write,remove,compressImage,readCatalog,previewCatalog,loadCatalog,refreshStaffCatalog,pruneExpiredStaffCatalogs});
   if(typeof document !== 'undefined' && document.querySelector('#products'))void loadCatalog().catch(()=>{});
   if ('serviceWorker' in navigator) window.addEventListener('load',() => {
     const register = () => { void navigator.serviceWorker.register('./service-worker.js',{scope:'./',updateViaCache:'none'}).then(registration=>registration.update()).catch(() => {}); };
