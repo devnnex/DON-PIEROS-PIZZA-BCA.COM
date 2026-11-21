@@ -5648,7 +5648,8 @@ const App = (() => {
         ? `Pedido tomado por ${requestOrigin(request).name}\n${requestBody(request) || "Revisa el pedido de la mesa."}`
         : requestBody(request) || "El cliente está esperando atención.",
       accept: id => acceptRequest(id),
-      open: id => window.DonPierosWaiter?.openRequest(id)
+      open: id => window.DonPierosWaiter?.openRequest(id),
+      completed: rememberCompletedAdminRequests()
     });
     // Only customers at a table belong in this persistent panel. Staff comandas
     // keep their existing reception cards, notifications and voice announcements.
@@ -14251,6 +14252,7 @@ const App = (() => {
     window.MenuCards?.init({
       page:state.page,sb:SupabaseDb,getAuthToken:()=>state.authToken,
       getCurrentTable:()=>state.currentTable,getTables:()=>state.tables,
+      canOrder:()=>state.business?.client_chat_enabled !== false,
       canManage:()=>canAccessAdminSection("brand"),confirm:askForConfirmation
     });
     if (state.page === "admin") await initAdmin();

@@ -90,6 +90,11 @@ test('Carta: carga múltiple, confirmación, persistencia entre dispositivos, re
   assert.equal(await client.locator('#menuViewerImage').evaluate(n=>Math.abs(n.width/n.height-n.naturalWidth/n.naturalHeight)<.01),true);
   await client.locator('#menuViewerZoom').click();await client.locator('#menuViewerClose').click();assert.equal(await client.locator('#openMenuCards').evaluate(n=>n===document.activeElement),true);
   assert.equal(await client.locator('[data-request=waiter]').count(),1);assert.equal(await client.locator('[data-request=bill]').count(),1);
+  await client.evaluate(()=>document.querySelector('#focusTableChat').addEventListener('click',()=>document.querySelector('#assistantInput').focus()));
+  await client.locator('#openMenuCards').click();
+  await client.locator('#menuViewerOrder').click();
+  assert.equal(await client.locator('#menuCardsViewer').isVisible(),false);
+  assert.equal(await client.locator('#assistantInput').evaluate(n=>n===document.activeElement),true);
   // Edita nombre, asignación y orden sin tocar las mesas reales.
   await openEditor(admin);let row=admin.locator('[data-menu-card]').first();await row.locator('[data-menu-name]').fill('Bebidas de afuera');await row.locator('[data-menu-all]').uncheck();await row.locator('[data-menu-table][value=a]').check();
   await row.locator('[data-menu-action=save]').click();await admin.waitForFunction(()=>document.querySelector('#menuCardLibrary').getAttribute('aria-busy')==='false');

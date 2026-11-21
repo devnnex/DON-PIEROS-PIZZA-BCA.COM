@@ -368,6 +368,7 @@ window.MenuCards = (() => {
     $('#menuViewerImage').hidden=true;$('#menuViewerStatus').hidden=false;$('#menuViewerStatus').textContent='Consultando Carta…';
     $('#menuViewerTitle').textContent='Carta';$('#menuViewerCounter').textContent='';
     const request=++generation,table=ctx.getCurrentTable();
+    $('#menuViewerOrder').hidden=!table || ctx.canOrder?.()===false;
     const key=table ? `${table.id}:${table.qr_code}` : '';
     if (key!==tableKey) { images.clear();tableKey=key; }
     try {
@@ -408,9 +409,19 @@ window.MenuCards = (() => {
       viewer.setAttribute('aria-labelledby','menuViewerTitle');
       viewer.innerHTML="\n      <header class=\"menu-viewer-head\"><div><span class=\"eyebrow\">La carta de tu mesa</span><h2 id=\"menuViewerTitle\">Carta</h2><small id=\"menuViewerCounter\" aria-live=\"polite\"></small></div><div class=\"menu-viewer-tools\"><button class=\"icon-btn\" id=\"menuViewerZoom\" type=\"button\" aria-label=\"Ampliar imagen\" aria-pressed=\"false\"><i data-lucide=\"zoom-in\"></i></button><button class=\"icon-btn\" id=\"menuViewerClose\" type=\"button\" aria-label=\"Cerrar carta\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"3.5\" stroke-linecap=\"round\" aria-hidden=\"true\" focusable=\"false\"><path d=\"m6 6 12 12M18 6 6 18\"/></svg></button></div></header>\n      <div class=\"menu-viewer-stage\" id=\"menuViewerStage\"><button class=\"menu-viewer-arrow previous\" id=\"menuViewerPrevious\" type=\"button\" aria-label=\"Carta anterior\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><path d=\"m15 18-6-6 6-6\"/></svg></button><div class=\"menu-viewer-image-wrap\" id=\"menuViewerImageWrap\"><img id=\"menuViewerImage\" alt=\"\" hidden><p id=\"menuViewerStatus\" role=\"status\" aria-live=\"polite\">Cargando cartas…</p></div><button class=\"menu-viewer-arrow next\" id=\"menuViewerNext\" type=\"button\" aria-label=\"Siguiente carta\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\" focusable=\"false\"><path d=\"m9 18 6-6-6-6\"/></svg></button></div>\n      <footer class=\"menu-viewer-footer\"><div id=\"menuViewerDots\" role=\"group\" aria-label=\"Elegir carta\"></div><small>Mira la carta y pide en línea por el chat.</small></footer>\n    ";
       document.body.append(viewer);
+      const orderButton=document.createElement('button');
+      orderButton.id='menuViewerOrder';orderButton.type='button';orderButton.className='primary';
+      orderButton.textContent='Pedir desde mi mesa';orderButton.hidden=true;
+      viewer.querySelector('.menu-viewer-footer small').replaceWith(orderButton);
+      orderButton.addEventListener('click',()=>{
+        const table=ctx.getCurrentTable();
+        if(!table || `${table.id}:${table.qr_code}`!==tableKey || ctx.canOrder?.()===false)return;
+        viewer.close();
+        $('#focusTableChat')?.click();
+      });
       $('#openMenuCards')?.addEventListener('click',()=>void openViewer());
       $('#menuViewerClose').addEventListener('click',()=>viewer.close());
-      viewer.addEventListener('close',()=>{generation++;resetZoom();$('#menuViewerImage').removeAttribute('src');$('#openMenuCards')?.focus();});
+      viewer.addEventListener('close',()=>{generation++;resetZoom();$('#menuViewerImage').removeAttribute('src');if(document.activeElement!==$('#assistantInput'))$('#openMenuCards')?.focus();});
       viewer.addEventListener('click',e=>{if(e.target===viewer)viewer.close();});
       $('#menuViewerPrevious').addEventListener('click',()=>moveViewer(-1));$('#menuViewerNext').addEventListener('click',()=>moveViewer(1));
       viewer.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){if(zoom===1){e.preventDefault();moveViewer(e.key==='ArrowLeft'?-1:1);}}});

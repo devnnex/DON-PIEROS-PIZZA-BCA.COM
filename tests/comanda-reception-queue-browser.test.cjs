@@ -71,6 +71,16 @@ test('cola de comandas: las mesas permanecen hasta asignar; los otros avisos has
   assert.deepEqual(await keys(),[],'No se mezclan usuarios.');
   await page.evaluate(()=>{user='boss';DonPierosReception.register('waiter',async()=>{});});
   assert.deepEqual(await keys(),['request:failure']);
+  await page.evaluate(()=>{
+   const request={id:'failure',request_source:'waiter'};
+   DonPierosReception.syncRequests([request],{label:()=>'',body:()=>'',completed:new Set(['failure'])});
+  });
+  assert.deepEqual(await keys(),[],'Una resolución confirmada retira el aviso aunque llegue una lectura anterior.');
+  await page.evaluate(()=>{
+   user='mesero';DonPierosAdmin.getUser=()=>({id:user,role:'waiter'});
+   DonPierosReception.syncRequests([{id:'otra-mesa',request_source:'waiter'}],{label:()=>'',body:()=>''});
+  });
+  assert.deepEqual(await keys(),[],'Meseros no reciben avisos de comandas que su sesión no puede abrir.');
   assert.deepEqual(errors,[]);
  }finally{await browser.close();await new Promise(resolve=>server.close(resolve));}
 });

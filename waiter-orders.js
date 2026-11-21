@@ -158,9 +158,15 @@
           if(write.revision>readRevision||incoming&&(incoming.version<write.order.version||String(incoming.updated_at)<String(write.order.updated_at)))next.set(id,write.order);
           else localWrites.delete(id);
         }
+        if(!waiter()&&readRevision===writeRevision){
+          for(const order of orders){
+            if(!next.has(order.id))window.DonPierosReception?.dismiss('request:'+order.id);
+          }
+        }
         orders=[...next.values()].sort((a,b)=>(Date.parse(b.created_at)||0)-(Date.parse(a.created_at)||0)||String(a.id).localeCompare(String(b.id)));loadError='';
         if(readRevision===writeRevision&&draft?.version&&!draft.pending&&!busy&&!data.orders.some(order=>order.id===draft.id))leaveClosedDraft();
         syncDraftSession();renderAccount();renderReception();if(waiter())renderHome();
+        return true;
       }catch(error){loadError=errorText(error);renderAccount();}
       finally{loading=null;if(reloadWanted){reloadWanted=false;void loadOrders();}api()?.scheduleStaffCacheRefresh?.();}
     })();return loading;
@@ -491,6 +497,9 @@
   function renderReception(){
     if(waiter()||!allowed()){reception.hidden=true;return;}reception.hidden=false;
     const queue=window.DonPierosReception;
+    for(const order of orders){
+      if(closedAccountIds.has(order.session_id)||!order.items.length)queue?.dismiss('request:'+order.id);
+    }
     for(const order of orders.filter(order=>!closedAccountIds.has(order.session_id)&&order.items.length&&!isRemoved(order))){
       const key='request:'+order.id;
       if(!order.accepted_at||queue?.has?.(key))queue?.show({key,kind:'waiter',title:tableLabel(order.table),
@@ -550,9 +559,19 @@
     }catch(error){if(currentToken!==api().getToken())return;if(managerOpen===id)$('#dw-kitchen-error').textContent=errorText(error);else api().notify(errorText(error),'error');if(button.isConnected){button.disabled=false;button.textContent='Agregar a la mesa';}void loadOrders();}
   }
   async function openRequest(id){
-    if(!orders.some(order=>order.id===id))await loadOrders(true);
-    const order=orders.find(row=>row.id===id);if(!order){if(loadError)throw Error(loadError);return false;}
-    if(!order.items.length||isRemoved(order)){window.DonPierosReception?.dismiss('request:'+id);return true;}
+    if(!allowed())return false;
+    const currentToken=api().getToken();
+    const refreshed=!orders.some(order=>order.id===id)&&await loadOrders(true);
+    if(currentToken!==api().getToken())return false;
+    const order=orders.find(row=>row.id===id);
+    if(!order){
+      if(loadError)throw Error(loadError);
+      if(!waiter()&&refreshed&&!(operations().requests||[]).some(request=>request.id===id&&request.status==='pending')){
+        window.DonPierosReception?.dismiss('request:'+id);return true;
+      }
+      return false;
+    }
+    if(closedAccountIds.has(order.session_id)||!order.items.length||isRemoved(order)){window.DonPierosReception?.dismiss('request:'+id);return true;}
     return showKitchen(id);
   }
   async function removeOrder(id){

@@ -8,6 +8,7 @@
   host.setAttribute('aria-label', 'Comandas pendientes por orden de llegada');
   document.body.append(host);
   const api = () => window.DonPierosAdmin;
+  const canReceiveComandas = () => api()?.getUser?.()?.role !== 'waiter';
   const storageKey = () => `dp-reception-queue-v1:${window.DON_PIEROS_CONFIG?.supabaseUrl || location.origin}:${new URL('.',document.baseURI).pathname}:${scope}`;
   const kindLabels = {order:'PEDIDO EN LÍNEA', individual:'VENTA INDIVIDUAL', waiter:'COMANDA DEL MESERO'};
   const valid = record => record && Object.hasOwn(kindLabels,record.kind) && typeof record.key === 'string' && /^(request|order):/.test(record.key);
@@ -16,7 +17,7 @@
     // Never trim unfinished work. Only completed receipt history is bounded.
     const complete = [...entries.values()].filter(entry => entry.complete).sort((a,b) => b.ordinal-a.ordinal);
     for (const entry of complete.slice(2000)) entries.delete(entry.key);
-    const value = JSON.stringify([...entries.values()].map(({node,action,...record}) => record.complete
+    const value = JSON.stringify([...entries.values()].map(({node,action,opening,...record}) => record.complete
       ? {key:record.key,kind:record.kind,createdAt:record.createdAt,ordinal:record.ordinal,complete:true,accepted:!!record.accepted,dismissed:!!record.dismissed} : record));
     if (value === saved) return;
     try { localStorage.setItem(storageKey(), value); saved = value; } catch (_) { /* Keep the live queue if storage is unavailable. */ }
@@ -33,7 +34,7 @@
     try {
       const records = JSON.parse(localStorage.getItem(storageKey()) || '[]');
       if (Array.isArray(records)) for (const record of records) {
-        if (!valid(record)) continue;
+        if (!valid(record) || record.kind === 'waiter' && !canReceiveComandas()) continue;
         const entry = {...record, action:null, node:null};
         finish(entry); entries.set(record.key,entry);
         ordinal = Math.max(ordinal, Number(record.ordinal) || 0);
@@ -46,7 +47,7 @@
     card.querySelector('strong').textContent = entry.title;
     card.querySelector('p').textContent = entry.detail;
     card.querySelector('.dp-notice-progress').textContent = entry.kind === 'waiter' ? 'Pendiente: agregar a la mesa' : 'Pendiente: abrir comanda';
-    card.querySelector('button').disabled = !entry.action && !handlers.has(entry.kind);
+    card.querySelector('button').disabled = entry.opening || !entry.action && !handlers.has(entry.kind);
   }
   function createCard(entry) {
     const card = document.createElement('article');
@@ -60,16 +61,17 @@
     const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Ver comanda';
     const error = document.createElement('small'); error.className = 'dp-notice-error';
     button.onclick = async () => {
-      button.disabled = true; error.textContent = '';
+      if (entry.opening) return;
+      entry.opening = true; button.disabled = true; error.textContent = '';
       try {
         api()?.revealReception?.(entry.kind === 'waiter' ? 'waiter' : 'order');
         const action = entry.action || handlers.get(entry.kind);
         if (!action) throw Error('La comanda todavía se está cargando.');
         const result = await action(entry);
         if (result === false) throw Error('La comanda no está disponible todavía.');
-        mark(entry.key,'viewed');
+        if (entries.get(entry.key) === entry) mark(entry.key,'viewed');
       } catch (_) { error.textContent = 'No pudimos abrir la comanda. Intenta de nuevo.'; }
-      finally { if (button.isConnected) updateCard(entry); }
+      finally { delete entry.opening; if (button.isConnected) updateCard(entry); }
     };
     card.append(header,title,text,progress,button,error); entry.node = card;
     updateCard(entry); return card;
@@ -91,7 +93,7 @@
     setTimeout(() => link.classList.remove('dp-arrival-flash'),6000);
   }
   function show({key,kind,title,detail,createdAt,action,accepted=false}) {
-    if (!Object.hasOwn(kindLabels,kind) || !key || !activate()) return;
+    if (!Object.hasOwn(kindLabels,kind) || !key || !activate() || kind === 'waiter' && !canReceiveComandas()) return;
     let entry = entries.get(key), fresh = !entry;
     if (!entry) {
       entry = {key,kind,title:'',detail:'',createdAt:createdAt || new Date().toISOString(),ordinal:++ordinal,viewed:false,printed:false,accepted:false,complete:false,node:null,action:null};
@@ -143,13 +145,19 @@
     entry.viewed = true; finish(entry); render(); persist();
   }
   function register(kind,handler) { handlers.set(kind,handler); if (activate()) render(); }
-  function syncRequests(requests,{label,body,accept,open}) {
-    if (!activate()) return;
+  function syncRequests(requests,{label,body,accept,open,completed}) {
+    if (!activate() || !canReceiveComandas()) return;
+    let changed = false;
+    for (const entry of entries.values()) {
+      if (entry.kind !== 'waiter' || entry.complete || !completed?.has(entry.key.slice('request:'.length))) continue;
+      entry.complete = true; entry.dismissed = true; changed = true;
+    }
+    if (changed) { render(); persist(); }
     requests.filter(request => request.request_source === 'waiter')
       .sort((a,b) => (Date.parse(a.created_at)||0)-(Date.parse(b.created_at)||0)).forEach(request => {
         const key='request:'+request.id;
         const entry = entries.get(key);
-        if (!entry || entry.complete && !entry.accepted && !entry.dismissed) show({key,kind:'waiter',title:label(request),detail:body(request),createdAt:request.created_at,
+      if (!completed?.has(request.id) && (!entry || entry.complete && !entry.accepted && !entry.dismissed)) show({key,kind:'waiter',title:label(request),detail:body(request),createdAt:request.created_at,
           action:() => open ? open(request.id) : accept(request.id)});
       });
     // A missing or partial snapshot is not an acceptance or a successful print.
@@ -159,7 +167,7 @@
     try {
       const records = JSON.parse(event.newValue); if (!Array.isArray(records)) return;
       for (const record of records) {
-        if (!valid(record)) continue;
+        if (!valid(record) || record.kind === 'waiter' && !canReceiveComandas()) continue;
         let entry = entries.get(record.key);
         if (!entry) { entry = {...record,action:null,node:null}; entries.set(record.key,entry); }
         else for (const step of ['viewed','printed','accepted','complete','dismissed']) if (record[step]) entry[step] = true;
